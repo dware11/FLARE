@@ -1,0 +1,16 @@
+# python junk
+__pycache__/
+*.pyc
+*.pyo
+
+# medical data / archives
+*.dcm
+*.dicom
+*.zip
+*.npz
+*.pt
+*.pth
+
+# dataset folders (so we don't commit raw data)
+data/
+FLARE_DATA/
