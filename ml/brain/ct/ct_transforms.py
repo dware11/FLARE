@@ -11,15 +11,15 @@ try:
 except ImportError:
     _HAS_CV2 = False 
 
-def apply_window_hu(hu: np.ndarray, center: float, width: float) -> np.ndarray: 
-    # Applied common brain window
-    # center = 40, width = 80 => range [0,80]
-    low = center - (width / 2 )
+def apply_window_hu(hu: np.ndarray, center: float, width: float) -> np.ndarray:
+    """Clip HU to [center - width/2, center + width/2] (e.g. brain window)."""
+    low = center - (width / 2)
     high = center + (width / 2) 
     hu = np.clip(hu, low, high) 
     return hu 
 
-def normalize_to_0_1(x: np.ndarray) -> np.ndarray: 
+def normalize_to_0_1(x: np.ndarray) -> np.ndarray:
+    """Scale array to [0, 1] by min-max; constant array -> zeros."""
     x = x.astype(np.float32) 
     minv = x.min() 
     maxv = x.max() 
@@ -28,6 +28,7 @@ def normalize_to_0_1(x: np.ndarray) -> np.ndarray:
     return (x - minv) / (maxv - minv) 
 
 def resize_2d(x: np.ndarray, size=(256, 256)) -> np.ndarray:
+    """Resize 2D array to (H, W); uses cv2 if available else torch interpolate."""
     h, w = size[0], size[1]
     if _HAS_CV2:
         return cv2.resize(x, (w, h), interpolation=cv2.INTER_AREA).astype(np.float32)
@@ -37,7 +38,7 @@ def resize_2d(x: np.ndarray, size=(256, 256)) -> np.ndarray:
 
 
 def dicom_to_hu(pixel_array: np.ndarray, slope: float, intercept: float) -> np.ndarray:
-    """Convert DICOM pixel array to Hounsfield units."""
+    """Convert DICOM pixel array to Hounsfield units using RescaleSlope/Intercept."""
     return pixel_array.astype(np.float32) * float(slope) + float(intercept)
 
 
@@ -47,12 +48,29 @@ def ct_to_tensor(
     center: float = 40,
     width: float = 80,
 ) -> torch.Tensor:
-    """Window HU, normalize to [0,1], resize, and return as (1, H, W) tensor."""
+    """Single-window: window HU, normalize, resize; return (1, H, W) tensor."""
     x = apply_window_hu(hu, center=center, width=width)
     x = normalize_to_0_1(x)
     x = resize_2d(x, size=size)
     return torch.from_numpy(x).unsqueeze(0)
 
+WINDOW_BRAIN = (40, 80) 
+WINDOW_SUBDURAL = (75, 200)
+WINDOW_BONE = (400, 1000)
+
+def hu_to_multiwindow(
+    hu: np.ndarray,
+    size: tuple[int, int] = (256, 256),
+    windows: tuple[tuple[float, float], ...] = (WINDOW_BRAIN, WINDOW_SUBDURAL, WINDOW_BONE),
+) -> np.ndarray:
+    """Apply multiple HU windows, normalize each, resize; return (C, H, W) float32 for model/cache."""
+    chans = [] 
+    for center, width in windows: 
+        x = apply_window_hu(hu, center=center, width=width) 
+        x = normalize_to_0_1(x) 
+        x = resize_2d(x, size=size)
+        chans.append(x) 
+    return np.stack(chans, axis=0).astype(np.float32) 
 
 if __name__ == "__main__":
     import sys
