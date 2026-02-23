@@ -1,7 +1,8 @@
-""" 
-Infer CT: Load mode, run on cache (single patient or batch from manifest) 
-Grad-CAM is optional. It turns ON only when --cam-dir is put. 
-""" 
+"""
+Demo: Single patient (--patient-id/--npz) or batch from manifest (no id => batch).
+Design: CAM flags (--cam-dir, --cam-limit, --cam-when-abnormal) toggle gradients
+and overlay saving; inference stays lightweight when CAM is off.
+"""
 
 import argparse 
 import csv 
@@ -105,8 +106,9 @@ def _apply_limit_and_random(entries: list, limit: Optional[int], random_n: Optio
 
     return out 
 
-def _load_model(checkpoint: Path) -> torch.nn.Module: 
-    if not checkpoint.exists(): 
+def _load_model(checkpoint: Path) -> torch.nn.Module:
+    # Demo: load checkpoint, set eval mode (no dropout; fixed batchnorm).
+    if not checkpoint.exists():
         raise FileNotFoundError(f"Checkpoint not found {checkpoint}")
 
     try: 
@@ -114,7 +116,6 @@ def _load_model(checkpoint: Path) -> torch.nn.Module:
     except TypeError: 
         ckpt = torch.load(checkpoint, map_location="cpu") 
 
-    # Build model and load weights (compatible with train_ct checkpoint format)
     model = build_ct_model()
     state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt 
     model.load_state_dict(state)
@@ -145,21 +146,21 @@ def _predict_one(
     return probs 
 
 def _run_single_inference(
-    checkpoint: Path, 
+    checkpoint: Path,
     patient_id: str | None = None,
-    npz_path: Path | None = None, 
-    cam_dir: Path | None = None, 
-) -> None: 
-
+    npz_path: Path | None = None,
+    cam_dir: Path | None = None,
+) -> None:
     model = _load_model(checkpoint) 
     device = next(model.parameters()).device
 
-    if npz_path and npz_path.exists(): 
-        arr = np.load(npz_path)["arr"] 
+    # Demo: loads NPZ from manifest lookup or direct --npz path (no DICOM here).
+    if npz_path and npz_path.exists():
+        arr = np.load(npz_path)["arr"]
         inp_desc = f"npz {npz_path}"
-        cam_id = npz_path.stem 
+        cam_id = npz_path.stem
 
-    elif patient_id: 
+    elif patient_id:
         manifest = META / "ct_processed_manifest.json" 
         if not manifest.exists(): 
             print(f"Manifest not found: {manifest}") 
@@ -181,8 +182,9 @@ def _run_single_inference(
         print("Provide --patient-id or --npz for single patient mode, or leave both out for batch mode.") 
         return 
 
-    print(f"Running inference on {inp_desc}") 
+    print(f"Running inference on {inp_desc}")
 
+    # Design: add batch dim (1,3,256,256); inference expects (B,C,H,W).
     x = torch.from_numpy(arr).float().unsqueeze(0).to(device)
     use_grad = cam_dir is not None 
 
@@ -190,7 +192,7 @@ def _run_single_inference(
     pred = int(np.argmax(probs))
     conf = float(probs[pred]) 
 
-    # Optional Grad-Cam 
+    # Optional Grad-CAM: only when --cam-dir set; needs enable_grad for backprop.
     if cam_dir is not None: 
         gradcam = GradCAM(model, "layer4") 
         _, overlay = gradcam(x, target_class=pred, input_for_overlay=x) 
@@ -229,13 +231,14 @@ def _run_batch_inference(
     entries = _get_split_entries(entries, split) 
     entries = _apply_limit_and_random(entries, limit=limit, random_n=random_n) 
 
-    if not entries: 
+    if not entries:
         print(f"No entries found for split={split}")
         return []
 
+    # Design: loop over manifest entries one-by-one (batch_size=1; laptop-friendly).
     print(f"Running batch inference on {len(entries)} patients (split={split})...")
-    results: List[Dict] = [] 
-    cam_count =  0
+    results: List[Dict] = []
+    cam_count = 0
     csv_has_cam = False 
 
     use_grad = cam_dir is not None 
@@ -267,7 +270,7 @@ def _run_batch_inference(
         }
 
 
-        # Decide whether to actually SAVE a CAM for this patient
+        # Note: optional CAM limit + abnormal-only filter (--cam-limit, --cam-when-abnormal).
         do_cam = (
             cam_dir is not None
             and (cam_limit is None or cam_count < cam_limit)
@@ -300,6 +303,7 @@ def _run_batch_inference(
     else:
         print("No ground-truth labels in manifest; accuracy not computed.")
 
+    # Output: export predictions for analysis (CSV with optional cam_path column).
     if out_csv:
         out_csv = Path(out_csv)
         out_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -358,6 +362,7 @@ def main(
 
 
 if __name__ == "__main__":
+    # CLI flags control demo behavior: single vs batch, checkpoint, CAM options.
     ap = argparse.ArgumentParser(description="Run CT inference (single patient or batch from manifest).")
     ap.add_argument("--patient-id", type=str, default=None)
     ap.add_argument("--npz", type=Path, default=None)
