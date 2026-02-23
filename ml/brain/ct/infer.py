@@ -23,6 +23,22 @@ from ml.brain.ct.gradcam_ct import GradCAM
 LABELS = ["normal", "abnormal"] 
 
 SPLIT_SEED = 42 
+
+
+def _save_overlay_png(overlay: np.ndarray, out_path: Path) -> bool:
+    """Save RGB overlay (H,W,3) uint8 to PNG. Tries cv2 then matplotlib. Returns True if saved."""
+    try:
+        import cv2
+        cv2.imwrite(str(out_path), cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
+        return True
+    except ImportError:
+        pass
+    try:
+        import matplotlib.pyplot as plt
+        plt.imsave(str(out_path), overlay)
+        return True
+    except ImportError:
+        return False
 TRAIN_FRAC = 0.7 
 VAL_FRAC = 0.15 
 
@@ -182,12 +198,10 @@ def _run_single_inference(
             cam_dir = Path(cam_dir) 
             cam_dir.mkdir(parents=True, exist_ok=True) 
             out_path = cam_dir / f"{cam_id}.png" 
-            try: 
-                import cv2 
-                cv2.imwrite(str(out_path), cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)) 
+            if _save_overlay_png(overlay, out_path):
                 print(f"CAM overlay saved to {out_path}") 
-            except ImportError: 
-                print("cv2 not installed: CAM heatmap not saved.") 
+            else:
+                print("Install opencv-python or matplotlib to save CAM overlay.") 
 
         print(f"Prediction: {LABELS[pred]} (confidence={conf:.4f})") 
         for i, lab in enumerate(LABELS):
@@ -266,14 +280,12 @@ def _run_batch_inference(
                 cam_dir_p = Path(cam_dir)
                 cam_dir_p.mkdir(parents=True, exist_ok=True)
                 out_path = cam_dir_p / f"{pid}.png"
-                try:
-                    import cv2
-                    cv2.imwrite(str(out_path), cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
+                if _save_overlay_png(overlay, out_path):
                     row["cam_path"] = str(out_path)
                     csv_has_cam = True
                     cam_count += 1
-                except ImportError:
-                    print("cv2 not installed; CAM overlay not saved.")
+                else:
+                    print("Install opencv-python or matplotlib to save CAM overlay.")
 
         results.append(row)
 

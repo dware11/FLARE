@@ -1,0 +1,6 @@
+{"message": "main_entered", "data": {"raw_ct": "D:\\FLARE_DATA\\ct_brain\\raw", "raw_ct_exists": true}, "hypothesisId": "H1", "location": "preprocess_ct.main", "timestamp": 1771863502720}
+{"message": "preprocess_start", "data": {"raw_ct": "D:\\FLARE_DATA\\ct_brain\\raw", "raw_ct_exists": true, "patient_dirs_count": 32, "labels_count": 491}, "hypothesisId": "H1", "location": "preprocess_ct.main", "timestamp": 1771863506514}
+{"message": "preprocess_to_process", "data": {"to_process_count": 32, "limit": null}, "hypothesisId": "H2", "location": "preprocess_ct.main", "timestamp": 1771863506515}
+{"message": "main_entered", "data": {"raw_ct": "D:\\FLARE_DATA\\ct_brain\\raw", "raw_ct_exists": true}, "hypothesisId": "H1", "location": "preprocess_ct.main", "timestamp": 1771863887779}
+{"message": "preprocess_start", "data": {"raw_ct": "D:\\FLARE_DATA\\ct_brain\\raw", "raw_ct_exists": true, "patient_dirs_count": 32, "labels_count": 491}, "hypothesisId": "H1", "location": "preprocess_ct.main", "timestamp": 1771863887790}
+{"message": "preprocess_to_process", "data": {"to_process_count": 32, "limit": null}, "hypothesisId": "H2", "location": "preprocess_ct.main", "timestamp": 1771863887790}
