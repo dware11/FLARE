@@ -201,11 +201,11 @@ def _run_single_inference(
             if _save_overlay_png(overlay, out_path):
                 print(f"CAM overlay saved to {out_path}") 
             else:
-                print("Install opencv-python or matplotlib to save CAM overlay.") 
+                print("Install opencv-python or matplotlib to save CAM overlay.")
 
-        print(f"Prediction: {LABELS[pred]} (confidence={conf:.4f})") 
-        for i, lab in enumerate(LABELS):
-            print(f" {lab}: {probs[i]:.4f}")
+    print(f"Prediction: {LABELS[pred]} (confidence={conf:.4f})")
+    for i, lab in enumerate(LABELS):
+        print(f" {lab}: {probs[i]:.4f}")
 
 def _run_batch_inference(
     checkpoint: Path, 
