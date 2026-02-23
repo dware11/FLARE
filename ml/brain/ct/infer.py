@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.config import META, OUTPUTS 
 from ml.brain.ct.model_ct import build_ct_model 
-from ml.brain.ct.gradcam import GradCAM 
+from ml.brain.ct.gradcam_ct import GradCAM 
 
 LABELS = ["normal", "abnormal"] 
 
@@ -54,15 +54,15 @@ def _get_split_entries(entries: list, split: str):
     nv = int(n * VAL_FRAC) 
 
     train_idx = set(inx[:nt]) 
-    val_idx = set(int[nt : nt + nv]) 
-    test_idx = set(idx[nt + nv :])
+    val_idx = set(inx[nt : nt + nv]) 
+    test_idx = set(inx[nt + nv :])
 
     split_map = {"train": train_idx, "val": val_idx, "test": test_idx} 
     idx_set = split_map.get(split, val_idx) 
 
     out = [] 
     for i, e in enumerate(valid): 
-        if in in idx_set: 
+        if i in idx_set: 
             e_copy = dict(e) 
             e_copy["split"] = split 
             out.append(e_copy) 
@@ -81,7 +81,7 @@ def _apply_limit_and_random(entries: list, limit: Optional[int], random_n: Optio
     if random_n is not None: 
         rng = np.random.default_rng(SPLIT_SEED) 
         if random_n < len(out): 
-            idx = rng.choice(len(out, size=random_n, replace=False)) 
+            idx = rng.choice(len(out), size=random_n, replace=False) 
             out = [out[i] for i in idx] 
 
     if limit is not None: 
@@ -91,12 +91,21 @@ def _apply_limit_and_random(entries: list, limit: Optional[int], random_n: Optio
 
 def _load_model(checkpoint: Path) -> torch.nn.Module: 
     if not checkpoint.exists(): 
-        raise FileNotFoundError(f"Checkpoint not found {checkpiont}")
+        raise FileNotFoundError(f"Checkpoint not found {checkpoint}")
 
     try: 
         ckpt = torch.load(checkpoint, map_location="cpu", weights_only=True) 
     except TypeError: 
-        ckpt = torch.load(chekckpoint, map_loaction="cpu") 
+        ckpt = torch.load(checkpoint, map_location="cpu") 
+
+    # Build model and load weights (compatible with train_ct checkpoint format)
+    model = build_ct_model()
+    state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt 
+    model.load_state_dict(state)
+    model.eval()
+    if torch.cuda.is_available():
+        model = model.cuda()
+    return model
 
 def _predict_one(
     model: torch.nn.Module,
@@ -162,7 +171,7 @@ def _run_single_inference(
     use_grad = cam_dir is not None 
 
     probs = _predict_one(model, x, use_grad=use_grad) 
-    pred = in(np.argmax(probs))
+    pred = int(np.argmax(probs))
     conf = float(probs[pred]) 
 
     # Optional Grad-Cam 
@@ -204,4 +213,163 @@ def _run_batch_inference(
 
     entries = _load_manifest(manifest_path) 
     entries = _get_split_entries(entries, split) 
-    entries = _apply_limit_and_random(entries, limit=limit, random)
+    entries = _apply_limit_and_random(entries, limit=limit, random_n=random_n) 
+
+    if not entries: 
+        print(f"No entries found for split={split}")
+        return []
+
+    print(f"Running batch inference on {len(entries)} patients (split={split})...")
+    results: List[Dict] = [] 
+    cam_count =  0
+    csv_has_cam = False 
+
+    use_grad = cam_dir is not None 
+    gradcam = GradCAM(model, "layer4") if cam_dir is not None else None 
+
+    for e in entries: 
+        path = Path(e["path"]) 
+        pid = e.get("patient_id", "") 
+
+        if not path.exists(): 
+            print(f" SKIP {pid}: npz not found at {path}") 
+            continue 
+
+        arr = np.load(path)["arr"] 
+        x = torch.from_numpy(arr).float().unsqueeze(0).to(device) 
+
+        probs = _predict_one(model, x, use_grad=use_grad) 
+        pred = int(np.argmax(probs))
+        conf = float(probs[pred]) 
+
+        row: Dict = {
+            "patient_id": pid, 
+            "split": e.get("split", split), 
+            "true_label": int(e.get("label", -1)), 
+            "pred_label": pred, 
+            "confidence": conf, 
+            "p_normal": float(probs[0]), 
+            "p_abnormal": float(probs[1]), 
+        }
+
+
+        # Decide whether to actually SAVE a CAM for this patient
+        do_cam = (
+            cam_dir is not None
+            and (cam_limit is None or cam_count < cam_limit)
+            and (not cam_when_abnormal or pred == 1)
+        )
+
+        if do_cam and gradcam is not None:
+            _, overlay = gradcam(x, target_class=pred, input_for_overlay=x)
+            if overlay is not None:
+                cam_dir_p = Path(cam_dir)
+                cam_dir_p.mkdir(parents=True, exist_ok=True)
+                out_path = cam_dir_p / f"{pid}.png"
+                try:
+                    import cv2
+                    cv2.imwrite(str(out_path), cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
+                    row["cam_path"] = str(out_path)
+                    csv_has_cam = True
+                    cam_count += 1
+                except ImportError:
+                    print("cv2 not installed; CAM overlay not saved.")
+
+        results.append(row)
+
+    num_pred = len(results)
+    print(f"Predicted {num_pred} patients (split={split}).")
+
+    labeled = [r for r in results if r["true_label"] in (0, 1)]
+    if labeled:
+        correct = sum(1 for r in labeled if r["true_label"] == r["pred_label"])
+        acc = correct / len(labeled)
+        print(f"Accuracy on labeled subset: {acc:.3f} ({correct}/{len(labeled)})")
+    else:
+        print("No ground-truth labels in manifest; accuracy not computed.")
+
+    if out_csv:
+        out_csv = Path(out_csv)
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+
+        fieldnames = [
+            "patient_id", "split", "true_label", "pred_label",
+            "confidence", "p_normal", "p_abnormal",
+        ]
+        if csv_has_cam:
+            fieldnames.append("cam_path")
+
+        with open(out_csv, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            w.writeheader()
+            w.writerows(results)
+        print(f"Wrote CSV to {out_csv}")
+
+    return results
+
+
+def main(
+    patient_id: Optional[str] = None,
+    npz_path: Optional[Path] = None,
+    checkpoint: Optional[Path] = None,
+    split: str = "val",
+    limit: Optional[int] = None,
+    random_n: Optional[int] = None,
+    out_csv: Optional[Path] = None,
+    cam_dir: Optional[Path] = None,
+    cam_limit: Optional[int] = None,
+    cam_when_abnormal: bool = False,
+) -> None:
+    checkpoint = checkpoint or OUTPUTS / "ct_baseline_best.pt"
+    manifest_path = META / "ct_processed_manifest.json"
+
+    if patient_id or (npz_path and npz_path.exists()):
+        _run_single_inference(
+            checkpoint=checkpoint,
+            patient_id=patient_id,
+            npz_path=npz_path,
+            cam_dir=cam_dir,
+        )
+        return
+
+    _run_batch_inference(
+        checkpoint=checkpoint,
+        manifest_path=manifest_path,
+        split=split,
+        limit=limit,
+        random_n=random_n,
+        out_csv=out_csv,
+        cam_dir=cam_dir,
+        cam_limit=cam_limit,
+        cam_when_abnormal=cam_when_abnormal,
+    )
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description="Run CT inference (single patient or batch from manifest).")
+    ap.add_argument("--patient-id", type=str, default=None)
+    ap.add_argument("--npz", type=Path, default=None)
+    ap.add_argument("--checkpoint", type=Path, default=None)
+    ap.add_argument("--split", type=str, default="val")
+    ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--random-n", type=int, default=None)
+    ap.add_argument("--out-csv", type=Path, default=None)
+    ap.add_argument("--cam-dir", type=Path, default=None, help="Save CAM overlays here (optional)")
+    ap.add_argument("--cam-limit", type=int, default=None, help="Max CAMs in batch (optional)")
+    ap.add_argument("--cam-when-abnormal", action="store_true", help="Only CAM for pred=abnormal in batch")
+    args = ap.parse_args()
+
+    main(
+        patient_id=args.patient_id,
+        npz_path=args.npz,
+        checkpoint=args.checkpoint,
+        split=args.split,
+        limit=args.limit,
+        random_n=args.random_n,
+        out_csv=args.out_csv,
+        cam_dir=args.cam_dir,
+        cam_limit=args.cam_limit,
+        cam_when_abnormal=args.cam_when_abnormal,
+    )
+
+
