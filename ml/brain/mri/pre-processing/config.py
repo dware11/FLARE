@@ -3,10 +3,13 @@ Configuration file for BraTS project
 """
 
 from pathlib import Path
+import os
 
 
 # Your project root
 PROJECT_ROOT = Path('/Users/huda/Desktop/Flare_brain_mri')
+# Allow override via environment variable while keeping the original default
+PROJECT_ROOT = Path(os.getenv("FLARE_MRI_ROOT", str(PROJECT_ROOT)))
 
 BRATS_GLI_TRAIN = PROJECT_ROOT / 'data/raw/BraTS24/GLI-Challenge-TrainingData'
 BRATS_AFRICA = PROJECT_ROOT / 'data/raw/BraTS-Africa/95_Glioma'

@@ -1,9 +1,9 @@
-# python junk
+# Python
 __pycache__/
 *.pyc
 *.pyo
 
-# medical data / archives
+# Medical data / archives
 *.dcm
 *.dicom
 *.zip
@@ -11,6 +11,43 @@ __pycache__/
 *.pt
 *.pth
 
-# dataset folders (so we don't commit raw data)
+# Dataset folders (so we don't commit raw data)
 data/
 FLARE_DATA/
+datasets/
+
+# Logs
+*.log
+logs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Virtual environments
+venv/
+.venv/
+
+# Secrets
+.env
+*.env
+*.key
+
+# Data / outputs / caches
+cache/
+caches/
+outputs/
+runs/
+checkpoints/
+*.npy
+
+# React UI
+ui/node_modules/
+ui/build/
+ui/.env*
+ui/.cache/
