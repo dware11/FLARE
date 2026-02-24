@@ -1,7 +1,6 @@
 """
-gradcam.py — Grad-CAM helper for CT model.
-Uses forward hook on model.layer4 and register_hook on activations.
-No changes to model architecture are needed.
+Demo: Hook model.layer4, compute Grad-CAM heatmap + overlay.
+Design: enable_grad required so we can backward on target class for gradients.
 """
 
 from typing import Optional, Tuple
@@ -26,7 +25,7 @@ class GradCAM:
 
     def _forward_hook(self, _module: torch.nn.Module, _inp: tuple, out: torch.Tensor):
         self.activations = out
-
+        # Design: backward hook captures gradients w.r.t. activations for CAM weights.
         def _backward_hook(grad: torch.Tensor):
             self.gradients = grad
 
@@ -50,6 +49,7 @@ class GradCAM:
 
         try:
             self.model.zero_grad(set_to_none=True)
+            # Note: enable_grad needed so .backward() populates gradients for CAM.
             with torch.enable_grad():
                 logits = self.model(x)
                 if target_class is None:
@@ -98,7 +98,8 @@ class GradCAM:
         """
         heat = heatmap.cpu().numpy()
         img = x.squeeze(0).cpu().numpy()
-        gray = img[0]  # use first channel as gray for overlay
+        # Design: use first channel (brain window) as grayscale for overlay.
+        gray = img[0]
         gray = (np.clip(gray, 0, 1) * 255).astype(np.uint8)
 
         try:

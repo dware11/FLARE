@@ -1,5 +1,5 @@
-"""PyTorch Dataset for CT: reads from ct_processed_manifest +
-cache so training does not touch dicoms.
+"""
+Demo: Dataset reads cached NPZ only (not DICOM); manifest lists path + label.
 """
 import json
 import time
@@ -45,11 +45,12 @@ class CTDataset(Dataset):
         # #endregion
         with open(manifest_path, encoding="utf-8") as f:
             entries = json.load(f) 
-        valid = [e for e in entries if e.get("label", -1) in (0,1)]
-        if not valid: 
-            valid = entries 
-        
-        rng = np.random.default_rng(seed) 
+        valid = [e for e in entries if e.get("label", -1) in (0, 1)]
+        if not valid:
+            valid = entries
+
+        # Design: fixed seed for reproducible train/val/test splits.
+        rng = np.random.default_rng(seed)
         inx = rng.permutation(len(valid)) 
         n = len(valid) 
         nt = int(n * train_frac) 
@@ -70,7 +71,7 @@ class CTDataset(Dataset):
         return len(self.entries) 
     
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
-        """Load npz at entries[idx], return (x, y) with x shape (C,H,W) and y 0/1."""
+        # Demo: load cached NPZ "arr" (3,256,256); no DICOM access.
         e = self.entries[idx]
         # #region agent log
         if idx == 0:

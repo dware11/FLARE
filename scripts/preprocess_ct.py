@@ -1,5 +1,6 @@
-""" 
-Preprocess the CT: middle slice -> multi-window -> cach//ct/<id>/middl.npz + manifest.json 
+"""
+Demo: DICOM -> HU -> windowing (brain/subdural/bone) -> normalize -> NPZ cache.
+Design: preprocessing is offline so inference never re-parses DICOMs.
 """
 import argparse
 import json
@@ -146,6 +147,7 @@ def main(limit: int | None = None, labels_path: Path | None = None, delimiter: s
             intercept = float(getattr(dcm, "RescaleIntercept", 0.0))
             hu = dicom_to_hu(dcm.pixel_array, slope, intercept)
             arr = hu_to_multiwindow(hu)
+            # Output: arr (3,256,256) float32 in [0,1]; key "arr" in NPZ.
             out_dir = CACHE_CT / pdir.name
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / "middle.npz"
@@ -175,6 +177,7 @@ def main(limit: int | None = None, labels_path: Path | None = None, delimiter: s
     # #region agent log
     _alog("preprocess_done", {"manifest_count": len(manifest), "manifest_path": str(META / "ct_processed_manifest.json")}, "H4")
     # #endregion
+    # Design: manifest is contract between preprocess and inference (path, label).
     META.mkdir(parents=True, exist_ok=True)
     out_manifest = META / "ct_processed_manifest.json"
     with open(out_manifest, "w", encoding="utf-8") as f:
