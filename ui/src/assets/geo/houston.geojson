@@ -1,0 +1,657 @@
+{
+ "currentVersion": 10.91,
+ "cimVersion": "2.9.0",
+ "id": 0,
+ "name": "Houston City Limit",
+ "type": "Feature Layer",
+ "description": "",
+ "geometryType": "esriGeometryPolygon",
+ "sourceSpatialReference": {
+  "wkid": 102740,
+  "latestWkid": 2278,
+  "xyTolerance": 0.00328083333333333,
+  "zTolerance": 2,
+  "mTolerance": 2,
+  "falseX": -126725700,
+  "falseY": -77828800,
+  "xyUnits": 3048.0060960121905,
+  "falseZ": 0,
+  "zUnits": 1,
+  "falseM": 0,
+  "mUnits": 1
+ },
+ "copyrightText": "",
+ "parentLayer": null,
+ "subLayers": [],
+ "minScale": 0,
+ "maxScale": 0,
+ "referenceScale": 0.0,
+ "drawingInfo": {
+  "renderer": {
+   "type": "uniqueValue",
+   "field1": "SERVICE_TY",
+   "uniqueValueInfos": [
+    {
+     "symbol": {
+      "type": "esriPFS",
+      "url": "a72dde17537ee19e0fc4bb18f95293ab",
+      "imageData": "iVBORw0KGgoAAAANSUhEUgAAAD0AAAA9CAYAAAAeYmHpAAAACXBIWXMAAA7EAAAOxAGVKw4bAAADzUlEQVRogbWa2ZHcMAxE6Sql4eQcmJNzIPbXTmkpoPs1KPNLvAAQaBzkzLXWWn9+r78/f60fa9CqvfexhPaJHAmNa6217ou6Td1BqrX3MUer23dfp5S499WBv9ZeHWNFjFhDCaeQUcmieDtZKr4X1fpOwEG465O1b7pbRedy0O4s1H1T+KmDdfvJd0fzvuYbvKnFVaPwo4GOKJrIeF9zVYyVICTQdetSaE9gTvY/orcTxAWnr7EpapQFU3h3+x/R2wnixtOglFjzBN73dZ9DU4inkHM0T4LW1KWuDo40xyoGSeGwz08CGHWpi1iNBjWquL1PLZQEWNW/uo0E3lOY731noR2NSTFU9ds83TFIUtkbF4iKZ1IMSZ92DCeVlkJKcjuj1Zvrf1IWjdAkaKjxHaIO0t33CXpKn+4EP62SKprTNgmO+7rHoZ2V/2fxkdYGVM6HT++E06BQzVO/3r9JbUCU6CzeFieVwLS4SFIdiQ3p1dFZHAWyN9IRiQnJg8a+PpEFBTJVKChhqzmS9hzNTs5qb+Vy7YWjG6PV0z5HaRGakxeeb9Gb+vSJUu7jzgrTGiGCN/XVCSOa/ijEk9iyK7S9cEwPQg44ydcTC3eVXwlvJ4A7iIvOCt4drU4GNU4U296nla8rBs66Loc6PqlyELydEBOtU2inFWAnc6WYb/BODzSBNw1OyQETOnu7yOJkPLXU1H9PFITeyCZC3QVJLgmp4jv6ypjy3fu0+Kj2dLBUQifFi1Le55Y1OSDdM5mvhKbFSyVzZfGrW0ya2zNJh4kcBPLVGvlyMin7qjV7rqQ0k+YC3b09frV0G0mg6SB3GqSUYmla/Bx64rtq3M0ldCe+7bLI679akrmT9KTWOws/Apnz5Y6Qm6voTnyayOf4fLUyeifQqZh2Y4llFV+nNDdv4f2Wv9NMQG53qYxtRZbcqyf1Os0EpwGTuEoJ7+QenDDr1rm9J5G62oeegEmjliDWTa6NLqhVfZSyaIFQvVJMsgBxDTXn3KH8H5kinFZep+9g7kAuJVZIw/8CToW5M6m+9z1KBvq6QgMj/hewaxPFvQHvpNkylECUWHear53gbq/KQK/59CSKJnQSeo7maz6d0khRQhBGa/L4Zx3SiECpz5O9juajOCGpQH27OSXQ6ctJavn2jYxoOU0fk8DXNZLuOjqPH/De1nolBK3GJsghiHo89p9CPInW06yhDqTGHz6dMJ3AWOXNN6rAjp/06VNY31tq3X2OBkulcHUWe5+eRG41pvZUh6HFSPL+Zu/Tk8jtBKTzrk1ecNZa6x9C71FAnyjd3QAAAABJRU5ErkJggg==",
+      "contentType": "image/png",
+      "outline": {
+       "type": "esriSLS",
+       "style": "esriSLSSolid",
+       "color": [
+        227,
+        158,
+        0,
+        255
+       ],
+       "width": 1.5
+      },
+      "width": 45.75,
+      "height": 45.75,
+      "angle": 0,
+      "xoffset": 0,
+      "yoffset": 0,
+      "xscale": 1,
+      "yscale": 1
+     },
+     "value": "FULL",
+     "label": "Full service"
+    },
+    {
+     "symbol": {
+      "type": "esriSFS",
+      "style": "esriSFSBackwardDiagonal",
+      "color": [
+       230,
+       0,
+       0,
+       255
+      ],
+      "outline": {
+       "type": "esriSLS",
+       "style": "esriSLSSolid",
+       "color": [
+        230,
+        0,
+        0,
+        255
+       ],
+       "width": 1.5
+      }
+     },
+     "value": "LIMITED",
+     "label": "Limited Service"
+    }
+   ],
+   "fieldDelimiter": ",",
+   "authoringInfo": {
+    "colorRamp": {
+     "type": "multipart",
+     "colorRamps": [
+      {
+       "type": "algorithmic",
+       "algorithm": "esriCIELabAlgorithm",
+       "fromColor": [
+        114,
+        161,
+        173,
+        255
+       ],
+       "toColor": [
+        114,
+        161,
+        173,
+        255
+       ]
+      },
+      {
+       "type": "algorithmic",
+       "algorithm": "esriCIELabAlgorithm",
+       "fromColor": [
+        113,
+        250,
+        97,
+        255
+       ],
+       "toColor": [
+        113,
+        250,
+        97,
+        255
+       ]
+      },
+      {
+       "type": "algorithmic",
+       "algorithm": "esriCIELabAlgorithm",
+       "fromColor": [
+        247,
+        87,
+        108,
+        255
+       ],
+       "toColor": [
+        247,
+        87,
+        108,
+        255
+       ]
+      },
+      {
+       "type": "algorithmic",
+       "algorithm": "esriCIELabAlgorithm",
+       "fromColor": [
+        165,
+        79,
+        227,
+        255
+       ],
+       "toColor": [
+        165,
+        79,
+        227,
+        255
+       ]
+      },
+      {
+       "type": "algorithmic",
+       "algorithm": "esriCIELabAlgorithm",
+       "fromColor": [
+        168,
+        154,
+        62,
+        255
+       ],
+       "toColor": [
+        168,
+        154,
+        62,
+        255
+       ]
+      },
+      {
+       "type": "algorithmic",
+       "algorithm": "esriCIELabAlgorithm",
+       "fromColor": [
+        135,
+        55,
+        113,
+        255
+       ],
+       "toColor": [
+        135,
+        55,
+        113,
+        255
+       ]
+      },
+      {
+       "type": "algorithmic",
+       "algorithm": "esriCIELabAlgorithm",
+       "fromColor": [
+        137,
+        217,
+        153,
+        255
+       ],
+       "toColor": [
+        137,
+        217,
+        153,
+        255
+       ]
+      },
+      {
+       "type": "algorithmic",
+       "algorithm": "esriCIELabAlgorithm",
+       "fromColor": [
+        102,
+        144,
+        250,
+        255
+       ],
+       "toColor": [
+        102,
+        144,
+        250,
+        255
+       ]
+      },
+      {
+       "type": "algorithmic",
+       "algorithm": "esriCIELabAlgorithm",
+       "fromColor": [
+        242,
+        179,
+        160,
+        255
+       ],
+       "toColor": [
+        242,
+        179,
+        160,
+        255
+       ]
+      },
+      {
+       "type": "algorithmic",
+       "algorithm": "esriCIELabAlgorithm",
+       "fromColor": [
+        143,
+        64,
+        51,
+        255
+       ],
+       "toColor": [
+        143,
+        64,
+        51,
+        255
+       ]
+      },
+      {
+       "type": "algorithmic",
+       "algorithm": "esriCIELabAlgorithm",
+       "fromColor": [
+        237,
+        138,
+        216,
+        255
+       ],
+       "toColor": [
+        237,
+        138,
+        216,
+        255
+       ]
+      },
+      {
+       "type": "algorithmic",
+       "algorithm": "esriCIELabAlgorithm",
+       "fromColor": [
+        116,
+        237,
+        235,
+        255
+       ],
+       "toColor": [
+        116,
+        237,
+        235,
+        255
+       ]
+      },
+      {
+       "type": "algorithmic",
+       "algorithm": "esriCIELabAlgorithm",
+       "fromColor": [
+        241,
+        245,
+        142,
+        255
+       ],
+       "toColor": [
+        241,
+        245,
+        142,
+        255
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "scaleSymbols": true,
+  "transparency": 30,
+  "labelingInfo": null
+ },
+ "defaultVisibility": false,
+ "extent": {
+  "xmin": -1.0678582745662041E7,
+  "ymin": 3439883.1302127643,
+  "xmax": -1.0574865122244155E7,
+  "ymax": 3525058.837234305,
+  "spatialReference": {
+   "wkid": 102100,
+   "latestWkid": 3857,
+   "xyTolerance": 0.001,
+   "zTolerance": 0.001,
+   "mTolerance": 0.001,
+   "falseX": -20037700,
+   "falseY": -30241100,
+   "xyUnits": 10000,
+   "falseZ": -100000,
+   "zUnits": 10000,
+   "falseM": -100000,
+   "mUnits": 10000
+  }
+ },
+ "hasAttachments": true,
+ "attachmentProperties": [
+  {
+   "name": "id",
+   "fieldName": "ATTACHMENTID",
+   "isEnabled": true
+  },
+  {
+   "name": "globalid",
+   "fieldName": "GLOBALID",
+   "isEnabled": true
+  },
+  {
+   "name": "keywords",
+   "fieldName": "KEYWORDS",
+   "isEnabled": false
+  },
+  {
+   "name": "name",
+   "fieldName": "ATT_NAME",
+   "isEnabled": true
+  },
+  {
+   "name": "contentType",
+   "fieldName": "CONTENT_TYPE",
+   "isEnabled": true
+  },
+  {
+   "name": "size",
+   "fieldName": "DATA_SIZE",
+   "isEnabled": true
+  },
+  {
+   "name": "exifInfo",
+   "fieldName": "EXIFINFO",
+   "isEnabled": false
+  }
+ ],
+ "attachmentFields": [
+  {
+   "name": "ATTACHMENTID",
+   "type": "esriFieldTypeOID",
+   "alias": "ATTACHMENTID",
+   "editable": false,
+   "nullable": false,
+   "length": 4,
+   "domain": null
+  },
+  {
+   "name": "GLOBALID",
+   "type": "esriFieldTypeGlobalID",
+   "alias": "GLOBALID",
+   "editable": false,
+   "nullable": false,
+   "length": 38,
+   "domain": null
+  },
+  {
+   "name": "ATT_NAME",
+   "type": "esriFieldTypeString",
+   "alias": "ATT_NAME",
+   "editable": true,
+   "nullable": false,
+   "length": 250,
+   "domain": null
+  },
+  {
+   "name": "CONTENT_TYPE",
+   "type": "esriFieldTypeString",
+   "alias": "CONTENT_TYPE",
+   "editable": true,
+   "nullable": false,
+   "length": 150,
+   "domain": null
+  },
+  {
+   "name": "DATA_SIZE",
+   "type": "esriFieldTypeInteger",
+   "alias": "DATA_SIZE",
+   "editable": true,
+   "nullable": false,
+   "length": 4,
+   "domain": null
+  }
+ ],
+ "htmlPopupType": "esriServerHTMLPopupTypeNone",
+ "displayField": "SERVICE_TY",
+ "typeIdField": null,
+ "subtypeFieldName": null,
+ "subtypeField": null,
+ "defaultSubtypeCode": null,
+ "fields": [
+  {
+   "name": "OBJECTID_1",
+   "type": "esriFieldTypeOID",
+   "alias": "OBJECTID_1",
+   "domain": null
+  },
+  {
+   "name": "SERVICE_TY",
+   "type": "esriFieldTypeString",
+   "alias": "SERVICE_TY",
+   "length": 12,
+   "domain": null
+  },
+  {
+   "name": "DESCRIPTIO",
+   "type": "esriFieldTypeString",
+   "alias": "DESCRIPTIO",
+   "length": 12,
+   "domain": null
+  },
+  {
+   "name": "ENTITY_NAM",
+   "type": "esriFieldTypeString",
+   "alias": "ENTITY_NAM",
+   "length": 35,
+   "domain": null
+  },
+  {
+   "name": "EFF_DATE",
+   "type": "esriFieldTypeDate",
+   "alias": "EFF_DATE",
+   "length": 8,
+   "domain": null
+  },
+  {
+   "name": "LEGAL_DOC",
+   "type": "esriFieldTypeString",
+   "alias": "LEGAL_DOC",
+   "length": 12,
+   "domain": null
+  },
+  {
+   "name": "COMMENTS",
+   "type": "esriFieldTypeString",
+   "alias": "COMMENTS",
+   "length": 71,
+   "domain": null
+  },
+  {
+   "name": "COUNCIL_AP",
+   "type": "esriFieldTypeDate",
+   "alias": "COUNCIL_AP",
+   "length": 8,
+   "domain": null
+  },
+  {
+   "name": "ANNEXATION",
+   "type": "esriFieldTypeString",
+   "alias": "ANNEXATION",
+   "length": 12,
+   "domain": null
+  },
+  {
+   "name": "POLICE_SER",
+   "type": "esriFieldTypeString",
+   "alias": "POLICE_SER",
+   "length": 12,
+   "domain": null
+  },
+  {
+   "name": "EMS",
+   "type": "esriFieldTypeString",
+   "alias": "EMS",
+   "length": 6,
+   "domain": null
+  },
+  {
+   "name": "FIRE_SUPRE",
+   "type": "esriFieldTypeString",
+   "alias": "FIRE_SUPRE",
+   "length": 6,
+   "domain": null
+  },
+  {
+   "name": "HEALTH_INS",
+   "type": "esriFieldTypeString",
+   "alias": "HEALTH_INS",
+   "length": 6,
+   "domain": null
+  },
+  {
+   "name": "FW_ENTIREL",
+   "type": "esriFieldTypeString",
+   "alias": "FW_ENTIREL",
+   "length": 6,
+   "domain": null
+  },
+  {
+   "name": "FW_SALES_B",
+   "type": "esriFieldTypeString",
+   "alias": "FW_SALES_B",
+   "length": 6,
+   "domain": null
+  },
+  {
+   "name": "STREET_LIG",
+   "type": "esriFieldTypeString",
+   "alias": "STREET_LIG",
+   "length": 6,
+   "domain": null
+  },
+  {
+   "name": "BUILDING_C",
+   "type": "esriFieldTypeString",
+   "alias": "BUILDING_C",
+   "length": 6,
+   "domain": null
+  },
+  {
+   "name": "OTHER",
+   "type": "esriFieldTypeString",
+   "alias": "OTHER",
+   "length": 16,
+   "domain": null
+  },
+  {
+   "name": "Ord_Link",
+   "type": "esriFieldTypeString",
+   "alias": "Ord_Link",
+   "length": 50,
+   "domain": null
+  },
+  {
+   "name": "Shape",
+   "type": "esriFieldTypeGeometry",
+   "alias": "Shape",
+   "domain": null
+  },
+  {
+   "name": "Shape.STArea()",
+   "type": "esriFieldTypeDouble",
+   "alias": "Shape.STArea()",
+   "domain": null
+  },
+  {
+   "name": "Shape.STLength()",
+   "type": "esriFieldTypeDouble",
+   "alias": "Shape.STLength()",
+   "domain": null
+  }
+ ],
+ "geometryField": {
+  "name": "Shape",
+  "type": "esriFieldTypeGeometry",
+  "alias": "Shape"
+ },
+ "indexes": [
+  {
+   "name": "S237_idx",
+   "fields": "Shape",
+   "isAscending": true,
+   "isUnique": true,
+   "description": ""
+  }
+ ],
+ "subtypes": [],
+ "relationships": [],
+ "canModifyLayer": true,
+ "canScaleSymbols": false,
+ "hasLabels": false,
+ "capabilities": "Map,Query,Data",
+ "maxRecordCount": 2000,
+ "supportsStatistics": true,
+ "supportsExceedsLimitStatistics": true,
+ "supportsAdvancedQueries": true,
+ "supportedQueryFormats": "JSON, geoJSON, PBF",
+ "isDataVersioned": true,
+ "ownershipBasedAccessControlForFeatures": {"allowOthersToQuery": true},
+ "useStandardizedQueries": true,
+ "supportedSpatialRelationships": [
+  "esriSpatialRelIntersects",
+  "esriSpatialRelContains",
+  "esriSpatialRelCrosses",
+  "esriSpatialRelEnvelopeIntersects",
+  "esriSpatialRelIndexIntersects",
+  "esriSpatialRelOverlaps",
+  "esriSpatialRelTouches",
+  "esriSpatialRelWithin",
+  "esriSpatialRelRelation"
+ ],
+ "advancedQueryCapabilities": {
+  "useStandardizedQueries": true,
+  "supportsStatistics": true,
+  "supportsPercentileStatistics": true,
+  "supportsHavingClause": true,
+  "supportsOrderBy": true,
+  "supportsDistinct": true,
+  "supportsCountDistinct": true,
+  "supportsPagination": true,
+  "supportsLod": false,
+  "supportsQueryWithLodSR": false,
+  "supportsTrueCurve": true,
+  "supportsQueryWithDatumTransformation": true,
+  "supportsReturningQueryExtent": true,
+  "supportsQueryWithDistance": true,
+  "supportsSqlExpression": true,
+  "supportsTimeRelation": true,
+  "supportsSqlFormat": false,
+  "supportsQueryAttachments": true,
+  "supportsQueryAttachmentsWithReturnUrl": true,
+  "supportsQueryAnalytic": true
+ },
+ "supportsDatumTransformation": true,
+ "advancedQueryAnalyticCapabilities": {
+  "supportsLinearRegression": true,
+  "supportsAsync": false,
+  "supportsPercentileAnalytic": true
+ },
+ "dateFieldsTimeReference": null,
+ "preferredTimeReference": null,
+ "datesInUnknownTimezone": false,
+ "hasGeometryProperties": true,
+ "geometryProperties": {
+  "shapeAreaFieldName": "Shape.STArea()",
+  "shapeLengthFieldName": "Shape.STLength()",
+  "units": "esriFeet"
+ },
+ "hasMetadata": true,
+ "isDataArchived": false,
+ "archivingInfo": {
+  "supportsQueryWithHistoricMoment": false,
+  "startArchivingMoment": -1
+ },
+ "supportsCoordinatesQuantization": true,
+ "supportsDynamicLegends": true
+}

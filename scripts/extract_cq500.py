@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.config import CACHE, RAW_ZIPS, RAW, META
+from src.config import CACHE, RAW_ZIPS, RAW_CT, META
 
 # Preferred Keywords for the CQ500 extraction 
 PREFER_KEYWORDS = [
@@ -103,7 +103,7 @@ def is_patient_extracted(patient_id: str) -> bool:
     Returns:
         True if patient is fully extracted, False otherwise
     """
-    out_dir = RAW / patient_id
+    out_dir = RAW_CT / patient_id
     selected_json = out_dir / "selected_series.json"
     ct_selected = out_dir / "CT_SELECTED"
     
@@ -132,7 +132,7 @@ def cleanup_incomplete_patient(patient_id: str) -> None:
     Args:
         patient_id: Patient identifier
     """
-    out_dir = RAW / patient_id
+    out_dir = RAW_CT / patient_id
     if out_dir.exists():
         log(f"  Cleaning up incomplete extraction for {patient_id}")
         shutil.rmtree(out_dir, ignore_errors=True)
@@ -324,7 +324,7 @@ def extract_one_patient(zip_path: Path, tmp_root: Path, progress: ProgressTracke
             return patient_id, "SKIP_ALREADY_EXTRACTED", 0
         
         # Check if incomplete and needs cleanup
-        out_dir = RAW / patient_id
+        out_dir = RAW_CT / patient_id
         if out_dir.exists():
             log(f"  Found incomplete extraction for {patient_id}, will reprocess")
             cleanup_incomplete_patient(patient_id)
@@ -444,7 +444,7 @@ def main(limit=None):
     log(f"CQ500 EXTRACTION STARTED")
     log(f"{'='*70}")
     log(f"Input (zips): {RAW_ZIPS}")
-    log(f"Output (RAW): {RAW}")
+    log(f"Output (RAW_CT): {RAW_CT}")
     log(f"Meta: {META}")
     log(f"Log file: {LOG_FILE}")
     
