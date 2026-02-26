@@ -44,6 +44,7 @@ caches/
 outputs/
 runs/
 checkpoints/
+!ml/brain/mri/checkpoints/
 *.npy
 
 # React UI
