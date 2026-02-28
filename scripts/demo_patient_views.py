@@ -39,7 +39,7 @@ def _save_gray_image(img: np.ndarray, out_path: Path) -> None:
     img = np.clip(img, 0.0, 1.0)
     img_uint8 = (img * 255.0).astype(np.uint8)
 
-    try:
+    try:``
         import cv2  # type: ignore
 
         cv2.imwrite(str(out_path), img_uint8)

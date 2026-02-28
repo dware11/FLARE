@@ -360,6 +360,46 @@ def main(
         cam_when_abnormal=cam_when_abnormal,
     )
 
+def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus"): 
+    """ Runs CT inferenec + GradCAM for one patient. Returns plain dict.""" 
+    from src.config import META, OUTPUTS
+    import mumpy as np, torch 
+    from pathlib import Path 
+
+    if checkpoint_path is None: 
+        checkpoint_path = OUTPUTS / "ct_baseline_best.py" 
+    manifest_path = META / "ct_processed manifest.json"
+
+    entries = _load_manifest(manifest_path) 
+    entry = next(e for e in entries if e.get("patient_id") == patient_id, None) 
+    if entry is None: 
+        return None 
+
+    arr_path = Path(entry["path"]) 
+    if not arr_path.exists(): 
+        return None 
+
+    model = _load_model(checkpoint_path) 
+    device = next(model.parameters()).device 
+
+    arr = np.load(arr_path)["arr"] 
+    x = torch.from_numpy(arr).float().unsqueeze(0).to(device)
+
+    probs = _predict_one(model, x, use_grad=Ture) 
+    pred = int(probs.argmax()) 
+
+    cam = GradCAM(mode, "layer4") #ReseNet18: layer4
+    if overlay is None or not _save_overlay_png(overlay, cam_path): 
+        cam_path = None
+    return {
+        "patient_id": patient_id, 
+        "label": LABELS[pred], 
+        "confidence": float(probs[pred]), 
+        "p_normal": float(probs[0]), 
+        "p_abnormal": float(probs[1]),
+        "cam_path": cam_path
+    }
+
 
 if __name__ == "__main__":
     # CLI flags control demo behavior: single vs batch, checkpoint, CAM options.

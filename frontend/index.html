@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Brain CT Demo</title>
+  <!--
+    FRONTEND NOTE – Styles:
+    This is a minimal standalone page. The main app (ui/) uses MUI + dark theme.
+    If you embed this flow in React, replace these with your theme or wrap the
+    whole block in a class (e.g. .brain-ct-demo) and scope styles under it to
+    avoid conflicts with the rest of the app.
+  -->
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    select, button { padding: 0.5rem 1rem; margin-left: 0.5rem; }
+    #status { margin-top: 1rem; font-weight: 600; }
+    pre { background: #f6f6f6; padding: 1rem; border-radius: 8px; overflow-x: auto; }
+    img { max-width: 100%; border: 1px solid #ccc; border-radius: 8px; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Brain CT Demo</h1>
+
+  <!--
+    BACKEND CONTRACT – Patient list:
+    GET /api/patients returns JSON. This page expects { patients: string[] }.
+    Backend may instead return a raw array [id1, id2, ...]; if so, use: const ids = Array.isArray(data) ? data : (data.patients || []).
+  -->
+  <label>Patient:
+    <select id="patientSelect"></select>
+  </label>
+  <button id="runBtn">Run Analysis</button>
+
+  <div id="status"></div>
+
+  <!--
+    BACKEND CONTRACT – Results:
+    POST /api/predict with body { "patient_id": "<id>" } returns:
+    {
+      "ct": { "label": "normal"|"abnormal", "confidence": number, "p_normal": number, "p_abnormal": number },
+      "fused": { "final_label": "normal"|"tumor", "used_modalities": ["CT"], "final_predictions": number, "contributors": {...}, "weights": {...} }
+    }
+    Use these fields when you replace <pre id="results"> with your own UI (e.g. MUI Typography/Cards).
+  -->
+  <h3>Results</h3>
+  <pre id="results">(none)</pre>
+
+  <!--
+    BACKEND CONTRACT – Grad-CAM image:
+    Heatmap is served by GET /api/cam/<patient_id>.png (same backend, port 5000).
+    Always use this URL for the <img> src (or in React). Do NOT use a filesystem path from the API response.
+    Cache-buster (?t=...) avoids showing an old image when re-running for the same patient.
+  -->
+  <h3>Grad-CAM</h3>
+  <div id="cam"></div>
+
+  <script>
+    // FRONTEND NOTE – API base: change in production or when integrating into React (e.g. use VITE_API_BASE_URL or same-origin /api so the React app talks to the same backend).
+    const API_BASE = "http://localhost:5000";
+
+    /**
+     * Loads patient IDs from backend. Called on page load.
+     * Backend: GET /api/patients → JSON. Expects { patients: string[] } or raw array; adjust parsing if your backend returns a different shape.
+     */
+    async function loadPatients() {
+      const sel = document.getElementById("patientSelect");
+      const status = document.getElementById("status");
+      status.textContent = "Loading patients...";
+      try {
+        const r = await fetch(API_BASE + "/api/patients");
+        const data = await r.json();
+        // Support both { patients: [...] } and raw array from backend
+        const ids = Array.isArray(data) ? data : (data.patients || []);
+        sel.innerHTML = ids.map(id => `<option value="${id}">${id}</option>`).join("");
+        status.textContent = ids.length ? "Patients loaded." : "No patients found (manifest missing?).";
+      } catch (e) {
+        status.textContent = "Failed to load patients: " + e.message;
+      }
+    }
+
+    /**
+     * Run analysis for selected patient. Called when user clicks "Run Analysis".
+     * Backend: POST /api/predict with { "patient_id": "<id>" }.
+     * Response: { ct: {...}, fused: {...} }. Display ct.label, ct.confidence, fused.final_label etc. in your UI.
+     * Grad-CAM: load image from GET /api/cam/<patient_id>.png (URL, not filesystem path).
+     */
+    document.getElementById("runBtn").onclick = async () => {
+      const patientId = document.getElementById("patientSelect").value;
+      const status = document.getElementById("status");
+      const results = document.getElementById("results");
+      const camDiv = document.getElementById("cam");
+
+      status.textContent = "Running inference...";
+      results.textContent = "(running)";
+      camDiv.innerHTML = "";
+
+      try {
+        const r = await fetch(API_BASE + "/api/predict", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ patient_id: patientId })
+        });
+
+        const data = await r.json();
+        if (!r.ok) {
+          status.textContent = "Error: " + (data.error || r.statusText);
+          results.textContent = JSON.stringify(data, null, 2);
+          return;
+        }
+
+        status.textContent = "Done.";
+        // Full JSON shown here; replace with your components showing data.ct and data.fused
+        results.textContent = JSON.stringify(data, null, 2);
+
+        // IMPORTANT: use URL endpoint for heatmap, not a filesystem path. Backend serves PNG at /api/cam/<patient_id>.png
+        const img = document.createElement("img");
+        img.src = API_BASE + "/api/cam/" + patientId + ".png?t=" + Date.now();
+        img.alt = "Grad-CAM overlay";
+        camDiv.appendChild(img);
+
+      } catch (e) {
+        status.textContent = "Request failed: " + e.message;
+        results.textContent = "(request failed)";
+      }
+    };
+
+    loadPatients();
+  </script>
+</body>
+</html>
