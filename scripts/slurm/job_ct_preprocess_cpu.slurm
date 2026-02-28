@@ -7,7 +7,7 @@
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=8
 #SBATCH --partition=cpu 
-#SBATCH --account=bckk 
+#SBATCH --account=bckk-delta-cpu 
 
 set -euo pipefail 
 
