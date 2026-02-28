@@ -17,8 +17,8 @@ export DATA_ROOT=/scratch/bckk/flare
 # 2. Go to repo root 
 cd /scratch/bckk/flare/projects/FLARE
 
-# 3. Activate environment 
-source ~/.bashrc 
+# 3. Load miniforge so conda is available, then activate env
+module load miniforge3-python
 conda activate /scratch/bckk/flare/envs/flare_ct
 
 # 4. Run preprocess (writers CT_MANIFEST + CACHE_CT)

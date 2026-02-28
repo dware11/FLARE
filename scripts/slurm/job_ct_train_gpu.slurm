@@ -14,10 +14,11 @@ set -eo pipefail
 export DATA_ROOT=/scratch/bckk/flare
 cd /scratch/bckk/flare/projects/FLARE
 
-source ~/.bashrc 
+# Load miniforge so conda is available, then activate env
+module load miniforge3-python
 conda activate /scratch/bckk/flare/envs/flare_ct
 
-# If Delta requires a module load, add it here ex.: 
+# If Delta requires a module load for GPU, add it here ex.: 
 # module load cuda 
 
 python ml/brain/ct/train_ct.py --epochs 5 --batch-size 16 --lr 1e-4

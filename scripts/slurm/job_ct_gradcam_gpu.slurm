@@ -14,7 +14,8 @@ set -eo pipefail
 export DATA_ROOT=/scratch/bckk/flare 
 cd /scratch/bckk/flare/projects/FLARE 
 
-source ~/.bashrc
+# Load miniforge so conda is available, then activate env
+module load miniforge3-python
 conda activate /scratch/bckk/flare/envs/flare_ct
 
 python - << 'PY'
