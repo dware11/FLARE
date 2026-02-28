@@ -9,7 +9,7 @@
 #SBATCH --partition=gpu
 #SBATCH --account=bckk-delta-gpu
 
-set -euo pipefail 
+set -eo pipefail 
  
 export DATA_ROOT=/scratch/bckk/flare 
 cd /scratch/bckk/flare/projects/FLARE 

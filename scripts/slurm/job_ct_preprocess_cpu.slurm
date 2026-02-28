@@ -9,7 +9,7 @@
 #SBATCH --partition=cpu 
 #SBATCH --account=bckk-delta-cpu 
 
-set -euo pipefail 
+set -eo pipefail 
 
 # 1. Shared root (NOT ct_brain) 
 export DATA_ROOT=/scratch/bckk/flare
