@@ -4,6 +4,15 @@ import sys
 import time
 from pathlib import Path
 
+# #region agent log — early env/path diagnostics (stderr -> Slurm .err)
+def _stderr(msg: str, data=None):
+    print(f"FLARE_DEBUG: {msg}", file=sys.stderr)
+    if data is not None:
+        print(f"FLARE_DEBUG: {data}", file=sys.stderr)
+import os
+_stderr("DATA_ROOT", os.environ.get("DATA_ROOT"))
+# #endregion
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -11,6 +20,10 @@ from torch.utils.data import DataLoader
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from src.config import OUTPUTS
+from src.config import CT_MANIFEST
+# #region agent log
+_stderr("CONFIG", f"OUTPUTS={OUTPUTS} exists={OUTPUTS.exists()} CT_MANIFEST={CT_MANIFEST} exists={CT_MANIFEST.exists()}")
+# #endregion
 from ml.brain.ct.dataset_ct import CTDataset
 from ml.brain.ct.model_ct import build_ct_model
 
@@ -84,9 +97,15 @@ def main(epochs: int = 10, batch_size: int = 4, lr: float = 1e-4):
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--epochs", type=int, default=10)
-    ap.add_argument("--batch-size", type=int, default=4)
-    ap.add_argument("--lr", type=float, default=1e-4)
-    args = ap.parse_args()
-    main(epochs=args.epochs, batch_size=args.batch_size, lr=args.lr)
+    try:
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--epochs", type=int, default=10)
+        ap.add_argument("--batch-size", type=int, default=4)
+        ap.add_argument("--lr", type=float, default=1e-4)
+        args = ap.parse_args()
+        main(epochs=args.epochs, batch_size=args.batch_size, lr=args.lr)
+    except Exception as e:
+        import traceback
+        print("FLARE_DEBUG: EXCEPTION", str(e), file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        raise
