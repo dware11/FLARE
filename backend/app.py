@@ -20,11 +20,11 @@ from src.config import META
 from ml.brain.ct.infer import run_ct_for_patient, _load_manifest
 from ml.brain.output.outputs import ModalityResult, fuse_results
 
-app = Flas(__name__) 
+app = Flask(__name__) 
 
 # Grad-Cam PNGs will be saved here by run_ct_for_patient() 
 CAM_DIR = ROOT / "backend" / "cam" 
-CAM_DIR.mkdir(parents=True, exist_ok=True) 
+CAM_DIR.mkdir(parents=True, exist_ok=True)
 
 # If frontend is from a different port uncomment this 
 # @app.after_request
@@ -44,7 +44,7 @@ def api_patients():
     manifest_path = META / "ct_processed_manifest.json" 
     try: 
         entries = _load_manifest(manifest_path)
-        patients = [e.get("patient_id") for e in entries if e.get("patient_id)]")]
+        patients = [e.get("patient_id") for e in entries if e.get("patient_id")]
     except Exception: 
         patients = [] 
     return jsonify({"patients": patients}) 
@@ -57,11 +57,11 @@ def api_predict():
     data = request.get_json(silent=True) or {} 
     patient_id = (data.get("patient_id") or "").strip()
     if not patient_id: 
-        return jsonify({"error": "mising patient_id"}), 400
+        return jsonify({"error": "missing patient_id"}), 400
     
-    result = run_ct_for_patient(patient_id)
-    if result is Non: 
-        retunn jsonify({"error": "missing patient_id"}), 400
+    result = run_ct_for_patient(patient_id, cam_dir=CAM_DIR)
+    if result is None:
+        return jsonify({"error": "Patient not found or inference failed"}), 404
 
     # prediction MUST be float probability (p_abnormal), NOT class index 
     ct_result = ModalityResult( 
@@ -85,14 +85,14 @@ def api_predict():
         "fused": fused_payload,
     })
 
-@app.route("/api/cam/<patient_id>.png", methods["GET"])
+@app.route("/api/cam/<patient_id>.png", methods=["GET"])
 def api_cam(patient_id): 
     """\
-    Serves backend/cam_outpus/<patient_id>.png
-    Frontend should use URL: http://localhost:5000/api/cam<id>.png
+    Serves backend/cam/<patient_id>.png
+    Frontend: http://localhost:5000/api/cam/<id>.png
     """
     return send_from_directory(str(CAM_DIR), f"{patient_id}.png") 
 
-if __nam__ == "__main__": 
+if __name__ == "__main__": 
     app.run(host="0.0.0.0", port=5000, debug=True) 
     
