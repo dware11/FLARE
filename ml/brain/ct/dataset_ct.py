@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from src.config import META
 
+DEFAULT_MANIFEST = META / "ct_processed_manifest.json"
+
 DEBUG_LOG = ROOT / "debug_pipeline.log"
 
 def _agent_log(msg, data=None, hyp=""):
@@ -24,17 +26,10 @@ def _agent_log(msg, data=None, hyp=""):
 
 
 def _resolve_manifest(manifest_path: Path | None) -> Path:
-    """Return manifest path if given and exists, else default META/ct_processed_manifest.json, with fallback to manifests/."""
-    if manifest_path and manifest_path.exists():
-        return manifest_path
-    default = META / "ct_processed_manifest.json"
-    if default.exists():
-        return default
-    # Fallback: some setups write manifest under ct_brain/manifests/
-    fallback = META.parent / "manifests" / "ct_processed_manifest.json"
-    if fallback.exists():
-        return fallback
-    return default  # let open() raise FileNotFoundError with the canonical path 
+    # If caller didn't provide a manifest, use the default one written by preprocessing
+    if manifest_path is None:
+        return DEFAULT_MANIFEST
+    return Path(manifest_path)
 
 class CTDataset(Dataset):
     """Dataset over cached CT npz from manifest; yields (C,H,W) tensor and 0/1 label."""
