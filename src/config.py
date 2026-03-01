@@ -13,14 +13,16 @@ from pathlib import Path
 # -----------------------------------------------------------------------------
 # 1) Shared root: env DATA_ROOT if set, else Windows default
 # -----------------------------------------------------------------------------
-DATA_ROOT = Path(os.environ.get("DATA_ROOT", r"D:\FLARE_DATA"))
-
-# -----------------------------------------------------------------------------
-# 2) Modality roots
-# Delta: DATA_ROOT=/scratch/bckk/flare -> CT_ROOT=/scratch/bckk/flare/ct_brain, etc.
-# -----------------------------------------------------------------------------
-CT_ROOT = DATA_ROOT / "ct_brain"
-MRI_ROOT = DATA_ROOT / "mri_brain"
+_data_root = Path(os.environ.get("DATA_ROOT", r"D:\FLARE_DATA"))
+# When DATA_ROOT is set to ct_brain (e.g. /scratch/.../ct_brain), use it as CT_ROOT directly
+if _data_root.name == "ct_brain":
+    DATA_ROOT = _data_root
+    CT_ROOT = DATA_ROOT
+    MRI_ROOT = _data_root.parent / "mri_brain"
+else:
+    DATA_ROOT = _data_root
+    CT_ROOT = DATA_ROOT / "ct_brain"
+    MRI_ROOT = DATA_ROOT / "mri_brain"
 
 # -----------------------------------------------------------------------------
 # 3) CT brain paths (explicit CT_* for future expansion)

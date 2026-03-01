@@ -6,25 +6,21 @@
 #SBATCH --mem=48G
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
-#SBATCH --partition=gpuA100x4
 #SBATCH --account=bckk-delta-gpu
+#SBATCH --partition=gpuA100x4
 
-set -eo pipefail 
+set -eo pipefail
 
-export DATA_ROOT=/scratch/bckk/flare
+export DATA_ROOT=/scratch/bckk/flare/ct_brain
 cd /scratch/bckk/flare/projects/FLARE
-echo "FLARE_DEBUG: DATA_ROOT=$DATA_ROOT" >&2
-echo "FLARE_DEBUG: PWD=$(pwd)" >&2
 
-# Load miniforge (for any system libs); use env's Python directly so we don't rely on conda activate in batch
+# Load miniforge; use env's Python directly so we don't rely on conda activate in batch
 module load miniforge3-python
 ENV_PYTHON=/scratch/bckk/flare/envs/flare_ct/bin/python
 if [[ ! -x "$ENV_PYTHON" ]]; then
-  echo "FLARE_DEBUG: ERROR $ENV_PYTHON not found or not executable" >&2
+  echo "ERROR: $ENV_PYTHON not found or not executable" >&2
   exit 1
 fi
-echo "FLARE_DEBUG: using $ENV_PYTHON" >&2
-$ENV_PYTHON --version >&2
 
 # If Delta requires a module load for GPU, add it here ex.: 
 # module load cuda 
