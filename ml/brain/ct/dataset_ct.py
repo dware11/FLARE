@@ -4,7 +4,7 @@ Demo: Dataset reads cached NPZ only (not DICOM); manifest lists path + label.
 import json
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional, Tuple
 
 import numpy as np
 import torch
@@ -25,7 +25,7 @@ def _agent_log(msg, data=None, hyp=""):
         f.write(json.dumps({"message": msg, "data": data or {}, "hypothesisId": hyp, "location": "dataset_ct", "timestamp": int(time.time() * 1000)}) + "\n")
 
 
-def _resolve_manifest(manifest_path: Path | None) -> Path:
+def _resolve_manifest(manifest_path: Optional[Path]) -> Path:
     # If caller didn't provide a manifest, use the default one written by preprocessing
     if manifest_path is None:
         return DEFAULT_MANIFEST
@@ -35,8 +35,8 @@ class CTDataset(Dataset):
     """Dataset over cached CT npz from manifest; yields (C,H,W) tensor and 0/1 label."""
     def __init__(
         self, 
-        manifest_path: Path | None = None, 
-        split: Literal["train", "val", "test"] | None = None, 
+        manifest_path: Optional[Path] = None,
+        split: Optional[Literal["train", "val", "test"]] = None,
         train_frac: float = 0.7, 
         val_frac: float = 0.15, 
         seed: int = 42, 
@@ -72,7 +72,7 @@ class CTDataset(Dataset):
         """Return number of entries in this split."""
         return len(self.entries) 
     
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         # Demo: load cached NPZ "arr" (3,256,256); no DICOM access.
         e = self.entries[idx]
         # #region agent log

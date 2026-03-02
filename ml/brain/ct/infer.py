@@ -147,9 +147,9 @@ def _predict_one(
 
 def _run_single_inference(
     checkpoint: Path,
-    patient_id: str | None = None,
-    npz_path: Path | None = None,
-    cam_dir: Path | None = None,
+    patient_id: Optional[str] = None,
+    npz_path: Optional[Path] = None,
+    cam_dir: Optional[Path] = None,
 ) -> None:
     model = _load_model(checkpoint) 
     device = next(model.parameters()).device
@@ -210,14 +210,14 @@ def _run_single_inference(
         print(f" {lab}: {probs[i]:.4f}")
 
 def _run_batch_inference(
-    checkpoint: Path, 
-    manifest_path: Path, 
-    split: str = "val", 
-    limit: int | None = None, 
-    random_n: int | None = None, 
-    out_csv: Path | None = None, 
-    cam_dir: Path | None = None, 
-    cam_limit: int | None = None, 
+    checkpoint: Path,
+    manifest_path: Path,
+    split: str = "val",
+    limit: Optional[int] = None,
+    random_n: Optional[int] = None,
+    out_csv: Optional[Path] = None,
+    cam_dir: Optional[Path] = None,
+    cam_limit: Optional[int] = None,
     cam_when_abnormal: bool = False,
 ) -> list: 
     if not manifest_path.exists(): 
@@ -360,44 +360,54 @@ def main(
         cam_when_abnormal=cam_when_abnormal,
     )
 
-def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus"): 
-    """ Runs CT inferenec + GradCAM for one patient. Returns plain dict.""" 
+def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus"):
+    """Runs CT inference + GradCAM for one patient. Returns plain dict."""
+    import numpy as np
+    import torch
+    from pathlib import Path
     from src.config import META, OUTPUTS
-    import mumpy as np, torch 
-    from pathlib import Path 
 
-    if checkpoint_path is None: 
-        checkpoint_path = OUTPUTS / "ct_baseline_best.py" 
-    manifest_path = META / "ct_processed manifest.json"
+    if checkpoint is None:
+        checkpoint = OUTPUTS / "ct_baseline_best.pt"
+    manifest_path = META / "ct_processed_manifest.json"
 
-    entries = _load_manifest(manifest_path) 
-    entry = next(e for e in entries if e.get("patient_id") == patient_id, None) 
-    if entry is None: 
-        return None 
+    entries = _load_manifest(manifest_path)
+    entry = next((e for e in entries if e.get("patient_id") == patient_id), None)
+    if entry is None:
+        return None
 
-    arr_path = Path(entry["path"]) 
-    if not arr_path.exists(): 
-        return None 
+    arr_path = Path(entry["path"])
+    if not arr_path.exists():
+        return None
 
-    model = _load_model(checkpoint_path) 
-    device = next(model.parameters()).device 
+    model = _load_model(checkpoint)
+    device = next(model.parameters()).device
 
-    arr = np.load(arr_path)["arr"] 
+    arr = np.load(arr_path)["arr"]
     x = torch.from_numpy(arr).float().unsqueeze(0).to(device)
 
-    probs = _predict_one(model, x, use_grad=Ture) 
-    pred = int(probs.argmax()) 
+    use_grad = cam_dir is not None
+    probs = _predict_one(model, x, use_grad=use_grad)
+    pred = int(np.argmax(probs))
 
-    cam = GradCAM(mode, "layer4") #ReseNet18: layer4
-    if overlay is None or not _save_overlay_png(overlay, cam_path): 
-        cam_path = None
+    cam_path = None
+    if use_grad and cam_dir:
+        gradcam = GradCAM(model, "layer4")
+        _, overlay = gradcam(x, target_class=pred, input_for_overlay=x)
+        if overlay is not None:
+            cam_dir_p = Path(cam_dir)
+            cam_dir_p.mkdir(parents=True, exist_ok=True)
+            cam_path_obj = cam_dir_p / f"{patient_id}.png"
+            if _save_overlay_png(overlay, cam_path_obj):
+                cam_path = str(cam_path_obj)
+
     return {
-        "patient_id": patient_id, 
-        "label": LABELS[pred], 
-        "confidence": float(probs[pred]), 
-        "p_normal": float(probs[0]), 
+        "patient_id": patient_id,
+        "label": LABELS[pred],
+        "confidence": float(probs[pred]),
+        "p_normal": float(probs[0]),
         "p_abnormal": float(probs[1]),
-        "cam_path": cam_path
+        "cam_path": cam_path,
     }
 
 
