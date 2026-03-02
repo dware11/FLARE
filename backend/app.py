@@ -15,24 +15,33 @@ ROOT = Path(__file__).resolve().parents[1] # FLARE/
 sys.path.insert(0, str(ROOT))
 
 from flask import Flask, request, jsonify, send_from_directory 
+from flask_cors import CORS
 
 from src.config import META 
 from ml.brain.ct.infer import run_ct_for_patient, _load_manifest
 from ml.brain.output.outputs import ModalityResult, fuse_results
 
 app = Flask(__name__) 
-
+CORS(app, resources={r"/api/*": {"origins": "*"}})
+ 
 # Grad-Cam PNGs will be saved here by run_ct_for_patient() 
 CAM_DIR = ROOT / "backend" / "cam" 
 CAM_DIR.mkdir(parents=True, exist_ok=True)
-
+ 
 # If frontend is from a different port uncomment this 
-# @app.after_request
-# def add_cors(r): 
-#     r.headers["Access-Control-Allow-Origin"] = "*"
-#     r.headers["Access-Control-Allow-Headers"] = "Content-Type" 
-#     r.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-#     return r 
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        # Flask will build an empty response automatically
+        return "", 204
+
+
+@app.after_request
+def add_cors(r): 
+    r.headers["Access-Control-Allow-Origin"] = "*"
+    r.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization" 
+    r.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return r 
 
 @app.route("/api/patients", methods=["GET"]) 
 def api_patients(): 
