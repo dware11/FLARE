@@ -17,10 +17,6 @@ sys.path.insert(0, str(ROOT))
 from flask import Flask, request, jsonify, send_from_directory 
 from flask_cors import CORS
 
-from src.config import META 
-from ml.brain.ct.infer import run_ct_for_patient, _load_manifest
-from ml.brain.output.outputs import ModalityResult, fuse_results
-
 app = Flask(__name__) 
 CORS(app, resources={r"/api/*": {"origins": "*"}})
  
@@ -31,51 +27,45 @@ CAM_DIR.mkdir(parents=True, exist_ok=True)
 @app.route("/api/patients", methods=["GET"]) 
 def api_patients(): 
     """
-    Returns: { "patients": ["CQ600-CT-0", ...]}
-    Reads META/ct_processed_manifest.json via _load_manifest() 
+    Hard-coded patient IDs for demo.
     """
-
-    manifest_path = META / "ct_processed_manifest.json" 
-    try: 
-        entries = _load_manifest(manifest_path)
-        patients = [e.get("patient_id") for e in entries if e.get("patient_id")]
-    except Exception: 
-        patients = [] 
+    patients = [
+        "CQ500-CT-0",
+        "CQ500-CT-1",
+        "CQ500-CT-2",
+        "Demo-Patient-A",
+        "Demo-Patient-B",
+    ]
     return jsonify({"patients": patients}) 
 
 @app.route("/api/predict", methods=["POST"]) 
 def api_predict(): 
     """
-
+    Mock prediction endpoint for demo.
     """
     data = request.get_json(silent=True) or {} 
-    patient_id = (data.get("patient_id") or "").strip()
-    if not patient_id: 
-        return jsonify({"error": "missing patient_id"}), 400
-    
-    result = run_ct_for_patient(patient_id, cam_dir=CAM_DIR)
-    if result is None:
-        return jsonify({"error": "Patient not found or inference failed"}), 404
+    patient_id = (data.get("patient_id") or "").strip() or "UNKNOWN"
 
-    # prediction MUST be float probability (p_abnormal), NOT class index 
-    ct_result = ModalityResult( 
-        modality="CT", 
-        prediction=result["p_abnormal"], 
-        label=result["label"], 
-        model_version="ct_v1", 
-        explainablity_path=result.get("cam_path"),
-    )
+    p_abnormal = 0.82
+    label = "abnormal"
 
-    # MRI intentionally None for demo; fusion is designed to accept mri=None safely 
-    fuse_out = fuse_results(ct=ct_result, mri=None, w_ct=1.0, w_mri=0.0) 
+    ct_result = {
+        "p_abnormal": p_abnormal,
+        "label": label,
+        "model_version": "ct_mock_v1",
+        "cam_path": None,
+    }
 
-    fused_payload = dict(fuse_out) 
-    fused_payload["fused_score"] = round(ct_result.prediction, 4) 
-    fused_payload["flagged_for_review"] = False 
-    
+    fused_payload = {
+        "modality": "CT",
+        "fused_score": round(p_abnormal, 4),
+        "flagged_for_review": p_abnormal > 0.8,
+        "details": {"note": "Mock fused result for demo only"},
+    }
+
     return jsonify({
         "patient_id": patient_id, 
-        "ct": result, 
+        "ct": ct_result, 
         "fused": fused_payload,
     })
 
