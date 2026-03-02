@@ -1,6 +1,8 @@
 const CT_API_BASE =
   import.meta.env.VITE_CT_API_BASE ?? 'http://localhost:5000';
 
+console.log('CT API BASE:', CT_API_BASE);
+
 export interface CtPatientsResponse {
   patients: string[];
 }
