@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --account=bckk-delta-gpu
-#SBATCH --partition=gpuA100x4
+#SBATCH -p gpuA40x4-interactive
 
 set -eo pipefail
 
