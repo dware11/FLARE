@@ -27,21 +27,6 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 # Grad-Cam PNGs will be saved here by run_ct_for_patient() 
 CAM_DIR = ROOT / "backend" / "cam" 
 CAM_DIR.mkdir(parents=True, exist_ok=True)
- 
-# If frontend is from a different port uncomment this 
-@app.before_request
-def handle_preflight():
-    if request.method == "OPTIONS":
-        # Flask will build an empty response automatically
-        return "", 204
-
-
-@app.after_request
-def add_cors(r): 
-    r.headers["Access-Control-Allow-Origin"] = "*"
-    r.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization" 
-    r.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    return r 
 
 @app.route("/api/patients", methods=["GET"]) 
 def api_patients(): 
