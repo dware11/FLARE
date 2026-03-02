@@ -112,7 +112,12 @@ def main(limit: Optional[int] = None, labels_path: Optional[Path] = None, delimi
     labels = load_labels_from_reads(labels_path, delimiter=delimiter) if labels_path and labels_path.exists() else {}
 
     all_dirs = (p for p in RAW_CT.iterdir() if p.is_dir())
-    patient_dirs = sorted(p for p in all_dirs if p.name.startswith("CQ500-CT-"))
+    # Support both original naming (CQ500-CT-*) and your current folders (CQ500CT*)
+    patient_dirs = sorted(
+        p
+        for p in all_dirs
+        if p.name.startswith("CQ500-CT-") or p.name.startswith("CQ500CT")
+    )
     # #region agent log
     _alog("preprocess_start", {"raw_ct": str(RAW_CT), "raw_ct_exists": RAW_CT.exists(), "patient_dirs_count": len(patient_dirs), "labels_count": len(labels)}, "H1")
     # #endregion
