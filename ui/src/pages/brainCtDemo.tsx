@@ -105,7 +105,12 @@ export default function BrainCtDemo() {
       {error && (
         <Alert
           severity="error"
-          sx={{ mb: 3, backgroundColor: 'rgba(255,255,255,0.05)', color: '#fff' }}
+          sx={{
+            mb: 3,
+            backgroundColor: 'rgba(255,0,0,0.08)',
+            border: '1px solid rgba(255,92,92,0.6)',
+            color: '#fff',
+          }}
         >
           {error}
         </Alert>
@@ -201,7 +206,7 @@ export default function BrainCtDemo() {
                 m: 0,
                 fontFamily: 'monospace',
                 fontSize: '0.8rem',
-                backgroundColor: 'rgba(0,0,0,0.45)',
+                backgroundColor: 'rgba(0,0,0,0.7)',
                 borderRadius: 2,
                 p: 2,
                 maxHeight: 340,
