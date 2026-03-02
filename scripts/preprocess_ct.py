@@ -19,6 +19,7 @@ except ImportError:
     def _dbg_log(_msg: str, data=None, location: str = "") -> None:
         pass
 from ml.brain.ct.ct_transforms import dicom_to_hu, hu_to_multiwindow
+from scripts.extract_cq500 import choose_best_series
 
 
 def _dbg(payload: dict) -> None:
@@ -35,6 +36,81 @@ except ImportError:
     pydicom = None 
 
 DICOM_EXTS = (".dcm", ".dicom")
+
+
+def _has_top_level_dicoms(ct_selected: Path) -> bool:
+    """Return True if CT_SELECTED has any .dcm/.dicom files directly inside it."""
+    return any(
+        f.is_file() and f.suffix.lower() in DICOM_EXTS
+        for f in ct_selected.iterdir()
+    )
+
+
+def _iter_nested_dicoms(ct_selected: Path):
+    """Yield nested DICOM files anywhere under CT_SELECTED (excluding top-level)."""
+    for f in ct_selected.rglob("*"):
+        if f.is_file() and f.suffix.lower() in DICOM_EXTS and f.parent != ct_selected:
+            yield f
+
+
+def _choose_best_series_in_ct_selected(ct_selected: Path) -> Optional[Path]:
+    """
+    Use existing choose_best_series() to pick ONE series folder under CT_SELECTED.
+    Returns the selected series folder or None.
+    """
+    series_folders = sorted({f.parent for f in _iter_nested_dicoms(ct_selected)})
+    if not series_folders:
+        return None
+
+    best = choose_best_series(series_folders)
+    if best is None:
+        return None
+
+    best_folder, _count, _tier = best
+    return best_folder
+
+
+def link_best_series_into_ct_selected(ct_selected: Path) -> int:
+    """
+    Idempotent prep step:
+    - If CT_SELECTED already has top-level DICOMs, do nothing.
+    - If it has no top-level DICOMs but has nested DICOMs, choose the best series
+      and create/overwrite symlinks for its .dcm files at CT_SELECTED/<basename>.
+    Returns number of links created.
+    """
+    if not ct_selected.is_dir():
+        return 0
+
+    # Already has top-level DICOMs → nothing to do.
+    if _has_top_level_dicoms(ct_selected):
+        return 0
+
+    # No nested DICOMs at all → nothing we can link.
+    if not any(_iter_nested_dicoms(ct_selected)):
+        return 0
+
+    series_dir = _choose_best_series_in_ct_selected(ct_selected)
+    if series_dir is None or not series_dir.is_dir():
+        return 0
+
+    count = 0
+    for dcm in series_dir.iterdir():
+        if not dcm.is_file() or dcm.suffix.lower() not in DICOM_EXTS:
+            continue
+
+        target = ct_selected / dcm.name
+
+        # ln -sf semantics: remove existing file/symlink and recreate.
+        try:
+            if target.exists() or target.is_symlink():
+                target.unlink()
+        except FileNotFoundError:
+            pass
+
+        target.symlink_to(dcm.resolve())
+        count += 1
+
+    return count
 
 def get_middle_dicom_path(ct_dir: Path) -> Path:
     """Return path to the middle slice DICOM in ct_dir by instance number."""
@@ -89,7 +165,12 @@ def load_labels_from_reads(read_csv_path: Path, delimiter: str = ",") -> dict[st
     return out 
 
 
-def main(limit: Optional[int] = None, labels_path: Optional[Path] = None, delimiter: Optional[str] = None):
+def main(
+    limit: Optional[int] = None,
+    labels_path: Optional[Path] = None,
+    delimiter: Optional[str] = None,
+    link_selected_series: bool = False,
+):
     """Run CT preprocessing: middle slice -> multi-window -> cache/middle.npz and write manifest."""
     # #region agent log
     import time
@@ -143,6 +224,8 @@ def main(limit: Optional[int] = None, labels_path: Optional[Path] = None, delimi
         if not ct_dir.is_dir():
             skipped_no_ct += 1
             continue
+        if link_selected_series:
+            link_best_series_into_ct_selected(ct_dir)
         try:
             dicom_path = get_middle_dicom_path(ct_dir)            # Path Debugging 
             print("Reading DICOM:", dicom_path) 
@@ -200,11 +283,21 @@ if __name__ == "__main__":
                     help="Process only N patients (e.g. -n 10 or --limit 10)")
     ap.add_argument("--labels", type=Path, default=None, help="reads.csv or reads.tsv (name, R1:ICH, ...)")
     ap.add_argument("--tsv", action="store_true", help="Labels file is TSV (tab-separated)") 
+    ap.add_argument(
+        "--link-selected-series",
+        action="store_true",
+        help="Symlink best CT series DICOMs into CT_SELECTED/ before preprocessing",
+    )
     args = ap.parse_args()
     
     labels_path = args.labels or META / "reads.csv" 
     if not labels_path.exists() and (ROOT / "src" / "reads.csv").exists(): 
         labels_path = ROOT / "src" / "reads.csv" 
     delimiter = "\t" if args.tsv else "," 
-    main(limit=args.limit, labels_path=labels_path, delimiter=delimiter) 
+    main(
+        limit=args.limit,
+        labels_path=labels_path,
+        delimiter=delimiter,
+        link_selected_series=args.link_selected_series,
+    ) 
     
