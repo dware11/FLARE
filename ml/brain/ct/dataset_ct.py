@@ -74,6 +74,36 @@ class CTDataset(Dataset):
         # #region agent log
         _agent_log("dataset_init", {"manifest_path": str(manifest_path), "manifest_exists": manifest_path.exists(), "entries_total": len(entries), "valid_labeled": len(valid), "split": split or "all", "self_entries": len(self.entries)}, "H4")
         # #endregion 
+        # #region agent log
+        try:
+            import json as _json  # local import to avoid polluting module namespace
+            from time import time as _time
+            from pathlib import Path as _Path
+
+            with open("debug-a04713.log", "a", encoding="utf-8") as _f:
+                _f.write(
+                    _json.dumps(
+                        {
+                            "sessionId": "a04713",
+                            "runId": "pre-fix",
+                            "hypothesisId": "H1",
+                            "location": "dataset_ct.py:CTDataset.__init__",
+                            "message": "CTDataset init split sizes",
+                            "data": {
+                                "manifest_path": str(manifest_path),
+                                "manifest_exists": _Path(manifest_path).exists(),
+                                "entries_total": len(entries),
+                                "split": split or "all",
+                                "self_entries": len(self.entries),
+                            },
+                            "timestamp": int(_time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+        # #endregion
 
     def __len__(self) -> int:
         """Return number of entries in this split."""
