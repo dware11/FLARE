@@ -2,7 +2,7 @@
 #SBATCH --job-name=ct_gradcam
 #SBATCH --output=logs/gradcam_%j.out
 #SBATCH --error=logs/gradcam_%j.err
-#SBATCH --time=02:00:00
+#SBATCH --time=01:00:00
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
