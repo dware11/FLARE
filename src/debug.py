@@ -1,11 +1,12 @@
 import json
 import os
 from pathlib import Path
+from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 LOG_PATH = ROOT / ".cursor" / "debug.log"
 
-_enabled: bool | None = None
+_enabled: Optional[bool] = None
 
 
 def enable(value: bool = True) -> None:
@@ -21,7 +22,7 @@ def is_enabled() -> bool:
     return _enabled
 
 
-def dbg(message: str, data: dict | None = None, location: str = "") -> None:
+def dbg(message: str, data: Optional[dict] = None, location: str = "") -> None:
     if not is_enabled():
         return
     try:

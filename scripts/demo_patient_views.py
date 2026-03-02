@@ -11,7 +11,7 @@ Intended for live demos to walk through the full workflow.
 import argparse
 import sys
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -39,7 +39,7 @@ def _save_gray_image(img: np.ndarray, out_path: Path) -> None:
     img = np.clip(img, 0.0, 1.0)
     img_uint8 = (img * 255.0).astype(np.uint8)
 
-    try:``
+    try:
         import cv2  # type: ignore
 
         cv2.imwrite(str(out_path), img_uint8)
@@ -154,7 +154,7 @@ def run_gradcam_and_scores(
     npz_path: Path,
     patient_id: str,
     out_dir: Path,
-) -> Tuple[Path | None, int, float, np.ndarray]:
+) -> Tuple[Optional[Path], int, float, np.ndarray]:
     """
     Run model inference with gradients enabled on the cached slice, compute
     Grad-CAM on layer4, and save the overlay PNG. Returns (cam_path, pred, conf, probs).
@@ -172,7 +172,7 @@ def run_gradcam_and_scores(
     gradcam = GradCAM(model, "layer4")
     _, overlay = gradcam(x, target_class=pred, input_for_overlay=x)
 
-    cam_path: Path | None = None
+    cam_path: Optional[Path] = None
     if overlay is not None:
         cam_path = out_dir / f"{patient_id}_gradcam_overlay.png"
         _save_rgb_image(overlay, cam_path)
@@ -185,7 +185,7 @@ def run_gradcam_and_scores(
     return cam_path, pred, conf, probs
 
 
-def main(patient_id: str, checkpoint: Path | None = None, out_dir: Path | None = None) -> None:
+def main(patient_id: str, checkpoint: Optional[Path] = None, out_dir: Optional[Path] = None) -> None:
     checkpoint = checkpoint or (OUTPUTS / "ct_baseline_best.pt")
     out_dir = out_dir or (OUTPUTS / "demo" / patient_id)
     _ensure_dir(out_dir)

@@ -46,8 +46,15 @@ class CTDataset(Dataset):
         _agent_log("dataset_init_start", {"manifest_path": str(manifest_path), "manifest_exists": manifest_path.exists()}, "H4")
         # #endregion
         with open(manifest_path, encoding="utf-8") as f:
-            entries = json.load(f) 
+            entries = json.load(f)
         valid = [e for e in entries if e.get("label", -1) in (0, 1)]
+        if not valid:
+            valid = entries
+
+        # Skip entries whose NPZ path does not exist (e.g. manifest from another machine).
+        valid = [e for e in valid if Path(e.get("path", "")).exists()]
+        if not valid:
+            valid = [e for e in entries if Path(e.get("path", "")).exists()]
         if not valid:
             valid = entries
 

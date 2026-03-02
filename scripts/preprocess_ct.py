@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 
@@ -88,7 +89,7 @@ def load_labels_from_reads(read_csv_path: Path, delimiter: str = ",") -> dict[st
     return out 
 
 
-def main(limit: int | None = None, labels_path: Path | None = None, delimiter: str | None = None):
+def main(limit: Optional[int] = None, labels_path: Optional[Path] = None, delimiter: Optional[str] = None):
     """Run CT preprocessing: middle slice -> multi-window -> cache/middle.npz and write manifest."""
     # #region agent log
     import time
