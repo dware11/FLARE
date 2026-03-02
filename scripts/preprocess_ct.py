@@ -219,6 +219,9 @@ def main(
     manifest = []
     skipped_no_ct = 0
     skipped_error = 0
+    META.mkdir(parents=True, exist_ok=True)
+    out_manifest = META / "ct_processed_manifest.json"
+
     for i, pdir in enumerate(to_process):
         ct_dir = pdir / "CT_SELECTED"
         if not ct_dir.is_dir():
@@ -249,6 +252,11 @@ def main(
                 "label": label,
             })
             print(f"  [{i+1}/{n_total}] {pdir.name} -> {out_path.name}")
+
+            # Periodically persist manifest so we don't lose progress on interrupts.
+            if (i + 1) % 10 == 0:
+                with open(out_manifest, "w", encoding="utf-8") as f:
+                    json.dump(manifest, f, indent=2)
         except Exception as e:
             skipped_error += 1
             # #region agent log
@@ -267,8 +275,6 @@ def main(
     _alog("preprocess_done", {"manifest_count": len(manifest), "manifest_path": str(META / "ct_processed_manifest.json")}, "H4")
     # #endregion
     # Design: manifest is contract between preprocess and inference (path, label).
-    META.mkdir(parents=True, exist_ok=True)
-    out_manifest = META / "ct_processed_manifest.json"
     with open(out_manifest, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
     _dbg({"hypothesisId": "H4", "message": "manifest_final", "data": {"manifest_count": len(manifest), "patient_ids": [m["patient_id"] for m in manifest]}})
