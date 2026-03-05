@@ -42,7 +42,6 @@ def main(epochs: int = 10, batch_size: int = 4, lr: float = 1e-4) -> None:
         mode="min",
         factor=0.5,
         patience=2,
-        verbose=True,
     )
 
     best_val_loss = float("inf")
