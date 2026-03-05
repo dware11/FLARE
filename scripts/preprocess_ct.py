@@ -216,21 +216,36 @@ def main(
     else:
         print("  Labels: none (all manifest labels will be -1).")
 
-    manifest = []
-    skipped_no_ct = 0
-    skipped_error = 0
-    META.mkdir(parents=True, exist_ok=True)
-    out_manifest = META / "ct_processed_manifest.json"
+    META.mkdir(parents=True, exist_ok=True) 
+    out_manifest = META / "ct_processed_manifest.json" 
+
+    if out_manifest.exists(): 
+        with open(out_manifest, "r", encoding="utf-8") as f: 
+            manifest = json.load(f)
+        print(f" Loaded existing manifest with {len(manifest)} entries.") 
+    else: 
+        manifest = []
+
+    processed_ids = {m["patient_id"] for m in manifest} 
+
+    skipped_no_ct = 0 
+    skipped_error = 0 
 
     for i, pdir in enumerate(to_process):
-        ct_dir = pdir / "CT_SELECTED"
-        if not ct_dir.is_dir():
-            skipped_no_ct += 1
+        patient_id = pdir.name.strip() 
+        
+        if patient_id in processed_ids: 
+            print(f" [{i+1}/{n_total}] SKIP {patient_id}: already in manifest")
             continue
-        if link_selected_series:
+        ct_dir = pdir / "CT_SELECTED"
+        if not ct_dir.is_dir(): 
+            skipped_no_ct += 1 
+            continue 
+        if link_selected_series: 
             link_best_series_into_ct_selected(ct_dir)
-        try:
-            dicom_path = get_middle_dicom_path(ct_dir)            # Path Debugging 
+        
+        try:     
+            dicom_path = get_middle_dicom_path(ct_dir)      # Path Debugging 
             print("Reading DICOM:", dicom_path) 
             print("Exists:", dicom_path.exists())
             print("Absolute:", dicom_path.resolve())
@@ -244,7 +259,6 @@ def main(
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / "middle.npz"
             np.savez_compressed(out_path, arr=arr)
-            patient_id = pdir.name.strip()
             label = labels.get(patient_id, -1)
             manifest.append({
                 "patient_id": pdir.name,
