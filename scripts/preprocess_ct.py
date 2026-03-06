@@ -196,8 +196,9 @@ def main(
     labels_path: Optional[Path] = None,
     delimiter: Optional[str] = None,
     link_selected_series: bool = False,
-    k_slices: int = 5, 
+    k_slices: int = 5,
     slice_strategy: str = "center_k",
+    force: bool = False,
 ):
     """Run CT preprocessing: middle slice -> multi-window -> cache/middle.npz and write manifest."""
     # #region agent log
@@ -247,24 +248,32 @@ def main(
     META.mkdir(parents=True, exist_ok=True) 
     out_manifest = META / "ct_processed_manifest.json" 
 
-    if out_manifest.exists(): 
-        with open(out_manifest, "r", encoding="utf-8") as f: 
+    if out_manifest.exists():
+        with open(out_manifest, "r", encoding="utf-8") as f:
             manifest = json.load(f)
-        print(f" Loaded existing manifest with {len(manifest)} entries.") 
-    else: 
+        print(f"  Loaded existing manifest with {len(manifest)} entries.")
+    else:
         manifest = []
 
-    processed_ids = {m["patient_id"] for m in manifest} 
+    # Dict for lookup and in-place updates when reprocessing
+    manifest_by_id = {m["patient_id"]: m for m in manifest}
 
-    skipped_no_ct = 0 
-    skipped_error = 0 
+    skipped_no_ct = 0
+    skipped_error = 0
+    expected_filename = f"slices_k{k_slices}.npz"
 
     for i, pdir in enumerate(to_process):
-        patient_id = pdir.name.strip() 
-        
-        if patient_id in processed_ids: 
-            print(f" [{i+1}/{n_total}] SKIP {patient_id}: already in manifest")
-            continue
+        patient_id = pdir.name.strip()
+
+        # Skip vs reprocess: --force always reprocess; else skip only if existing cache matches k_slices
+        if not force and patient_id in manifest_by_id:
+            existing_entry = manifest_by_id[patient_id]
+            old_path = Path(existing_entry.get("path", ""))
+            if old_path.name == expected_filename and old_path.exists():
+                print(f"  [{i+1}/{n_total}] SKIP {patient_id}: already has {expected_filename}")
+                continue
+            # Else: wrong file (e.g. middle.npz) or missing -> reprocess below
+
         ct_dir = pdir / "CT_SELECTED"
         if not ct_dir.is_dir(): 
             skipped_no_ct += 1 
@@ -294,14 +303,22 @@ def main(
             out_dir = CACHE_CT / pdir.name 
             out_dir.mkdir(parents=True, exist_ok=True) 
             out_path = out_dir / f"slices_k{k_slices}.npz"
-            np.savez_compressed(out_path, arr=stacked, slice_indices=indices) 
+            np.savez_compressed(out_path, arr=stacked, slice_indices=indices)
             label = labels.get(patient_id, -1)
-            manifest.append({
-                "patient_id": pdir.name,
-                "path": str(out_path),
-                "label": label,
-            })
-            print(f"  [{i+1}/{n_total}] {pdir.name} -> {out_path.name}")
+
+            if patient_id in manifest_by_id:
+                # Reprocess: update existing manifest entry in-place
+                existing_entry = manifest_by_id[patient_id]
+                existing_entry["path"] = str(out_path)
+                existing_entry["label"] = label
+                print(f"  [{i+1}/{n_total}] REPROCESS {patient_id}: upgrading cache to {expected_filename}")
+            else:
+                manifest.append({
+                    "patient_id": pdir.name,
+                    "path": str(out_path),
+                    "label": label,
+                })
+                print(f"  [{i+1}/{n_total}] {pdir.name} -> {out_path.name}")
 
             # Periodically persist manifest so we don't lose progress on interrupts.
             if (i + 1) % 10 == 0:
@@ -346,18 +363,20 @@ if __name__ == "__main__":
         action="store_true",
         help="Symlink best CT series DICOMs into CT_SELECTED/ before preprocessing",
     )
+    ap.add_argument("--force", action="store_true", help="Reprocess even if patient is already in manifest")
     args = ap.parse_args()
-    
-    labels_path = args.labels or META / "reads.csv" 
-    if not labels_path.exists() and (ROOT / "src" / "reads.csv").exists(): 
-        labels_path = ROOT / "src" / "reads.csv" 
-    delimiter = "\t" if args.tsv else "," 
+
+    labels_path = args.labels or META / "reads.csv"
+    if not labels_path.exists() and (ROOT / "src" / "reads.csv").exists():
+        labels_path = ROOT / "src" / "reads.csv"
+    delimiter = "\t" if args.tsv else ","
     main(
         limit=args.limit,
         labels_path=labels_path,
         delimiter=delimiter,
         link_selected_series=args.link_selected_series,
-        k_slices=args.k_slices, 
+        k_slices=args.k_slices,
         slice_strategy=args.slice_strategy,
+        force=args.force,
     ) 
     
