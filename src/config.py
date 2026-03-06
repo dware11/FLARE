@@ -4,16 +4,18 @@ Data paths for FLARE: shared DATA_ROOT works on both Windows and Delta.
 Canonical roots:
   Windows (default):  DATA_ROOT = D:\\FLARE_DATA
                       -> CT: D:\\FLARE_DATA\\ct_brain,  MRI: D:\\FLARE_DATA\\mri_brain
-  Delta (set in Slurm/shell):  export DATA_ROOT=/scratch/bckk/flare
+  Delta/Linux (default when not Windows):  DATA_ROOT = /scratch/bckk/flare
                       -> CT: /scratch/bckk/flare/ct_brain,  MRI: /scratch/bckk/flare/mri_brain
+  Override: set env DATA_ROOT to any path on either platform.
 """
 import os
 from pathlib import Path
 
 # -----------------------------------------------------------------------------
-# 1) Shared root: env DATA_ROOT if set, else Windows default
+# 1) Shared root: env DATA_ROOT if set; else Windows path on Windows, Delta path on Linux
 # -----------------------------------------------------------------------------
-_data_root = Path(os.environ.get("DATA_ROOT", r"D:\FLARE_DATA"))
+_default_root = r"D:\FLARE_DATA" if os.name == "nt" else "/scratch/bckk/flare"
+_data_root = Path(os.environ.get("DATA_ROOT", _default_root))
 # When DATA_ROOT is set to ct_brain (e.g. /scratch/.../ct_brain), use it as CT_ROOT directly
 if _data_root.name == "ct_brain":
     DATA_ROOT = _data_root
