@@ -47,14 +47,8 @@ class CTDataset(Dataset):
         # #endregion
         with open(manifest_path, encoding="utf-8") as f:
             entries = json.load(f)
-        valid = [e for e in entries if e.get("label", -1) in (0, 1)]
-        if not valid:
-            valid = entries
-
-        # Skip entries whose NPZ path does not exist (e.g. manifest from another machine).
-        valid = [e for e in valid if Path(e.get("path", "")).exists()]
-        if not valid:
-            valid = [e for e in entries if Path(e.get("path", "")).exists()]
+        # Use all entries with existing NPZ path (label can be 0, 1, or -1; loss uses ignore_index=-1).
+        valid = [e for e in entries if Path(e.get("path", "")).exists()]
         if not valid:
             valid = entries
 
