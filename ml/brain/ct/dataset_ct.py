@@ -71,6 +71,7 @@ class CTDataset(Dataset):
         else:
             self.entries = valid
         self.manifest_path = manifest_path
+        self.split = split or "all" 
         # #region agent log
         _agent_log("dataset_init", {"manifest_path": str(manifest_path), "manifest_exists": manifest_path.exists(), "entries_total": len(entries), "valid_labeled": len(valid), "split": split or "all", "self_entries": len(self.entries)}, "H4")
         # #endregion 
@@ -109,20 +110,29 @@ class CTDataset(Dataset):
         """Return number of entries in this split."""
         return len(self.entries) 
     
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
-        # Demo: load cached NPZ "arr" (3,256,256); no DICOM access.
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int, str]:
+        # Demo: load cached NPZ "arr" (3,256,256); no DICOM access
         e = self.entries[idx]
-        # #region agent log
-        if idx == 0:
-            _agent_log("dataset_getitem_first", {"path": e.get("path"), "path_exists": Path(e["path"]).exists() if e.get("path") else False}, "H4")
-        # #endregion
-        arr = np.load(e["path"])["arr"]
+        path = Path(e["path"])
+        data = np.load(path)
+        arr = data["arr"] 
+        if arr.ndim == 3: 
+            arr = arr[np.newaxis, ...] 
         x = torch.from_numpy(arr).float()
-        y = int(e.get("label", 0))
-        # #region agent log
-        if idx == 0:
-            _agent_log("dataset_getitem_shape", {"arr_shape": list(arr.shape), "x_shape": list(x.shape)}, "H5")
-        # #endregion
-        return x, y 
+        y = int(e.get("label", -1))
+        patient_id = e.get("patient_id", path.parent.name)
+        if getattr(self, "split", "all") == "train":
+            for s in range(x.shape[0]): 
+                if torch.rand(1).item() < 0.5: 
+                    scale = 0.9 + 0.2 * torch.rand(1).item() 
+                    x[s] = (x[s] * scale).clamp(0.0, 1.0) 
+                if torch.rand(1).item() < 0.5: 
+                    max_shift = 8
+                    dh = int(torch.randint(-max_shift, max_shift + 1, (1,)).item())
+                    dw = int(torch.randint(-max_shift, max_shift + 1, (1,)).item()) 
+                    x[s] = torch.roll(x[s], shifts=(dh, dw), dims=(1,2))
+                if torch.rand(1).item() < 0.5: 
+                    x[s] = (x[s] + 0.01 * torch.randn_like(x[s])).clamp(0.0, 1.0) 
+        return x, y, patient_id
 
     

@@ -13,7 +13,13 @@ from ml.brain.ct.dataset_ct import CTDataset
 from ml.brain.ct.model_ct import build_ct_model
 
 
-def main(epochs: int = 10, batch_size: int = 4, lr: float = 1e-4) -> None:
+def main(
+    epochs: int = 10,
+    batch_size: int = 4,
+    lr: float = 1e-4,
+    k_slices: int = 5,
+    agg: str = "mean",
+) -> None:
     """Train ResNet18 on CT cache; saves best checkpoint to OUTPUTS/ct_baseline_best.pt."""
     OUTPUTS.mkdir(parents=True, exist_ok=True)
     train_ds = CTDataset(split="train")
@@ -34,7 +40,7 @@ def main(epochs: int = 10, batch_size: int = 4, lr: float = 1e-4) -> None:
 
     # Optimizer with weight decay
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(ignore_index=-1)
 
     # LR scheduler on validation loss
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -52,15 +58,21 @@ def main(epochs: int = 10, batch_size: int = 4, lr: float = 1e-4) -> None:
         # --------------------
         model.train()
         train_loss = 0.0
-        for x, y in train_loader:
-            x, y = x.to(device), y.to(device)
+        for X, y, _ in train_loader:
+            X, y = X.to(device), y.to(device)
+            B, k, C, H, W = X.shape
+            X_flat = X.view(B * k, C, H, W)
             opt.zero_grad()
-            logits = model(x)
-            loss = criterion(logits, y)
+            logits_flat = model(X_flat)
+            logits_per_slice = logits_flat.view(B, k, -1)
+            if agg == "mean":
+                patient_logits = logits_per_slice.mean(dim=1)
+            else:
+                patient_logits = logits_per_slice.max(dim=1).values
+            loss = criterion(patient_logits, y)
             loss.backward()
-            opt.step()
+            opt.step() 
             train_loss += loss.item()
-
         # --------------------
         # Validation + metrics
         # --------------------
@@ -71,22 +83,35 @@ def main(epochs: int = 10, batch_size: int = 4, lr: float = 1e-4) -> None:
         tp = tn = fp = fn = 0
 
         with torch.no_grad():
-            for x, y in val_loader:
-                x, y = x.to(device), y.to(device)
-                logits = model(x)
-                batch_loss = criterion(logits, y)
+            for X, y, _ in val_loader:
+                X, y = X.to(device), y.to(device)
+                B, k, C, H, W = X.shape
+                X_flat = X.view(B * k, C, H, W)
+                logits_flat = model(X_flat)
+                logits_per_slice = logits_flat.view(B, k, -1)
+                if agg == "mean":
+                    patient_logits = logits_per_slice.mean(dim=1)
+                else:
+                    patient_logits = logits_per_slice.max(dim=1).values
+                batch_loss = criterion(patient_logits, y)
                 val_loss += batch_loss.item()
-
-                probs = torch.softmax(logits, dim=1)
+                probs = torch.softmax(patient_logits, dim=1)
                 preds = probs.argmax(dim=1)
-
-                total += y.size(0)
-                correct += (preds == y).sum().item()
-                tp += ((preds == 1) & (y == 1)).sum().item()
-                tn += ((preds == 0) & (y == 0)).sum().item()
-                fp += ((preds == 1) & (y == 0)).sum().item()
-                fn += ((preds == 0) & (y == 1)).sum().item()
-
+                for i in range(y.size(0)):
+                    if y[i].item() not in (0, 1):
+                        continue
+                    total += 1
+                    if preds[i].item() == y[i].item():
+                        correct += 1
+                    if preds[i].item() == 1 and y[i].item() == 1:
+                        tp += 1
+                    elif preds[i].item() == 0 and y[i].item() == 0:
+                        tn += 1
+                    elif preds[i].item() == 1 and y[i].item() == 0:
+                        fp += 1
+                    else:
+                        fn += 1
+            
         train_avg = train_loss / len(train_loader) if len(train_loader) > 0 else 0.0
         val_avg = val_loss / len(val_loader) if len(val_loader) > 0 else 0.0
 
@@ -118,5 +143,13 @@ if __name__ == "__main__":
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--k-slices", type=int, default=5)
+    ap.add_argument("--agg", type=str, default="mean", choices=["mean", "max"])
     args = ap.parse_args()
-    main(epochs=args.epochs, batch_size=args.batch_size, lr=args.lr)
+    main(
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        k_slices=args.k_slices,
+        agg=args.agg,
+    )

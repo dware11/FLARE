@@ -127,6 +127,32 @@ def get_instance_number(path: Path) -> float:
     except Exception: 
         return 0 
 
+def get_sorted_dicom_paths(ct_dir: Path) -> list: 
+    """ Return list of Dicom paths in ct_dir sorted by InstanceNumber. """
+    dicoms = [f for f in ct_dir.iterdir() if f.is_file() and f.suffix.lower() in DICOM_EXTS] 
+    dicoms.sort(key=lambda p: (get_instance_number(p), p.name))
+    return dicoms 
+
+def center_k_slice_indices(n_slices: int, k: int = 5) -> np.ndarray: 
+    """Return k indices centered on the middles slice; clamp to [0, n_slices-1]; pad by repading if n_slices < k """ 
+    if n_slices <= 0: 
+        return np.array([0] * k, dtype=np.int64)
+    mid = n_slices // 2 
+    half = k // 2 
+    low = max(0, mid - half) 
+    high = min(n_slices, low + k)
+    low = max(0, high - k)
+    indices = np.arange(low, high, dtype=np.int64) 
+    if len(indices) < k: 
+        pad_left = (k - len(indices)) // 2
+        pad_right = k - len(indices) - pad_left
+        indices = np.concatenate([
+            np.full(pad_left, indices[0] if len(indices) > 0 else 0),
+            indices,
+            np.full(pad_right, indices[-1] if len(indices) > 0 else 0), 
+        ])
+    return indices[:k]
+
 READS_KEY_FINDINGS = [
     "ICH", "IPH", "IVH", "SDH", "EDH", "SAH",
     "MassEffect", "MidlineShift",
@@ -170,6 +196,8 @@ def main(
     labels_path: Optional[Path] = None,
     delimiter: Optional[str] = None,
     link_selected_series: bool = False,
+    k_slices: int = 5, 
+    slice_strategy: str = "center_k",
 ):
     """Run CT preprocessing: middle slice -> multi-window -> cache/middle.npz and write manifest."""
     # #region agent log
@@ -244,21 +272,29 @@ def main(
         if link_selected_series: 
             link_best_series_into_ct_selected(ct_dir)
         
-        try:     
-            dicom_path = get_middle_dicom_path(ct_dir)      # Path Debugging 
-            print("Reading DICOM:", dicom_path) 
-            print("Exists:", dicom_path.exists())
-            print("Absolute:", dicom_path.resolve())
-            dcm = pydicom.dcmread(str(dicom_path))
-            slope = float(getattr(dcm, "RescaleSlope", 1.0))
-            intercept = float(getattr(dcm, "RescaleIntercept", 0.0))
-            hu = dicom_to_hu(dcm.pixel_array, slope, intercept)
-            arr = hu_to_multiwindow(hu)
-            # Output: arr (3,256,256) float32 in [0,1]; key "arr" in NPZ.
-            out_dir = CACHE_CT / pdir.name
-            out_dir.mkdir(parents=True, exist_ok=True)
-            out_path = out_dir / "middle.npz"
-            np.savez_compressed(out_path, arr=arr)
+        try:
+            dicom_paths = get_sorted_dicom_paths(ct_dir)
+            if not dicom_paths:
+                skipped_error += 1
+                print(f"  [{i+1}/{n_total}] SKIP {pdir.name}: no DICOMs")
+                continue
+            n_slices = len(dicom_paths)
+            indices = center_k_slice_indices(n_slices, k_slices)
+            slope = intercept = None
+            slices_list = []
+            for idx in indices:
+                dcm = pydicom.dcmread(str(dicom_paths[idx]))
+                if slope is None:
+                    slope = float(getattr(dcm, "RescaleSlope", 1.0))
+                    intercept = float(getattr(dcm, "RescaleIntercept", 0.0))
+                hu = dicom_to_hu(dcm.pixel_array, slope, intercept)
+                arr_slice = hu_to_multiwindow(hu)
+                slices_list.append(arr_slice)
+            stacked = np.stack(slices_list, axis=0).astype(np.float32)
+            out_dir = CACHE_CT / pdir.name 
+            out_dir.mkdir(parents=True, exist_ok=True) 
+            out_path = out_dir / f"slices_k{k_slices}.npz"
+            np.savez_compressed(out_path, arr=stacked, slice_indices=indices) 
             label = labels.get(patient_id, -1)
             manifest.append({
                 "patient_id": pdir.name,
@@ -303,6 +339,8 @@ if __name__ == "__main__":
                     help="Process only N patients (e.g. -n 10 or --limit 10)")
     ap.add_argument("--labels", type=Path, default=None, help="reads.csv or reads.tsv (name, R1:ICH, ...)")
     ap.add_argument("--tsv", action="store_true", help="Labels file is TSV (tab-separated)") 
+    ap.add_argument("--k-slices", type=int, default=5, help="Number of slices per patient (center_k)")
+    ap.add_argument("--slice-strategy", type=str, default="center_k", choices=["center_k"])
     ap.add_argument(
         "--link-selected-series",
         action="store_true",
@@ -319,5 +357,7 @@ if __name__ == "__main__":
         labels_path=labels_path,
         delimiter=delimiter,
         link_selected_series=args.link_selected_series,
+        k_slices=args.k_slices, 
+        slice_strategy=args.slice_strategy,
     ) 
     
