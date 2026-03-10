@@ -274,14 +274,25 @@ def _run_batch_inference(
             model.zero_grad(set_to_none=True)
             with torch.enable_grad(): 
                 logits_all = model(x_all) 
-        else: 
-            with torch.no_grad(): 
+        else:
+            with torch.no_grad():
                 logits_all = model(x_all)
-        patient_logits = logits_all.mean(dim=0)
-        probs = torch.softmax(patient_logits, dim=0).detach().cpu().numpy()
-    pred = int(np.argmax(probs))
-    conf = float(probs[pred]) 
 
+        patient_logits = logits_all.mean(dim=0)
+        # detach so we can safely convert to numpy even when gradients are enabled for Grad-CAM
+        probs = torch.softmax(patient_logits, dim=0).detach().cpu().numpy()
+        pred = int(np.argmax(probs))
+        conf = float(probs[pred])
+
+        row: Dict = {
+            "patient_id": pid,
+            "split": e.get("split", split),
+            "true_label": int(e.get("label", -1)),
+            "pred_label": pred,
+            "confidence": conf,
+            "p_normal": float(probs[0]),
+            "p_abnormal": float(probs[1]),
+        }
 
         # Note: optional CAM limit + abnormal-only filter (--cam-limit, --cam-when-abnormal).
         do_cam = (
