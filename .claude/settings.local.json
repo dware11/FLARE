@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls \"c:/Users/dejab/OneDrive - Prairie View A&M University/FLARE/ml/brain/ct/\")"
+    ]
+  }
+}
