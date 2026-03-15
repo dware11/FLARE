@@ -116,17 +116,24 @@ class CTDataset(Dataset):
         y = int(e.get("label", -1))
         patient_id = e.get("patient_id", path.parent.name)
         if getattr(self, "split", "all") == "train":
-            for s in range(x.shape[0]): 
-                if torch.rand(1).item() < 0.5: 
-                    scale = 0.9 + 0.2 * torch.rand(1).item() 
-                    x[s] = (x[s] * scale).clamp(0.0, 1.0) 
-                if torch.rand(1).item() < 0.5: 
+            for s in range(x.shape[0]):
+                if torch.rand(1).item() < 0.5:
+                    scale = 0.9 + 0.2 * torch.rand(1).item()
+                    x[s] = (x[s] * scale).clamp(0.0, 1.0)
+                if torch.rand(1).item() < 0.5:
                     max_shift = 8
                     dh = int(torch.randint(-max_shift, max_shift + 1, (1,)).item())
-                    dw = int(torch.randint(-max_shift, max_shift + 1, (1,)).item()) 
-                    x[s] = torch.roll(x[s], shifts=(dh, dw), dims=(1,2))
-                if torch.rand(1).item() < 0.5: 
-                    x[s] = (x[s] + 0.01 * torch.randn_like(x[s])).clamp(0.0, 1.0) 
+                    dw = int(torch.randint(-max_shift, max_shift + 1, (1,)).item())
+                    x[s] = torch.roll(x[s], shifts=(dh, dw), dims=(1, 2))
+                if torch.rand(1).item() < 0.5:
+                    x[s] = (x[s] + 0.01 * torch.randn_like(x[s])).clamp(0.0, 1.0)
+
+        # ImageNet normalization for pretrained backbone (all splits)
+        if x.shape[1] == 1:
+            x = x.repeat(1, 3, 1, 1)
+        mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(1, 3, 1, 1)
+        x = (x - mean) / std
         return x, y, patient_id
 
     
