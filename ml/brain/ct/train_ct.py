@@ -50,7 +50,9 @@ def main(
         ], 
         weight_decay=1e-4,
     )
-    criterion = nn.CrossEntropyLoss(ignore_index=-1)
+    # Emphasize class 0 (normal) to reduce FPs and raise specificity
+    class_weights = torch.tensor([1.5, 1.0], dtype=torch.float32, device=device)
+    criterion = nn.CrossEntropyLoss(ignore_index=-1, weight=class_weights)
 
     # LR scheduler on validation loss
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
