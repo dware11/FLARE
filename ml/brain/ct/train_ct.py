@@ -18,6 +18,7 @@ def main(
     epochs: int = 10,
     batch_size: int = 4,
     lr: float = 1e-4,
+    weight_decay: float = 1e-4,
     k_slices: int = 5,
     agg: str = "mean",
 ) -> None:
@@ -43,12 +44,12 @@ def main(
     backbone_params = list(model.features.parameters())
     classifier_params = list (model.classifier.parameters()) 
 
-    opt = torch.optim.Adam( 
+    opt = torch.optim.Adam(
         [
-            {"params": backbone_params, "lr": lr * 0.1}, 
+            {"params": backbone_params, "lr": lr * 0.1},
             {"params": classifier_params, "lr": lr},
-        ], 
-        weight_decay=1e-4,
+        ],
+        weight_decay=weight_decay,
     )
     # Emphasize class 0 (normal) to reduce FPs and raise specificity
     class_weights = torch.tensor([1.5, 1.0], dtype=torch.float32, device=device)
@@ -183,6 +184,7 @@ if __name__ == "__main__":
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--weight-decay", type=float, default=1e-4, dest="weight_decay")
     ap.add_argument("--k-slices", type=int, default=5)
     ap.add_argument("--agg", type=str, default="mean", choices=["mean", "max"])
     args = ap.parse_args()
@@ -190,6 +192,7 @@ if __name__ == "__main__":
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
+        weight_decay=args.weight_decay,
         k_slices=args.k_slices,
         agg=args.agg,
     )
