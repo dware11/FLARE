@@ -4,6 +4,7 @@ import sys
 
 import torch
 import torch.nn as nn
+from sklearn.metrics import confusion_matrix
 from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -38,8 +39,17 @@ def main(
     )
     print("Starting training...")
 
-    # Optimizer with weight decay
-    opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    # Optimizer: backbone (features) at 0.1*lr, classifier at lr 
+    backbone_params = list(model.features.parameters())
+    classifier_params = list (model.classifier.parameters()) 
+
+    opt = torch.optim.Adam( 
+        [
+            {"params": backbone_params, "lr": lr * 0.1}, 
+            {"params": classifier_params, "lr": lr},
+        ], 
+        weight_decay=1e-4,
+    )
     criterion = nn.CrossEntropyLoss(ignore_index=-1)
 
     # LR scheduler on validation loss
@@ -51,6 +61,9 @@ def main(
     )
 
     best_val_loss = float("inf")
+
+    patience = 5 
+    epochs_without_improvement = 0 
 
     for ep in range(epochs):
         # --------------------
@@ -82,6 +95,9 @@ def main(
         total = 0
         tp = tn = fp = fn = 0
 
+        all_y = []
+        all_preds = [] 
+
         with torch.no_grad():
             for X, y, _ in val_loader:
                 X, y = X.to(device), y.to(device)
@@ -101,6 +117,8 @@ def main(
                     if y[i].item() not in (0, 1):
                         continue
                     total += 1
+                    all_y.append(y[i].item())
+                    all_preds.append(preds[i].item())
                     if preds[i].item() == y[i].item():
                         correct += 1
                     if preds[i].item() == 1 and y[i].item() == 1:
@@ -121,6 +139,10 @@ def main(
         prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
         f1 = 2 * prec * sens / (prec + sens) if (prec + sens) > 0 else 0.0
 
+        if total > 0: 
+            cm = confusion_matrix(all_y, all_preds, labels=[0, 1])
+            print(f"Confusion matrix (true=rows, pred=cols) [0=normal, 1=abnormal]:\n{cm}") 
+
         print(
             f"Epoch {ep+1} / {epochs} "
             f"train_loss={train_avg:.4f} val_loss={val_avg:.4f} "
@@ -129,11 +151,20 @@ def main(
 
         scheduler.step(val_avg)
 
-        if len(val_loader) > 0 and val_avg < best_val_loss:
-            best_val_loss = val_avg
-            ckpt = OUTPUTS / "ct_baseline_best.pt"
-            torch.save({"model": model.state_dict(), "epoch": ep}, ckpt)
-            print(f"  -> saved {ckpt}")
+        if len(val_loader) > 0: 
+            if val_avg < best_val_loss: 
+                best_val_loss = val_avg 
+                epochs_without_improvement = 0 
+                
+                ckpt = OUTPUTS / "ct_baseline_best.pt" 
+                torch.save({"model": model.state_dict(), "epoch": ep}, ckpt) 
+                print(f" -> saved {ckpt}") 
+            else: 
+                epochs_without_improvement += 1 
+
+                if epochs_without_improvement >= patience: 
+                    print(f"Early stopping: no val loss improvement for {patience} epochs")
+                    break
 
     print("Done.")
 
