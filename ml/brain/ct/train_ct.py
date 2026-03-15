@@ -4,7 +4,7 @@ import sys
 
 import torch
 import torch.nn as nn
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, roc_auc_score
 from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -96,7 +96,8 @@ def main(
         tp = tn = fp = fn = 0
 
         all_y = []
-        all_preds = [] 
+        all_preds = []
+        all_probs_pos = []
 
         with torch.no_grad():
             for X, y, _ in val_loader:
@@ -119,6 +120,7 @@ def main(
                     total += 1
                     all_y.append(y[i].item())
                     all_preds.append(preds[i].item())
+                    all_probs_pos.append(probs[i, 1].item())
                     if preds[i].item() == y[i].item():
                         correct += 1
                     if preds[i].item() == 1 and y[i].item() == 1:
@@ -139,6 +141,11 @@ def main(
         prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
         f1 = 2 * prec * sens / (prec + sens) if (prec + sens) > 0 else 0.0
 
+        if total > 0 and len(set(all_y)) == 2:
+            roc_auc = roc_auc_score(all_y, all_probs_pos)
+        else:
+            roc_auc = 0.0
+
         if total > 0: 
             cm = confusion_matrix(all_y, all_preds, labels=[0, 1])
             print(f"Confusion matrix (true=rows, pred=cols) [0=normal, 1=abnormal]:\n{cm}") 
@@ -146,7 +153,7 @@ def main(
         print(
             f"Epoch {ep+1} / {epochs} "
             f"train_loss={train_avg:.4f} val_loss={val_avg:.4f} "
-            f"acc={acc:.4f} sens={sens:.4f} spec={spec:.4f} prec={prec:.4f} f1={f1:.4f}"
+            f"acc={acc:.4f} sens={sens:.4f} spec={spec:.4f} prec={prec:.4f} f1={f1:.4f} roc_auc={roc_auc:.4f}"
         )
 
         scheduler.step(val_avg)
