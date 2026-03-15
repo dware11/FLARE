@@ -21,7 +21,10 @@ from src.config import META, OUTPUTS
 from ml.brain.ct.model_ct import build_ct_model 
 from ml.brain.ct.gradcam_ct import GradCAM 
 
-LABELS = ["normal", "abnormal"] 
+LABELS = ["normal", "abnormal"]
+
+# Decision threshold for abnormal (class 1). Use 0.55 for validation-tuned boundary.
+ABNORMAL_THRESHOLD = 0.55
 
 SPLIT_SEED = 42 
 
@@ -203,7 +206,7 @@ def _run_single_inference(
     patient_logits = logits_all.mean(dim=0)
     # detach so we can safely convert to numpy even when gradients are enabled for Grad-CAM
     probs = torch.softmax(patient_logits, dim=0).detach().cpu().numpy()
-    pred = int(np.argmax(probs))
+    pred = 1 if float(probs[1]) >= ABNORMAL_THRESHOLD else 0
     conf = float(probs[pred])
     if cam_dir is not None: 
         k = x_all.shape[0]
@@ -281,7 +284,7 @@ def _run_batch_inference(
         patient_logits = logits_all.mean(dim=0)
         # detach so we can safely convert to numpy even when gradients are enabled for Grad-CAM
         probs = torch.softmax(patient_logits, dim=0).detach().cpu().numpy()
-        pred = int(np.argmax(probs))
+        pred = 1 if float(probs[1]) >= ABNORMAL_THRESHOLD else 0
         conf = float(probs[pred])
 
         row: Dict = {
@@ -421,7 +424,7 @@ def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus
             logits_all = model(x_all)
     patient_logits = logits_all.mean(dim=0)
     probs = torch.softmax(patient_logits, dim=0).cpu().numpy()
-    pred = int(np.argmax(probs))
+    pred = 1 if float(probs[1]) >= ABNORMAL_THRESHOLD else 0
 
     cam_path = None
     if use_grad and cam_dir:
