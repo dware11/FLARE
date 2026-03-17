@@ -1,0 +1,7 @@
+#
+# FLARE MOCK BACKEND (EDITABLE)
+# This requirements file is safe to change for local mock APIs.
+#
+flask
+flask-cors
+

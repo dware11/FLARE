@@ -1,82 +1,155 @@
-""" 
-Flask backend for Monday demo (CT-only) 
+"""
+FLARE MOCK BACKEND (EDITABLE)
 
-Endpoints: 
-GET /api/patients 
-POST /api/predict
-GET /api/cam/<patient_id>.png 
-""" 
+- This file is a simple, local-only mock API.
+- Safe to edit and extend for frontend development.
+- No real models, databases, or auth.
+"""
 
-import sys 
-from pathlib import Path 
-
-ROOT = Path(__file__).resolve().parents[1] # FLARE/ 
-
-sys.path.insert(0, str(ROOT))
-
-from flask import Flask, request, jsonify, send_from_directory 
+from flask import Flask, jsonify, request
 from flask_cors import CORS
+import random
 
-app = Flask(__name__) 
-CORS(app, resources={r"/api/*": {"origins": "*"}})
- 
-# Grad-Cam PNGs will be saved here by run_ct_for_patient() 
-CAM_DIR = ROOT / "backend" / "cam" 
-CAM_DIR.mkdir(parents=True, exist_ok=True)
+app = Flask(__name__)
 
-@app.route("/api/patients", methods=["GET"]) 
-def api_patients(): 
-    """
-    Hard-coded patient IDs for demo.
-    """
-    patients = [
-        "CQ500-CT-0",
-        "CQ500-CT-1",
-        "CQ500-CT-2",
-        "Demo-Patient-A",
-        "Demo-Patient-B",
+# CORS: explicitly allow local frontend dev origins
+CORS(
+    app,
+    resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000"]}},
+)
+
+
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    """Simple health check endpoint."""
+    return jsonify(
+        {
+            "status": "ok",
+            "version": "1.0",
+            "mode": "MOCK",
+        }
+    ), 200
+
+
+@app.route("/api/run-model", methods=["POST"])
+def run_model():
+    """Mock model inference endpoint - safe to tweak."""
+    data = request.get_json(silent=True) or {}
+
+    patient_id = data.get("patient_id")
+    modality = data.get("modality")
+
+    # Validation
+    if not patient_id:
+        return (
+            jsonify(
+                {
+                    "error": "Missing required field: patient_id",
+                    "code": "MISSING_PATIENT_ID",
+                }
+            ),
+            400,
+        )
+
+    supported_modalities = ["ct", "mri", "breast"]
+    if modality not in supported_modalities:
+        return (
+            jsonify(
+                {
+                    "error": "Invalid modality",
+                    "code": "INVALID_MODALITY",
+                    "supported_modalities": supported_modalities,
+                }
+            ),
+            400,
+        )
+
+    # Decide label based on last character of patient_id
+    last_char = patient_id[-1]
+    if last_char.isdigit() and int(last_char) % 2 == 1:
+        pred_label = "abnormal"
+    else:
+        pred_label = "normal"
+
+    # Confidence between 0.85 and 0.95
+    confidence = round(random.uniform(0.85, 0.95), 4)
+
+    # Simple probability distribution consistent with pred_label
+    if pred_label == "abnormal":
+        probabilities = {
+            "normal": round(1.0 - confidence, 4),
+            "abnormal": confidence,
+        }
+    else:
+        probabilities = {
+            "normal": confidence,
+            "abnormal": round(1.0 - confidence, 4),
+        }
+
+    response = {
+        "patient_id": patient_id,
+        "modality": modality,
+        "pred_label": pred_label,
+        "confidence": confidence,
+        "probabilities": probabilities,
+        "_mode": "MOCK",
+    }
+    return jsonify(response), 200
+
+
+@app.route("/api/hospitals", methods=["GET"])
+def get_hospitals():
+    """Return mock geo + case data for Houston-area hospitals (editable)."""
+    hospitals = [
+        {
+            "id": 1,
+            "name": "Houston Methodist Hospital",
+            "latitude": 29.7079,
+            "longitude": -95.3984,
+            "total_cases": 1200,
+            "high_risk_cases": 240,
+            "high_risk_percentage": 20.0,
+        },
+        {
+            "id": 2,
+            "name": "Memorial Hermann - Texas Medical Center",
+            "latitude": 29.7041,
+            "longitude": -95.3995,
+            "total_cases": 950,
+            "high_risk_cases": 190,
+            "high_risk_percentage": 20.0,
+        },
+        {
+            "id": 3,
+            "name": "Baylor St. Luke's Medical Center",
+            "latitude": 29.7047,
+            "longitude": -95.3981,
+            "total_cases": 780,
+            "high_risk_cases": 156,
+            "high_risk_percentage": 20.0,
+        },
+        {
+            "id": 4,
+            "name": "Ben Taub Hospital",
+            "latitude": 29.7136,
+            "longitude": -95.3955,
+            "total_cases": 620,
+            "high_risk_cases": 155,
+            "high_risk_percentage": 25.0,
+        },
+        {
+            "id": 5,
+            "name": "Texas Children's Hospital",
+            "latitude": 29.7073,
+            "longitude": -95.4010,
+            "total_cases": 450,
+            "high_risk_cases": 68,
+            "high_risk_percentage": 15.1,
+        },
     ]
-    return jsonify({"patients": patients}) 
+    return jsonify(hospitals), 200
 
-@app.route("/api/predict", methods=["POST"]) 
-def api_predict(): 
-    """
-    Mock prediction endpoint for demo.
-    """
-    data = request.get_json(silent=True) or {} 
-    patient_id = (data.get("patient_id") or "").strip() or "UNKNOWN"
 
-    p_abnormal = 0.82
-    label = "abnormal"
-
-    ct_result = {
-        "p_abnormal": p_abnormal,
-        "label": label,
-        "model_version": "ct_mock_v1",
-        "cam_path": None,
-    }
-
-    fused_payload = {
-        "modality": "CT",
-        "fused_score": round(p_abnormal, 4),
-        "flagged_for_review": p_abnormal > 0.8,
-        "details": {"note": "Mock fused result for demo only"},
-    }
-
-    return jsonify({
-        "patient_id": patient_id, 
-        "ct": ct_result, 
-        "fused": fused_payload,
-    })
-
-@app.route("/api/cam/<patient_id>.png", methods=["GET"])
-def api_cam(patient_id): 
-    """\
-    Serves backend/cam/<patient_id>.png
-    Frontend: http://localhost:5000/api/cam/<id>.png
-    """
-    return send_from_directory(str(CAM_DIR), f"{patient_id}.png") 
-
-if __name__ == "__main__": 
-    app.run(host="0.0.0.0", port=5000, debug=True) 
-    
+if __name__ == "__main__":
+    # Dev-only server; keep simple and explicit for frontend work.
+    app.run(host="127.0.0.1", port=5000, debug=True)
