@@ -51,7 +51,7 @@ def run_model():
             400,
         )
 
-    supported_modalities = ["ct", "mri", "breast"]
+    supported_modalities = ["brain_ct", "brain_mri", "breast_mammo", "breast_mri"]
     if modality not in supported_modalities:
         return (
             jsonify(
@@ -102,7 +102,7 @@ def get_hospitals():
     """Return mock geo + case data for Houston-area hospitals (editable)."""
     hospitals = [
         {
-            "id": 1,
+            "id": "H001",
             "name": "Houston Methodist Hospital",
             "latitude": 29.7079,
             "longitude": -95.3984,
@@ -111,7 +111,7 @@ def get_hospitals():
             "high_risk_percentage": 20.0,
         },
         {
-            "id": 2,
+            "id": "H002",
             "name": "Memorial Hermann - Texas Medical Center",
             "latitude": 29.7041,
             "longitude": -95.3995,
@@ -120,7 +120,7 @@ def get_hospitals():
             "high_risk_percentage": 20.0,
         },
         {
-            "id": 3,
+            "id": "H003",
             "name": "Baylor St. Luke's Medical Center",
             "latitude": 29.7047,
             "longitude": -95.3981,
@@ -129,7 +129,7 @@ def get_hospitals():
             "high_risk_percentage": 20.0,
         },
         {
-            "id": 4,
+            "id": "H004",
             "name": "Ben Taub Hospital",
             "latitude": 29.7136,
             "longitude": -95.3955,
@@ -138,7 +138,7 @@ def get_hospitals():
             "high_risk_percentage": 25.0,
         },
         {
-            "id": 5,
+            "id": "H005",
             "name": "Texas Children's Hospital",
             "latitude": 29.7073,
             "longitude": -95.4010,
