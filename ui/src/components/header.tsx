@@ -18,6 +18,8 @@ import {
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown'
 import CloseIcon from '@mui/icons-material/Close'
 
+const enableBrainCt = import.meta.env.VITE_ENABLE_BRAIN_CT === 'true'
+
 export default function Header() {
   const navigate = useNavigate()
   const { user, logout } = useAuth0()
@@ -100,12 +102,18 @@ export default function Header() {
               anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
             >
               <MenuItem onClick={() => go('/home')}>
-              Home
+                Home
               </MenuItem>
               <Divider sx={{ borderColor: 'rgba(255,255,255,0.08)' }} />
               <MenuItem onClick={() => go('/cancer-detection')}>
                 AI Cancer Detection
               </MenuItem>
+
+              {enableBrainCt && (
+                <MenuItem onClick={() => go('/brain-ct')}>
+                  Brain CT Demo
+                </MenuItem>
+              )}
 
               <MenuItem onClick={() => go('/outbreak-tracker')}>
                 Outbreak Tracker

@@ -7,6 +7,7 @@ import OutbreakTracker from './pages/outbreakDetection'
 import ProtectedRoute from './routes/protectedRoute'
 import MainLayout from './components/mainLayout'
 import EhrDatabase from './pages/ehrDatabase'
+import BrainCtDemo from './pages/brainCtDemo'
 
 export default function App() {
   return (
@@ -19,8 +20,9 @@ export default function App() {
         <Route element={<MainLayout />}>
           <Route path="/home" element={<Home />} />
           <Route path="/cancer-detection" element={<CancerDetection />} />
+          <Route path="/brain-ct" element={<BrainCtDemo />} />
           <Route path="/outbreak-tracker" element={<OutbreakTracker />} />
-          <Route path="/ehr-database" element={<EhrDatabase />}/>
+          <Route path="/ehr-database" element={<EhrDatabase />} />
         </Route>
       </Route>
     </Routes>

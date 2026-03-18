@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 
@@ -18,6 +19,7 @@ except ImportError:
     def _dbg_log(_msg: str, data=None, location: str = "") -> None:
         pass
 from ml.brain.ct.ct_transforms import dicom_to_hu, hu_to_multiwindow
+from scripts.extract_cq500 import choose_best_series
 
 
 def _dbg(payload: dict) -> None:
@@ -35,6 +37,81 @@ except ImportError:
 
 DICOM_EXTS = (".dcm", ".dicom")
 
+
+def _has_top_level_dicoms(ct_selected: Path) -> bool:
+    """Return True if CT_SELECTED has any .dcm/.dicom files directly inside it."""
+    return any(
+        f.is_file() and f.suffix.lower() in DICOM_EXTS
+        for f in ct_selected.iterdir()
+    )
+
+
+def _iter_nested_dicoms(ct_selected: Path):
+    """Yield nested DICOM files anywhere under CT_SELECTED (excluding top-level)."""
+    for f in ct_selected.rglob("*"):
+        if f.is_file() and f.suffix.lower() in DICOM_EXTS and f.parent != ct_selected:
+            yield f
+
+
+def _choose_best_series_in_ct_selected(ct_selected: Path) -> Optional[Path]:
+    """
+    Use existing choose_best_series() to pick ONE series folder under CT_SELECTED.
+    Returns the selected series folder or None.
+    """
+    series_folders = sorted({f.parent for f in _iter_nested_dicoms(ct_selected)})
+    if not series_folders:
+        return None
+
+    best = choose_best_series(series_folders)
+    if best is None:
+        return None
+
+    best_folder, _count, _tier = best
+    return best_folder
+
+
+def link_best_series_into_ct_selected(ct_selected: Path) -> int:
+    """
+    Idempotent prep step:
+    - If CT_SELECTED already has top-level DICOMs, do nothing.
+    - If it has no top-level DICOMs but has nested DICOMs, choose the best series
+      and create/overwrite symlinks for its .dcm files at CT_SELECTED/<basename>.
+    Returns number of links created.
+    """
+    if not ct_selected.is_dir():
+        return 0
+
+    # Already has top-level DICOMs → nothing to do.
+    if _has_top_level_dicoms(ct_selected):
+        return 0
+
+    # No nested DICOMs at all → nothing we can link.
+    if not any(_iter_nested_dicoms(ct_selected)):
+        return 0
+
+    series_dir = _choose_best_series_in_ct_selected(ct_selected)
+    if series_dir is None or not series_dir.is_dir():
+        return 0
+
+    count = 0
+    for dcm in series_dir.iterdir():
+        if not dcm.is_file() or dcm.suffix.lower() not in DICOM_EXTS:
+            continue
+
+        target = ct_selected / dcm.name
+
+        # ln -sf semantics: remove existing file/symlink and recreate.
+        try:
+            if target.exists() or target.is_symlink():
+                target.unlink()
+        except FileNotFoundError:
+            pass
+
+        target.symlink_to(dcm.resolve())
+        count += 1
+
+    return count
+
 def get_middle_dicom_path(ct_dir: Path) -> Path:
     """Return path to the middle slice DICOM in ct_dir by instance number."""
     dicoms = [f for f in ct_dir.iterdir() if f.is_file() and f.suffix.lower() in DICOM_EXTS] 
@@ -49,6 +126,32 @@ def get_instance_number(path: Path) -> float:
         return float(getattr(dcm, "InstanceNumber", 0))
     except Exception: 
         return 0 
+
+def get_sorted_dicom_paths(ct_dir: Path) -> list: 
+    """ Return list of Dicom paths in ct_dir sorted by InstanceNumber. """
+    dicoms = [f for f in ct_dir.iterdir() if f.is_file() and f.suffix.lower() in DICOM_EXTS] 
+    dicoms.sort(key=lambda p: (get_instance_number(p), p.name))
+    return dicoms 
+
+def center_k_slice_indices(n_slices: int, k: int = 5) -> np.ndarray: 
+    """Return k indices centered on the middles slice; clamp to [0, n_slices-1]; pad by repading if n_slices < k """ 
+    if n_slices <= 0: 
+        return np.array([0] * k, dtype=np.int64)
+    mid = n_slices // 2 
+    half = k // 2 
+    low = max(0, mid - half) 
+    high = min(n_slices, low + k)
+    low = max(0, high - k)
+    indices = np.arange(low, high, dtype=np.int64) 
+    if len(indices) < k: 
+        pad_left = (k - len(indices)) // 2
+        pad_right = k - len(indices) - pad_left
+        indices = np.concatenate([
+            np.full(pad_left, indices[0] if len(indices) > 0 else 0),
+            indices,
+            np.full(pad_right, indices[-1] if len(indices) > 0 else 0), 
+        ])
+    return indices[:k]
 
 READS_KEY_FINDINGS = [
     "ICH", "IPH", "IVH", "SDH", "EDH", "SAH",
@@ -88,7 +191,15 @@ def load_labels_from_reads(read_csv_path: Path, delimiter: str = ",") -> dict[st
     return out 
 
 
-def main(limit: int | None = None, labels_path: Path | None = None, delimiter: str | None = None):
+def main(
+    limit: Optional[int] = None,
+    labels_path: Optional[Path] = None,
+    delimiter: Optional[str] = None,
+    link_selected_series: bool = False,
+    k_slices: int = 5,
+    slice_strategy: str = "center_k",
+    force: bool = False,
+):
     """Run CT preprocessing: middle slice -> multi-window -> cache/middle.npz and write manifest."""
     # #region agent log
     import time
@@ -111,7 +222,12 @@ def main(limit: int | None = None, labels_path: Path | None = None, delimiter: s
     labels = load_labels_from_reads(labels_path, delimiter=delimiter) if labels_path and labels_path.exists() else {}
 
     all_dirs = (p for p in RAW_CT.iterdir() if p.is_dir())
-    patient_dirs = sorted(p for p in all_dirs if p.name.startswith("CQ500-CT-"))
+    # Support both original naming (CQ500-CT-*) and your current folders (CQ500CT*)
+    patient_dirs = sorted(
+        p
+        for p in all_dirs
+        if p.name.startswith("CQ500-CT-") or p.name.startswith("CQ500CT")
+    )
     # #region agent log
     _alog("preprocess_start", {"raw_ct": str(RAW_CT), "raw_ct_exists": RAW_CT.exists(), "patient_dirs_count": len(patient_dirs), "labels_count": len(labels)}, "H1")
     # #endregion
@@ -129,37 +245,85 @@ def main(limit: int | None = None, labels_path: Path | None = None, delimiter: s
     else:
         print("  Labels: none (all manifest labels will be -1).")
 
-    manifest = []
+    META.mkdir(parents=True, exist_ok=True) 
+    out_manifest = META / "ct_processed_manifest.json" 
+
+    if out_manifest.exists():
+        with open(out_manifest, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        print(f"  Loaded existing manifest with {len(manifest)} entries.")
+    else:
+        manifest = []
+
+    # Dict for lookup and in-place updates when reprocessing
+    manifest_by_id = {m["patient_id"]: m for m in manifest}
+
     skipped_no_ct = 0
     skipped_error = 0
+    expected_filename = f"slices_k{k_slices}.npz"
+
     for i, pdir in enumerate(to_process):
+        patient_id = pdir.name.strip()
+
+        # Skip vs reprocess: --force always reprocess; else skip only if existing cache matches k_slices
+        if not force and patient_id in manifest_by_id:
+            existing_entry = manifest_by_id[patient_id]
+            old_path = Path(existing_entry.get("path", ""))
+            if old_path.name == expected_filename and old_path.exists():
+                print(f"  [{i+1}/{n_total}] SKIP {patient_id}: already has {expected_filename}")
+                continue
+            # Else: wrong file (e.g. middle.npz) or missing -> reprocess below
+
         ct_dir = pdir / "CT_SELECTED"
-        if not ct_dir.is_dir():
-            skipped_no_ct += 1
-            continue
+        if not ct_dir.is_dir(): 
+            skipped_no_ct += 1 
+            continue 
+        if link_selected_series: 
+            link_best_series_into_ct_selected(ct_dir)
+        
         try:
-            dicom_path = get_middle_dicom_path(ct_dir)            # Path Debugging 
-            print("Reading DICOM:", dicom_path) 
-            print("Exists:", dicom_path.exists())
-            print("Absolute:", dicom_path.resolve())
-            dcm = pydicom.dcmread(str(dicom_path))
-            slope = float(getattr(dcm, "RescaleSlope", 1.0))
-            intercept = float(getattr(dcm, "RescaleIntercept", 0.0))
-            hu = dicom_to_hu(dcm.pixel_array, slope, intercept)
-            arr = hu_to_multiwindow(hu)
-            # Output: arr (3,256,256) float32 in [0,1]; key "arr" in NPZ.
-            out_dir = CACHE_CT / pdir.name
-            out_dir.mkdir(parents=True, exist_ok=True)
-            out_path = out_dir / "middle.npz"
-            np.savez_compressed(out_path, arr=arr)
-            patient_id = pdir.name.strip()
+            dicom_paths = get_sorted_dicom_paths(ct_dir)
+            if not dicom_paths:
+                skipped_error += 1
+                print(f"  [{i+1}/{n_total}] SKIP {pdir.name}: no DICOMs")
+                continue
+            n_slices = len(dicom_paths)
+            indices = center_k_slice_indices(n_slices, k_slices)
+            slope = intercept = None
+            slices_list = []
+            for idx in indices:
+                dcm = pydicom.dcmread(str(dicom_paths[idx]))
+                if slope is None:
+                    slope = float(getattr(dcm, "RescaleSlope", 1.0))
+                    intercept = float(getattr(dcm, "RescaleIntercept", 0.0))
+                hu = dicom_to_hu(dcm.pixel_array, slope, intercept)
+                arr_slice = hu_to_multiwindow(hu)
+                slices_list.append(arr_slice)
+            stacked = np.stack(slices_list, axis=0).astype(np.float32)
+            out_dir = CACHE_CT / pdir.name 
+            out_dir.mkdir(parents=True, exist_ok=True) 
+            out_path = out_dir / f"slices_k{k_slices}.npz"
+            np.savez_compressed(out_path, arr=stacked, slice_indices=indices)
             label = labels.get(patient_id, -1)
-            manifest.append({
-                "patient_id": pdir.name,
-                "path": str(out_path),
-                "label": label,
-            })
-            print(f"  [{i+1}/{n_total}] {pdir.name} -> {out_path.name}")
+
+            if patient_id in manifest_by_id:
+                # Reprocess: update existing manifest entry in-place
+                existing_entry = manifest_by_id[patient_id]
+                existing_entry["path"] = str(out_path)
+                existing_entry["label"] = label
+                print(f"  [{i+1}/{n_total}] REPROCESS {patient_id}: upgrading cache to {expected_filename}")
+            else:
+                manifest.append({
+                    "patient_id": pdir.name,
+                    "path": str(out_path),
+                    "label": label,
+                })
+                print(f"  [{i+1}/{n_total}] {pdir.name} -> {out_path.name}")
+
+            # Periodically persist manifest so we don't lose progress on interrupts.
+            if (i + 1) % 10 == 0:
+                with open(out_manifest, "w", encoding="utf-8") as f:
+                    json.dump(manifest, f, indent=2)
         except Exception as e:
             skipped_error += 1
             # #region agent log
@@ -178,8 +342,6 @@ def main(limit: int | None = None, labels_path: Path | None = None, delimiter: s
     _alog("preprocess_done", {"manifest_count": len(manifest), "manifest_path": str(META / "ct_processed_manifest.json")}, "H4")
     # #endregion
     # Design: manifest is contract between preprocess and inference (path, label).
-    META.mkdir(parents=True, exist_ok=True)
-    out_manifest = META / "ct_processed_manifest.json"
     with open(out_manifest, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
     _dbg({"hypothesisId": "H4", "message": "manifest_final", "data": {"manifest_count": len(manifest), "patient_ids": [m["patient_id"] for m in manifest]}})
@@ -194,11 +356,27 @@ if __name__ == "__main__":
                     help="Process only N patients (e.g. -n 10 or --limit 10)")
     ap.add_argument("--labels", type=Path, default=None, help="reads.csv or reads.tsv (name, R1:ICH, ...)")
     ap.add_argument("--tsv", action="store_true", help="Labels file is TSV (tab-separated)") 
+    ap.add_argument("--k-slices", type=int, default=5, help="Number of slices per patient (center_k)")
+    ap.add_argument("--slice-strategy", type=str, default="center_k", choices=["center_k"])
+    ap.add_argument(
+        "--link-selected-series",
+        action="store_true",
+        help="Symlink best CT series DICOMs into CT_SELECTED/ before preprocessing",
+    )
+    ap.add_argument("--force", action="store_true", help="Reprocess even if patient is already in manifest")
     args = ap.parse_args()
-    
-    labels_path = args.labels or META / "reads.csv" 
-    if not labels_path.exists() and (ROOT / "src" / "reads.csv").exists(): 
-        labels_path = ROOT / "src" / "reads.csv" 
-    delimiter = "\t" if args.tsv else "," 
-    main(limit=args.limit, labels_path=labels_path, delimiter=delimiter) 
+
+    labels_path = args.labels or META / "reads.csv"
+    if not labels_path.exists() and (ROOT / "src" / "reads.csv").exists():
+        labels_path = ROOT / "src" / "reads.csv"
+    delimiter = "\t" if args.tsv else ","
+    main(
+        limit=args.limit,
+        labels_path=labels_path,
+        delimiter=delimiter,
+        link_selected_series=args.link_selected_series,
+        k_slices=args.k_slices,
+        slice_strategy=args.slice_strategy,
+        force=args.force,
+    ) 
     

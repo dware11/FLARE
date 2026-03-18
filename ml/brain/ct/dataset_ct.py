@@ -4,7 +4,7 @@ Demo: Dataset reads cached NPZ only (not DICOM); manifest lists path + label.
 import json
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional, Tuple
 
 import numpy as np
 import torch
@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from src.config import META
 
+DEFAULT_MANIFEST = META / "ct_processed_manifest.json"
+
 DEBUG_LOG = ROOT / "debug_pipeline.log"
 
 def _agent_log(msg, data=None, hyp=""):
@@ -23,18 +25,18 @@ def _agent_log(msg, data=None, hyp=""):
         f.write(json.dumps({"message": msg, "data": data or {}, "hypothesisId": hyp, "location": "dataset_ct", "timestamp": int(time.time() * 1000)}) + "\n")
 
 
-def _resolve_manifest(manifest_path: Path | None) -> Path:
-    """Return manifest path if given and exists, else default META/ct_processed_manifest.json."""
-    if manifest_path and manifest_path.exists():
-        return manifest_path
-    return META / "ct_processed_manifest.json" 
+def _resolve_manifest(manifest_path: Optional[Path]) -> Path:
+    # If caller didn't provide a manifest, use the default one written by preprocessing
+    if manifest_path is None:
+        return DEFAULT_MANIFEST
+    return Path(manifest_path)
 
 class CTDataset(Dataset):
     """Dataset over cached CT npz from manifest; yields (C,H,W) tensor and 0/1 label."""
     def __init__(
         self, 
-        manifest_path: Path | None = None, 
-        split: Literal["train", "val", "test"] | None = None, 
+        manifest_path: Optional[Path] = None,
+        split: Optional[Literal["train", "val", "test"]] = None,
         train_frac: float = 0.7, 
         val_frac: float = 0.15, 
         seed: int = 42, 
@@ -44,8 +46,9 @@ class CTDataset(Dataset):
         _agent_log("dataset_init_start", {"manifest_path": str(manifest_path), "manifest_exists": manifest_path.exists()}, "H4")
         # #endregion
         with open(manifest_path, encoding="utf-8") as f:
-            entries = json.load(f) 
-        valid = [e for e in entries if e.get("label", -1) in (0, 1)]
+            entries = json.load(f)
+        # Use all entries with existing NPZ path (label can be 0, 1, or -1; loss uses ignore_index=-1).
+        valid = [e for e in entries if Path(e.get("path", "")).exists()]
         if not valid:
             valid = entries
 
@@ -62,28 +65,75 @@ class CTDataset(Dataset):
         else:
             self.entries = valid
         self.manifest_path = manifest_path
+        self.split = split or "all" 
         # #region agent log
         _agent_log("dataset_init", {"manifest_path": str(manifest_path), "manifest_exists": manifest_path.exists(), "entries_total": len(entries), "valid_labeled": len(valid), "split": split or "all", "self_entries": len(self.entries)}, "H4")
         # #endregion 
+        # #region agent log
+        try:
+            import json as _json  # local import to avoid polluting module namespace
+            from time import time as _time
+            from pathlib import Path as _Path
+
+            with open("debug-a04713.log", "a", encoding="utf-8") as _f:
+                _f.write(
+                    _json.dumps(
+                        {
+                            "sessionId": "a04713",
+                            "runId": "pre-fix",
+                            "hypothesisId": "H1",
+                            "location": "dataset_ct.py:CTDataset.__init__",
+                            "message": "CTDataset init split sizes",
+                            "data": {
+                                "manifest_path": str(manifest_path),
+                                "manifest_exists": _Path(manifest_path).exists(),
+                                "entries_total": len(entries),
+                                "split": split or "all",
+                                "self_entries": len(self.entries),
+                            },
+                            "timestamp": int(_time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+        # #endregion
 
     def __len__(self) -> int:
         """Return number of entries in this split."""
         return len(self.entries) 
     
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
-        # Demo: load cached NPZ "arr" (3,256,256); no DICOM access.
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int, str]:
+        # Demo: load cached NPZ "arr" (3,256,256); no DICOM access
         e = self.entries[idx]
-        # #region agent log
-        if idx == 0:
-            _agent_log("dataset_getitem_first", {"path": e.get("path"), "path_exists": Path(e["path"]).exists() if e.get("path") else False}, "H4")
-        # #endregion
-        arr = np.load(e["path"])["arr"]
+        path = Path(e["path"])
+        data = np.load(path)
+        arr = data["arr"] 
+        if arr.ndim == 3: 
+            arr = arr[np.newaxis, ...] 
         x = torch.from_numpy(arr).float()
-        y = int(e.get("label", 0))
-        # #region agent log
-        if idx == 0:
-            _agent_log("dataset_getitem_shape", {"arr_shape": list(arr.shape), "x_shape": list(x.shape)}, "H5")
-        # #endregion
-        return x, y 
+        y = int(e.get("label", -1))
+        patient_id = e.get("patient_id", path.parent.name)
+        if getattr(self, "split", "all") == "train":
+            for s in range(x.shape[0]):
+                if torch.rand(1).item() < 0.5:
+                    scale = 0.9 + 0.2 * torch.rand(1).item()
+                    x[s] = (x[s] * scale).clamp(0.0, 1.0)
+                if torch.rand(1).item() < 0.5:
+                    max_shift = 8
+                    dh = int(torch.randint(-max_shift, max_shift + 1, (1,)).item())
+                    dw = int(torch.randint(-max_shift, max_shift + 1, (1,)).item())
+                    x[s] = torch.roll(x[s], shifts=(dh, dw), dims=(1, 2))
+                if torch.rand(1).item() < 0.5:
+                    x[s] = (x[s] + 0.01 * torch.randn_like(x[s])).clamp(0.0, 1.0)
+
+        # ImageNet normalization for pretrained backbone (all splits)
+        if x.shape[1] == 1:
+            x = x.repeat(1, 3, 1, 1)
+        mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(1, 3, 1, 1)
+        x = (x - mean) / std
+        return x, y, patient_id
 
     
