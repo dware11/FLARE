@@ -20,7 +20,7 @@ def main(
     k_slices: int = 5,
     agg: str = "mean",
 ) -> None:
-    """Train ResNet18 on CT cache; saves best checkpoint to OUTPUTS/ct_baseline_best.pt."""
+    """Train DenseNet121 on CT cache; saves best checkpoint to OUTPUTS/ct_baseline_best.pt."""
     OUTPUTS.mkdir(parents=True, exist_ok=True)
     train_ds = CTDataset(split="train")
     val_ds = CTDataset(split="val")
@@ -38,8 +38,17 @@ def main(
     )
     print("Starting training...")
 
-    # Optimizer with weight decay
-    opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    # Differential LR: backbone (DenseNet features) at 0.1× lr; classification head at full lr.
+    # This preserves pretrained ImageNet representations while allowing the head to adapt quickly.
+    backbone_params = [p for n, p in model.named_parameters() if "classifier" not in n]
+    head_params     = [p for n, p in model.named_parameters() if "classifier" in n]
+    opt = torch.optim.Adam(
+        [
+            {"params": backbone_params, "lr": lr * 0.1},
+            {"params": head_params,     "lr": lr},
+        ],
+        weight_decay=1e-4,
+    )
     criterion = nn.CrossEntropyLoss(ignore_index=-1)
 
     # LR scheduler on validation loss

@@ -8,7 +8,11 @@ from typing import Literal, Optional, Tuple
 
 import numpy as np
 import torch
+import torchvision.transforms.functional as TF
 from torch.utils.data import Dataset
+
+_IMAGENET_MEAN = [0.485, 0.456, 0.406]
+_IMAGENET_STD  = [0.229, 0.224, 0.225]
 
 import sys
 ROOT = Path(__file__).resolve().parents[3]
@@ -113,6 +117,10 @@ class CTDataset(Dataset):
         if arr.ndim == 3: 
             arr = arr[np.newaxis, ...] 
         x = torch.from_numpy(arr).float()
+        # Apply ImageNet normalization so pretrained DenseNet121 features align.
+        # x shape: (k, 3, H, W) — normalize each (3, H, W) slice independently.
+        x = torch.stack([TF.normalize(x[s], _IMAGENET_MEAN, _IMAGENET_STD)
+                         for s in range(x.shape[0])])
         y = int(e.get("label", -1))
         patient_id = e.get("patient_id", path.parent.name)
         if getattr(self, "split", "all") == "train":

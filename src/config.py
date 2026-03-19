@@ -53,7 +53,31 @@ MRI_META = MRI_ROOT / "meta"
 MRI_OUTPUTS = MRI_ROOT / "outputs"
 
 # -----------------------------------------------------------------------------
-# 5) Backward compatibility: existing names map to CT by default
+# 5) Breast pipeline paths
+# -----------------------------------------------------------------------------
+BREAST_MAMMO_ROOT = DATA_ROOT / "breast_mammo"
+BREAST_MRI_ROOT   = DATA_ROOT / "breast_mri"
+
+# DBT (3D tomosynthesis) mammography paths
+BREAST_MAMMO_RAW     = BREAST_MAMMO_ROOT / "raw"
+BREAST_MAMMO_CACHE   = BREAST_MAMMO_ROOT / "cache"
+BREAST_MAMMO_META    = BREAST_MAMMO_ROOT / "meta"
+BREAST_MAMMO_OUTPUTS = BREAST_MAMMO_ROOT / "outputs"
+BREAST_MAMMO_CKPT    = BREAST_MAMMO_OUTPUTS / "mammo_best.pt"
+BREAST_MAMMO_CAM_DIR = BREAST_MAMMO_OUTPUTS / "cam"
+BREAST_MAMMO_MANIFEST = BREAST_MAMMO_META / "mammo_manifest.json"
+
+# Breast MRI (DCE-MRI) paths
+BREAST_MRI_RAW     = BREAST_MRI_ROOT / "raw"
+BREAST_MRI_CACHE   = BREAST_MRI_ROOT / "cache"
+BREAST_MRI_META    = BREAST_MRI_ROOT / "meta"
+BREAST_MRI_OUTPUTS = BREAST_MRI_ROOT / "outputs"
+BREAST_MRI_CKPT    = BREAST_MRI_OUTPUTS / "breast_mri_best.pt"
+BREAST_MRI_CAM_DIR = BREAST_MRI_OUTPUTS / "cam"
+BREAST_MRI_MANIFEST = BREAST_MRI_META / "breast_mri_manifest.json"
+
+# -----------------------------------------------------------------------------
+# 6) Backward compatibility: existing names map to CT by default
 #    (do not remove; other files import these)
 # -----------------------------------------------------------------------------
 RAW = CT_RAW

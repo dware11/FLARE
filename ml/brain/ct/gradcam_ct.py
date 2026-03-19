@@ -1,5 +1,6 @@
 """
-Demo: Hook model.layer4, compute Grad-CAM heatmap + overlay.
+Grad-CAM implementation for CT model (DenseNet121).
+Default target layer: features.denseblock4 (last dense block before global avg pool).
 Design: enable_grad required so we can backward on target class for gradients.
 """
 
@@ -9,15 +10,23 @@ import torch
 import torch.nn.functional as F
 
 
+def _get_layer(model: torch.nn.Module, layer_name: str) -> torch.nn.Module:
+    """Navigate dotted layer paths, e.g. 'features.denseblock4'."""
+    layer = model
+    for part in layer_name.split("."):
+        layer = getattr(layer, part)
+    return layer
+
+
 class GradCAM:
     """
-    Minimal Grad-CAM implementation for a 3D CT model.
-    Target layer: model.layer4.
+    Minimal Grad-CAM implementation for the CT classifier (DenseNet121).
+    Target layer: features.denseblock4 (last dense block, before norm5 + global pool).
     """
 
-    def __init__(self, model: torch.nn.Module, layer_name: str = "layer4"):
+    def __init__(self, model: torch.nn.Module, layer_name: str = "features.denseblock4"):
         self.model = model
-        self.layer = getattr(model, layer_name)
+        self.layer = _get_layer(model, layer_name)
         self.activations: Optional[torch.Tensor] = None
         self.gradients: Optional[torch.Tensor] = None
         self._fwd_handle = None
