@@ -1,34 +1,57 @@
-from typing import Optional 
+from typing import Optional
+import re
 
-# BCS-DBT LABEL SCHEMA (VERSION 1) 
+# BCS-DBT LABEL SCHEMA (VERSION 1)
+# ------------------------------------------------------------------
+# TCIA BCS-DBT case labels are commonly:
+#   - Normal
+#   - Actionable
+#   - Biopsy-proven benign
+#   - Biopsy-proven cancer
+#
+# This file maps raw labels to:
+#   - 1 positive  (biopsy-proven cancer)
+#   - 0 negative  (normal + biopsy-proven benign)
+#   - -1 ignore   (actionable; ambiguous without confirmed cancer)
+# ------------------------------------------------------------------
 
 
+def _canonicalize_bcs_dbt_label(raw_label: str) -> str:
+    """
+    Canonicalize BCS-DBT label strings to be robust to:
+      - casing
+      - whitespace
+      - hyphens vs underscores
+      - extra punctuation
+    Example:
+      "Biopsy-proven cancer" -> "biopsy_proven_cancer"
+    """
+    s = (raw_label or "").strip().lower()
+    # Treat hyphens/underscores as spaces, then normalize whitespace.
+    s = s.replace("-", " ").replace("_", " ")
+    s = re.sub(r"\s+", " ", s)
+    s = s.replace(" ", "_")
+    return s
+
+
+# After canonicalization:
 BCS_DBT_POSITIVE = {
-    "cancer",
-    "malignant",
     "biopsy_proven_cancer",
 }
 
 BCS_DBT_NEGATIVE = {
     "normal",
-    "benign",
-    "benign_biopsy",
-    "no_finding",
+    "biopsy_proven_benign",
 }
 
 BCS_DBT_IGNORE = {
     "actionable",
-    "suspicious",
-    "probably_benign",
-    "callback",
-    "unclear",
 }
 
-def normalize_raw_label(raw_label: str) -> str: 
-    """
-    Normalize a raw label string for robust matching: 
-    """
-    return (raw_label or "").strip().lower()
+
+def normalize_raw_label(raw_label: str) -> str:
+    """Backward-compatible wrapper for older code paths."""
+    return _canonicalize_bcs_dbt_label(raw_label)
 
 def map_bcs_dbt_label(raw_label: str) -> int: 
     """
