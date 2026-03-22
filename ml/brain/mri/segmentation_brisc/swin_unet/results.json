@@ -1,0 +1,8 @@
+{
+  "model": "Swin-UNet",
+  "best_epoch": 44,
+  "best_val_dice": 0.8951643043094211,
+  "test_dice": 0.8873349610302184,
+  "test_iou": 0.8060949588263476,
+  "test_loss": 0.11183642756400837
+}

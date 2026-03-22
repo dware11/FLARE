@@ -1,0 +1,26 @@
+{
+  "total_entries": 15586,
+  "total_images": 10793,
+  "total_masks": 4793,
+  "classification_entries": 6000,
+  "segmentation_entries": 9586,
+  "train_entries": 12866,
+  "test_entries": 2720,
+  "tumor_types": [
+    "glioma",
+    "meningioma",
+    "no_tumor",
+    "pituitary"
+  ],
+  "imaging_planes": [
+    "axial",
+    "coronal",
+    "sagittal"
+  ],
+  "mri_sequences": [
+    "T1"
+  ],
+  "total_size_gb": 0.2452401164919138,
+  "image_mode_verified": "All grayscale (R=G=B)",
+  "image_mask_pairing": "100.0%"
+}
