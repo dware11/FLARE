@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Mapping, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -92,18 +92,81 @@ def resize_volume_to_target(vol: np.ndarray, target_shape: Tuple[int, int, int])
     return vol_out.astype(np.float32)
 
 
-def _compute_raw_label_from_one_hot(row: Dict[str, str]) -> str:
-    normal = int(row.get("Normal", "0"))
-    actionable = int(row.get("Actionable", "0"))
-    benign = int(row.get("Benign", "0"))
-    cancer = int(row.get("Cancer", "0"))
+def _norm_key(k: str) -> str:
+    return (k or "").strip().lower()
+
+
+def _norm_text(s: str) -> str:
+    return (s or "").strip().lower()
+
+
+def _pick_first(row: Mapping[str, str], keys: List[str], default: str = "") -> str:
+    if not row:
+        return default
+    lower = {_norm_key(k): k for k in row.keys()}
+    for key in keys:
+        exact = row.get(key)
+        if exact is not None and str(exact).strip():
+            return str(exact).strip()
+        lk = _norm_key(key)
+        orig = lower.get(lk)
+        if orig is not None:
+            v = row.get(orig)
+            if v is not None and str(v).strip():
+                return str(v).strip()
+    return default
+
+
+def _parse_flag(v: str) -> int:
+    s = _norm_text(v)
+    if not s:
+        return 0
+    if s in {"1", "true", "yes", "y"}:
+        return 1
+    if s in {"0", "false", "no", "n"}:
+        return 0
+    try:
+        return int(float(s))
+    except ValueError:
+        return 0
+
+
+def _compute_raw_label_from_one_hot(row: Optional[Mapping[str, str]]) -> str:
+    if not row:
+        return "unknown"
+    normal = _parse_flag(_pick_first(row, ["Normal", "normal"]))
+    actionable = _parse_flag(_pick_first(row, ["Actionable", "actionable"]))
+    benign = _parse_flag(_pick_first(row, ["Benign", "benign"]))
+    cancer = _parse_flag(_pick_first(row, ["Cancer", "cancer"]))
     if cancer == 1:
-        return "cancer"
+        return "biopsy_proven_cancer"
     if normal == 1:
         return "normal"
     if benign == 1:
-        return "benign"
+        return "biopsy_proven_benign"
     if actionable == 1:
+        return "actionable"
+    raw = _norm_text(
+        _pick_first(
+            row,
+            [
+                "raw_label",
+                "label",
+                "pathology",
+                "diagnosis",
+                "final_diagnosis",
+                "clinical_label",
+            ],
+            default="",
+        )
+    )
+    if any(x in raw for x in ("cancer", "carcinoma", "malignant")):
+        return "biopsy_proven_cancer"
+    if "benign" in raw:
+        return "biopsy_proven_benign"
+    if any(x in raw for x in ("normal", "negative", "no_cancer", "no cancer")):
+        return "normal"
+    if any(x in raw for x in ("actionable", "suspicious", "pending", "indeterminate")):
         return "actionable"
     return "unknown"
 
@@ -119,23 +182,42 @@ def load_exam_manifest(
     with labels_csv.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            pid = row["PatientID"].strip()
-            sid = row["StudyUID"].strip()
-            view = row["View"].strip().lower()
+            pid = _pick_first(row, ["PatientID", "patient_id", "Patient", "patient"])
+            sid = _pick_first(
+                row, ["StudyUID", "study_uid", "studyid", "exam_id", "ExamID", "accession"]
+            )
+            view = _norm_text(_pick_first(row, ["View", "view", "view_name"]))
+            if not pid or not sid or not view:
+                continue
             labels_index[(pid, sid, view)] = row
 
     entries: List[Dict] = []
     with paths_csv.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            pid = row["PatientID"].strip()
+            pid = _pick_first(row, ["PatientID", "patient_id", "Patient", "patient"])
+            sid = _pick_first(
+                row, ["StudyUID", "study_uid", "studyid", "exam_id", "ExamID", "accession"]
+            )
+            view = _norm_text(_pick_first(row, ["View", "view", "view_name"]))
+            if not pid or not sid or not view:
+                continue
             if patient_filter is not None and pid not in patient_filter:
                 continue
-            sid = row["StudyUID"].strip()
-            view = row["View"].strip().lower()
             label_row = labels_index.get((pid, sid, view))
             raw_label = _compute_raw_label_from_one_hot(label_row) if label_row else "unknown"
-            dicom_rel = row.get("descriptive_path") or row.get("classic_path") or ""
+            dicom_rel = _pick_first(
+                row,
+                [
+                    "descriptive_path",
+                    "classic_path",
+                    "dicom_rel_path",
+                    "dicom_path",
+                    "path",
+                    "exam_path",
+                ],
+                default="",
+            )
             entries.append(
                 {
                     "patient_id": pid,
@@ -176,7 +258,7 @@ def preprocess_bcs_dbt(
         with paths_csv.open(newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                pid = row["PatientID"].strip()
+                pid = _pick_first(row, ["PatientID", "patient_id", "Patient", "patient"])
                 if pid and pid not in ordered:
                     ordered[pid] = None
 
@@ -198,7 +280,10 @@ def preprocess_bcs_dbt(
         raw_label = row["raw_label"]
         dicom_rel = row["dicom_rel_path"]
 
-        dicom_dir = (RAW_DBT_ROOT / Path(dicom_rel)).parent
+        dcm_candidate = Path(dicom_rel)
+        if not dcm_candidate.is_absolute():
+            dcm_candidate = RAW_DBT_ROOT / dcm_candidate
+        dicom_dir = dcm_candidate if dcm_candidate.is_dir() else dcm_candidate.parent
         y = map_bcs_dbt_label(raw_label)
         if y not in (0, 1):
             continue

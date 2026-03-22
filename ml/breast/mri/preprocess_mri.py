@@ -68,6 +68,45 @@ def _safe_int(x: Any, default: int = 0) -> int:
         return default
 
 
+def _norm_key(s: str) -> str:
+    return (s or "").strip().lower()
+
+
+def _norm_token(s: str) -> str:
+    return "".join(ch for ch in _safe_str(s).lower() if ch.isalnum())
+
+
+def _pick_first(row: Dict[str, str], keys: List[str], default: str = "") -> str:
+    if not row:
+        return default
+    lower = {_norm_key(k): k for k in row.keys()}
+    for key in keys:
+        v = row.get(key)
+        if v is not None and _safe_str(v):
+            return _safe_str(v)
+        lk = _norm_key(key)
+        orig = lower.get(lk)
+        if orig is not None:
+            val = row.get(orig)
+            if val is not None and _safe_str(val):
+                return _safe_str(val)
+    return default
+
+
+def _extract_exam_patient_ids(row: Dict[str, str]) -> Tuple[str, str]:
+    exam_id = _pick_first(
+        row,
+        ["exam_id", "ExamID", "study_uid", "StudyUID", "accession", "study_id", "studyid"],
+        default="",
+    )
+    patient_id = _pick_first(
+        row,
+        ["patient_id", "PatientID", "patient", "subject_id", "subject"],
+        default="",
+    )
+    return exam_id, patient_id
+
+
 def discover_series_under_exam(exam_dir: Path) -> List[SeriesInfo]:
     """Group all DICOM files under exam_dir by SeriesInstanceUID."""
     files = list(exam_dir.rglob("*.dcm")) + list(exam_dir.rglob("*.DCM"))
@@ -159,15 +198,57 @@ def select_phases(
 
 
 def exam_dir_for_row(data_root: Path, row: Dict[str, str]) -> Path:
-    for key in ("dicom_exam_dir", "exam_path", "dicom_root", "path"):
-        v = row.get(key)
-        if v and str(v).strip():
-            p = Path(str(v).strip())
-            if not p.is_absolute():
-                p = data_root / p
-            return p
-    pid = str(row.get("patient_id", "")).strip()
-    eid = str(row.get("exam_id", "")).strip()
+    path_val = _pick_first(
+        row,
+        [
+            "dicom_exam_dir",
+            "exam_path",
+            "dicom_root",
+            "dicom_path",
+            "exam_dir",
+            "path",
+            "relative_path",
+        ],
+        default="",
+    )
+    candidates: List[Path] = []
+    if path_val:
+        p = Path(path_val)
+        if not p.is_absolute():
+            p = data_root / p
+        candidates.append(p if p.is_dir() else p.parent)
+
+    exam_id, patient_id = _extract_exam_patient_ids(row)
+    pid = _safe_str(patient_id)
+    eid = _safe_str(exam_id)
+    if pid and eid:
+        candidates.append(data_root / pid / eid)
+    if eid:
+        candidates.append(data_root / eid)
+    if pid:
+        candidates.append(data_root / pid)
+
+    for c in candidates:
+        if c.is_dir():
+            return c
+
+    if pid and eid:
+        patient_dir = data_root / pid
+        if patient_dir.is_dir():
+            eid_tok = _norm_token(eid)
+            matches = []
+            for child in patient_dir.iterdir():
+                if not child.is_dir():
+                    continue
+                ct = _norm_token(child.name)
+                if eid_tok and (eid_tok in ct or ct in eid_tok):
+                    matches.append(child)
+            if matches:
+                matches.sort(key=lambda p: (len(p.name), p.name))
+                return matches[0]
+
+    if candidates:
+        return candidates[0]
     return data_root / pid / eid
 
 
@@ -279,6 +360,11 @@ def main() -> None:
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--add-subtraction", action="store_true")
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate row->exam_dir/label mapping only; do not write NPZ.",
+    )
     args = ap.parse_args()
 
     manifest_path = args.manifest or BREAST_MRI_MANIFEST_PATH
@@ -288,17 +374,21 @@ def main() -> None:
 
     rows = load_label_rows(args.label_csv)
     n_ok = 0
+    n_missing_dir = 0
+    n_skipped_missing_ids = 0
+    n_skipped_ignore_label = 0
     for row in rows:
         if args.limit and n_ok >= args.limit:
             break
-        exam_id = str(row.get("exam_id", "")).strip()
-        patient_id = str(row.get("patient_id", "")).strip()
+        exam_id, patient_id = _extract_exam_patient_ids(row)
         if not exam_id or not patient_id:
             LOG.warning("Skip row missing exam_id/patient_id: %s", row)
+            n_skipped_missing_ids += 1
             continue
 
         y, raw_lbl = map_mri_label_from_row(row)
         if y < 0:
+            n_skipped_ignore_label += 1
             upsert_row(
                 manifest_path,
                 {
@@ -331,6 +421,13 @@ def main() -> None:
 
         exam_dir = exam_dir_for_row(args.data_root, row)
         out_npz = npz_path_for_exam(out_dir, exam_id)
+        if args.dry_run:
+            if not exam_dir.is_dir():
+                n_missing_dir += 1
+                LOG.warning("DRY-RUN missing exam dir for %s: %s", exam_id, exam_dir)
+            else:
+                LOG.info("DRY-RUN exam %s -> %s", exam_id, exam_dir)
+            continue
 
         try:
             if not exam_dir.is_dir():
@@ -371,6 +468,16 @@ def main() -> None:
         upsert_row(manifest_path, mrow)
         if mrow.get("status") == "success":
             n_ok += 1
+
+    if args.dry_run:
+        LOG.info(
+            "Dry run complete. rows=%d missing_ids=%d ignore_label=%d missing_exam_dir=%d",
+            len(rows),
+            n_skipped_missing_ids,
+            n_skipped_ignore_label,
+            n_missing_dir,
+        )
+        return
 
     LOG.info("Done. Manifest: %s", manifest_path)
 
