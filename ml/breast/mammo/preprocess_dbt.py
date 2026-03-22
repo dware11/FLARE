@@ -288,6 +288,23 @@ def preprocess_bcs_dbt(
         if y not in (0, 1):
             continue
 
+        out_path = DBT_NPZ_DIR / f"{exam_id}_{view}.npz"
+        if out_path.exists():
+            try:
+                existing = np.load(out_path, allow_pickle=True)
+                manifest_out.append({
+                    "path": str(out_path),
+                    "label": int(np.asarray(existing["label"]).reshape(-1)[0]),
+                    "exam_id": str(exam_id),
+                    "patient_id": str(patient_id),
+                    "view": str(view),
+                    "raw_label": str(raw_label),
+                })
+            except Exception:
+                pass  # corrupt file — fall through and reprocess
+            else:
+                continue
+
         try:
             vol = load_dbt_view_dicom_series(dicom_dir).astype(np.float32)
         except Exception as e:
@@ -302,7 +319,6 @@ def preprocess_bcs_dbt(
         vol = resize_volume_to_target(vol, (d_t, h_t, w_t))
         vol = vol[np.newaxis, :, :, :]
 
-        out_path = DBT_NPZ_DIR / f"{exam_id}_{view}.npz"
         np.savez_compressed(
             out_path,
             image=vol.astype(np.float32),
