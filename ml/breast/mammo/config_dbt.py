@@ -29,6 +29,11 @@ DBT_CACHE_ROOT = Path(
 DBT_NPZ_DIR = DBT_CACHE_ROOT / "npz"
 DBT_MANIFEST_PATH = DBT_CACHE_ROOT / "bcs_dbt_manifest.json"
 
+# Per-split manifests written by separate preprocessing jobs on Delta.
+DBT_MANIFEST_TRAIN = DBT_DATA_ROOT / "cache" / "train" / "bcs_dbt_manifest.json"
+DBT_MANIFEST_VAL   = DBT_DATA_ROOT / "cache" / "val"   / "bcs_dbt_manifest.json"
+DBT_MANIFEST_TEST  = DBT_DATA_ROOT / "cache" / "test"  / "bcs_dbt_manifest.json"
+
 # Delta outputs by split/batch.
 DBT_OUTPUT_TRAIN_ROOT = Path(
     os.environ.get("FLARE_DBT_OUT_TRAIN", str(DBT_DATA_ROOT / "outputs" / "train" / "batch1"))
