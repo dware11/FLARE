@@ -5,10 +5,24 @@ Design: preprocessing is offline so inference never re-parses DICOMs.
 import argparse
 import json
 import sys
+import warnings
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
+
+# Suppress known JPEG2000 metadata mismatch warnings from CQ500-like DICOMs.
+# These are noisy but typically non-fatal during pixel decode.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*Bits Stored value.*doesn't match the JPEG 2000 data.*",
+    category=UserWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r".*Bits Stored value '16'.*does not match the component precision value '14'.*",
+    category=UserWarning,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
