@@ -47,9 +47,10 @@ class DBTViewDataset(Dataset):
 
         valid = []
         for e in entries:
-            p = Path(e.get("path", ""))
+            p = Path(e.get("path", "") or e.get("npz_path", ""))
             y = int(e.get("label", -1))
             if p.exists() and y in (0, 1):
+                e["path"] = str(p)
                 valid.append(e)
 
         rng = np.random.default_rng(seed)
@@ -71,6 +72,9 @@ class DBTViewDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self.entries)
+
+    def get_labels(self) -> List[int]:
+        return [int(e.get("label", -1)) for e in self.entries]
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, str, str, str]:
         e = self.entries[idx]
