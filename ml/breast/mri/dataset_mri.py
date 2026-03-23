@@ -109,10 +109,14 @@ class BreastMRIDataset(Dataset):
         y = int(np.asarray(data["label"]).reshape(-1)[0])
         exam_id = _decode_np_scalar(data["exam_id"])
         patient_id = _decode_np_scalar(data["patient_id"])
+        pn = data.get("phase_names", None)
+        if pn is not None:
+            # Avoid numpy unicode arrays in meta — default_collate cannot batch them.
+            pn = np.asarray(pn, dtype=str).tolist()
         meta: Dict[str, Any] = {
             "npz_path": e["npz_path"],
             "raw_label": _decode_np_scalar(data.get("raw_label", "")),
-            "phase_names": data.get("phase_names", None),
+            "phase_names": pn,
         }
         if self.augment:
             img = self._aug(img)

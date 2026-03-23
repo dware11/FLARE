@@ -301,7 +301,8 @@ def process_one_exam(
     assert (d, h, w) == MRI_TARGET_SHAPE, f"Bad spatial shape {vol.shape}"
 
     out_npz.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out_npz.with_suffix(".npz.tmp")
+    # Temp path must end with ".npz" or np.savez_compressed appends ".npz" and breaks atomic replace.
+    tmp = out_npz.with_name(out_npz.stem + ".tmp.npz")
     phase_names = ["pre", "post1", "post2"] + (["sub"] if add_subtraction else [])
     np.savez_compressed(
         tmp,
