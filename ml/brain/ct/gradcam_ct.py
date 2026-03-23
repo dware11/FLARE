@@ -8,6 +8,15 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+def _get_layer(model: torch.nn.Module, layer_name: str) -> torch.nn.Module: 
+    """ Resolve nested layer name (ex. 'features.denseblock4') for Grad-Cam """ 
+    if "." not in layer_name: 
+        return getattr(model, layer_name) 
+
+    obj = model 
+    for part in layer_name.split("."):
+        obj =getattr(obj, part) 
+    return obj
 
 class GradCAM:
     """
@@ -15,9 +24,9 @@ class GradCAM:
     Target layer: model.layer4.
     """
 
-    def __init__(self, model: torch.nn.Module, layer_name: str = "layer4"):
+    def __init__(self, model: torch.nn.Module, layer_name: str = "features.denseblock4"):
         self.model = model
-        self.layer = getattr(model, layer_name)
+        self.layer = _get_layer(model, layer_name)
         self.activations: Optional[torch.Tensor] = None
         self.gradients: Optional[torch.Tensor] = None
         self._fwd_handle = None
