@@ -31,6 +31,7 @@ from ml.brain.ct.infer import (  # noqa: E402
     _load_manifest,
     _load_model,
     _predict_one,
+    _thickness_from_npz,
 )
 
 
@@ -175,8 +176,9 @@ def run_gradcam_and_scores(
     x_raw = torch.from_numpy(arr).float().to(device)
     x_all = _imagenet_normalize_volume(x_raw)
     x_batch = x_all.unsqueeze(0)
+    thick = _thickness_from_npz(npz_path, device)
 
-    probs = _predict_one(model, x_batch, use_grad=True, agg=agg)
+    probs = _predict_one(model, x_batch, use_grad=True, agg=agg, thickness=thick)
     pred = int(np.argmax(probs))
     conf = float(probs[pred])
 

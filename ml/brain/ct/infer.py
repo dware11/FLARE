@@ -22,6 +22,7 @@ from ml.brain.ct.model_ct import (
     build_ct_model,
     build_ct_sequence_model,
     is_sequence_ct_model,
+    load_sequence_weights_compat,
     patient_logits_from_model,
 )
 from ml.brain.ct.gradcam_ct import GradCAM
@@ -58,6 +59,17 @@ def _load_patient_arr(path: Path) -> np.ndarray:
     if arr.ndim == 3:
         arr = arr[np.newaxis, ...]
     return arr.astype(np.float32)
+
+
+def _thickness_from_npz(path: Path, device: torch.device) -> torch.Tensor:
+    """Normalized thickness (B=1, 1); matches CTDataset scaling."""
+    data = np.load(path)
+    if "slice_thickness_mm" in data.files:
+        tmm = float(np.asarray(data["slice_thickness_mm"]).reshape(-1)[0])
+    else:
+        tmm = 0.0
+    tn = min(max(tmm, 0.0) / 10.0, 3.0)
+    return torch.tensor([[tn]], dtype=torch.float32, device=device)
 
 
 def _imagenet_normalize_volume(x: torch.Tensor) -> torch.Tensor:
@@ -142,14 +154,26 @@ def _load_model(checkpoint: Path):
     state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
     model_kind = ckpt.get("model_kind", "legacy") if isinstance(ckpt, dict) else "legacy"
     agg = ckpt.get("agg", "max") if isinstance(ckpt, dict) else "max"
-    rnn_type = ckpt.get("rnn_type", "lstm") if isinstance(ckpt, dict) else "lstm"
+    rnn_type = ckpt.get("rnn_type", "gru") if isinstance(ckpt, dict) else "gru"
+    sequence_pool = ckpt.get("sequence_pool", "max") if isinstance(ckpt, dict) else "max"
+    sequence_topk = ckpt.get("sequence_topk", 3) if isinstance(ckpt, dict) else 3
+    rnn_dropout = ckpt.get("rnn_dropout", 0.25) if isinstance(ckpt, dict) else 0.25
+    use_thickness = ckpt.get("use_thickness", False) if isinstance(ckpt, dict) else False
 
     if model_kind == "sequence":
-        model = build_ct_sequence_model(rnn_type=rnn_type)
+        if "head.weight" in state and "slice_head.weight" not in state:
+            sequence_pool = "center"
+        model = build_ct_sequence_model(
+            rnn_type=rnn_type,
+            sequence_pool=sequence_pool,
+            topk=sequence_topk,
+            rnn_dropout=rnn_dropout,
+            use_thickness=use_thickness,
+        )
+        load_sequence_weights_compat(model, state)
     else:
         model = build_ct_model()
-
-    model.load_state_dict(state, strict=True)
+        model.load_state_dict(state, strict=True)
     model.eval()
     if torch.cuda.is_available():
         model = model.cuda()
@@ -160,20 +184,22 @@ def _predict_one(
     x: torch.Tensor,
     use_grad: bool,
     agg: str = "max",
+    thickness: Optional[torch.Tensor] = None,
 ) -> np.ndarray:
     """
     x: (1, k, C, H, W) after ImageNet normalization.
+    thickness: (1, 1) optional; used when model was trained with use_thickness.
     Returns probs as numpy array shape (2,).
     """
     if use_grad:
         model.zero_grad(set_to_none=True)
         with torch.enable_grad():
-            logits = patient_logits_from_model(model, x, agg=agg)
+            logits = patient_logits_from_model(model, x, agg=agg, thickness=thickness)
             probs = torch.softmax(logits, dim=1).squeeze(0).cpu().detach().numpy()
         return probs
 
     with torch.no_grad():
-        logits = patient_logits_from_model(model, x, agg=agg)
+        logits = patient_logits_from_model(model, x, agg=agg, thickness=thickness)
         probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
     return probs
 
@@ -221,8 +247,9 @@ def _run_single_inference(
     x_raw = torch.from_numpy(arr).float().to(device)
     x_all = _imagenet_normalize_volume(x_raw)
     x_batch = x_all.unsqueeze(0)
+    thick = _thickness_from_npz(path, device)
     use_grad = cam_dir is not None
-    probs = _predict_one(model, x_batch, use_grad=use_grad, agg=agg)
+    probs = _predict_one(model, x_batch, use_grad=use_grad, agg=agg, thickness=thick)
     pred = 1 if float(probs[1]) >= ABNORMAL_THRESHOLD else 0
     conf = float(probs[pred])
     if cam_dir is not None:
@@ -294,7 +321,8 @@ def _run_batch_inference(
         x_raw = torch.from_numpy(arr).float().to(device)
         x_all = _imagenet_normalize_volume(x_raw)
         x_batch = x_all.unsqueeze(0)
-        probs = _predict_one(model, x_batch, use_grad=use_grad, agg=agg)
+        thick = _thickness_from_npz(path, device)
+        probs = _predict_one(model, x_batch, use_grad=use_grad, agg=agg, thickness=thick)
         pred = 1 if float(probs[1]) >= ABNORMAL_THRESHOLD else 0
         conf = float(probs[pred])
 
@@ -431,8 +459,9 @@ def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus
     x_raw = torch.from_numpy(arr).float().to(device)
     x_all = _imagenet_normalize_volume(x_raw)
     x_batch = x_all.unsqueeze(0)
+    thick = _thickness_from_npz(arr_path, device)
     use_grad = cam_dir is not None
-    probs = _predict_one(model, x_batch, use_grad=use_grad, agg=agg)
+    probs = _predict_one(model, x_batch, use_grad=use_grad, agg=agg, thickness=thick)
     pred = 1 if float(probs[1]) >= ABNORMAL_THRESHOLD else 0
 
     cam_path = None

@@ -4,6 +4,7 @@ Design: preprocessing is offline so inference never re-parses DICOMs.
 """
 import argparse
 import json
+import math
 import sys
 import warnings
 from pathlib import Path
@@ -50,6 +51,18 @@ except ImportError:
     pydicom = None 
 
 DICOM_EXTS = (".dcm", ".dicom")
+
+
+def _read_slice_thickness_mm(dcm) -> float:
+    """SliceThickness in mm from DICOM header; 0 if missing or invalid."""
+    st = getattr(dcm, "SliceThickness", None)
+    if st is None:
+        return 0.0
+    try:
+        v = float(st)
+        return v if math.isfinite(v) and v > 0 else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _has_top_level_dicoms(ct_selected: Path) -> bool:
@@ -314,10 +327,18 @@ def main(
                 arr_slice = hu_to_multiwindow(hu)
                 slices_list.append(arr_slice)
             stacked = np.stack(slices_list, axis=0).astype(np.float32)
-            out_dir = CACHE_CT / pdir.name 
-            out_dir.mkdir(parents=True, exist_ok=True) 
+            mid_path = dicom_paths[n_slices // 2]
+            mid_header = pydicom.dcmread(str(mid_path), stop_before_pixels=True)
+            slice_thickness_mm = np.float32(_read_slice_thickness_mm(mid_header))
+            out_dir = CACHE_CT / pdir.name
+            out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"slices_k{k_slices}.npz"
-            np.savez_compressed(out_path, arr=stacked, slice_indices=indices)
+            np.savez_compressed(
+                out_path,
+                arr=stacked,
+                slice_indices=indices,
+                slice_thickness_mm=slice_thickness_mm,
+            )
             label = labels.get(patient_id, -1)
 
             if patient_id in manifest_by_id:

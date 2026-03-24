@@ -54,9 +54,12 @@ def ct_to_tensor(
     x = resize_2d(x, size=size)
     return torch.from_numpy(x).unsqueeze(0)
 
-WINDOW_BRAIN = (40, 80) 
-WINDOW_SUBDURAL = (75, 200)
-WINDOW_BONE = (400, 1000)
+# Paper-aligned multi-window CT (hemorrhage literature: brain + subdural + bony).
+# Brain: WL 40 / WW 80. Subdural: ~80/200. Bone: ~600/2800 (Wang-style).
+# Changing these alters pixel statistics; re-run preprocess_ct.py --force to refresh NPZ caches.
+WINDOW_BRAIN = (40, 80)
+WINDOW_SUBDURAL = (80, 200)
+WINDOW_BONE = (600, 2800)
 
 def hu_to_multiwindow(
     hu: np.ndarray,

@@ -24,9 +24,15 @@ if [[ ! -x "$ENV_PYTHON" ]]; then
   exit 1
 fi
 
+# DenseNet121 + BiGRU + max slice pooling + focal (gamma=2) + grad clip + AUC checkpointing (train_ct defaults).
+# Re-run preprocess_ct.py --force after ct_transforms window changes. Then: threshold_sweep.py for operating point.
 $ENV_PYTHON ml/brain/ct/train_ct.py \
   --epochs 30 \
   --batch-size 8 \
   --lr 5e-5 \
   --grad-clip 1.0 \
-  --model sequence
+  --model sequence \
+  --rnn-type gru \
+  --sequence-pool max \
+  --rnn-dropout 0.25 \
+  --focal-gamma 2.0

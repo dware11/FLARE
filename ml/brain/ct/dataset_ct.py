@@ -18,6 +18,10 @@ from src.config import META
 
 DEFAULT_MANIFEST = META / "ct_processed_manifest.json"
 
+# Match training / Wang-style thickness fusion: mm scaled to ~[0, 3] for stability.
+_SLICE_THICKNESS_DIV_MM = 10.0
+_SLICE_THICKNESS_CAP = 3.0
+
 
 def _resolve_manifest(manifest_path: Optional[Path]) -> Path:
     if manifest_path is None:
@@ -43,7 +47,7 @@ def _random_erasing(x: torch.Tensor, p: float = 0.3, scale_lo: float = 0.02, sca
 
 
 class CTDataset(Dataset):
-    """Dataset over cached CT npz from manifest; yields (k, C, H, W) tensor and 0/1 label."""
+    """Dataset over cached CT npz from manifest; yields volume, label, id, and optional thickness."""
     def __init__(
         self,
         manifest_path: Optional[Path] = None,
@@ -76,7 +80,7 @@ class CTDataset(Dataset):
     def __len__(self) -> int:
         return len(self.entries)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int, str]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int, str, torch.Tensor]:
         e = self.entries[idx]
         path = Path(e["path"])
         data = np.load(path)
@@ -87,6 +91,13 @@ class CTDataset(Dataset):
         y = int(e.get("label", -1))
         patient_id = e.get("patient_id", path.parent.name)
 
+        if "slice_thickness_mm" in data.files:
+            tmm = float(np.asarray(data["slice_thickness_mm"]).reshape(-1)[0])
+        else:
+            tmm = 0.0
+        tnorm = min(max(tmm, 0.0) / _SLICE_THICKNESS_DIV_MM, _SLICE_THICKNESS_CAP)
+        thickness = torch.tensor([tnorm], dtype=torch.float32)
+
         if self.split == "train":
             x = self._augment(x)
 
@@ -95,7 +106,7 @@ class CTDataset(Dataset):
         mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(1, 3, 1, 1)
         std = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(1, 3, 1, 1)
         x = (x - mean) / std
-        return x, y, patient_id
+        return x, y, patient_id, thickness
 
     # ------------------------------------------------------------------
     # Augmentation pipeline (train only)
@@ -109,13 +120,16 @@ class CTDataset(Dataset):
         """
         k = x.shape[0]
 
-        # --- shared spatial params ---
-        do_hflip = torch.rand(1).item() < 0.5
-        do_vflip = torch.rand(1).item() < 0.1
-        angle = (torch.rand(1).item() - 0.5) * 30.0 if torch.rand(1).item() < 0.5 else 0.0
-        max_shift = 10
-        dh = int(torch.randint(-max_shift, max_shift + 1, (1,)).item()) if torch.rand(1).item() < 0.4 else 0
-        dw = int(torch.randint(-max_shift, max_shift + 1, (1,)).item()) if torch.rand(1).item() < 0.4 else 0
+        # --- shared spatial params (same geometry on every slice so Z-stack stays aligned) ---
+        do_hflip = torch.rand(1).item() < 0.35
+        do_vflip = torch.rand(1).item() < 0.08
+        angle = (torch.rand(1).item() - 0.5) * 16.0 if torch.rand(1).item() < 0.45 else 0.0
+        max_shift = 8
+        dh = int(torch.randint(-max_shift, max_shift + 1, (1,)).item()) if torch.rand(1).item() < 0.35 else 0
+        dw = int(torch.randint(-max_shift, max_shift + 1, (1,)).item()) if torch.rand(1).item() < 0.35 else 0
+        do_mild_scale = torch.rand(1).item() < 0.35
+        scale = 0.92 + 0.14 * torch.rand(1).item() if do_mild_scale else 1.0
+        _, _, H, W = x.shape
 
         for s in range(k):
             sl = x[s]  # (C, H, W)
@@ -129,6 +143,11 @@ class CTDataset(Dataset):
                 sl = TF.rotate(sl, angle)
             if dh != 0 or dw != 0:
                 sl = torch.roll(sl, shifts=(dh, dw), dims=(1, 2))
+            if do_mild_scale and scale != 1.0:
+                nh = max(1, int(round(H * scale)))
+                nw = max(1, int(round(W * scale)))
+                sl = TF.resize(sl, [nh, nw])
+                sl = TF.center_crop(sl, [H, W])
 
             # -- intensity (per-slice) --
             if torch.rand(1).item() < 0.5:
