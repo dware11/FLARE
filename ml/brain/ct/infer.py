@@ -17,9 +17,14 @@ import torch
 ROOT = Path(__file__).resolve().parents[3] 
 sys.path.insert(0, str(ROOT)) 
 
-from src.config import META, OUTPUTS 
-from ml.brain.ct.model_ct import build_ct_model 
-from ml.brain.ct.gradcam_ct import GradCAM 
+from src.config import META, OUTPUTS
+from ml.brain.ct.model_ct import (
+    build_ct_model,
+    build_ct_sequence_model,
+    is_sequence_ct_model,
+    patient_logits_from_model,
+)
+from ml.brain.ct.gradcam_ct import GradCAM
 
 LABELS = ["normal", "abnormal"]
 
@@ -46,13 +51,20 @@ def _save_overlay_png(overlay: np.ndarray, out_path: Path) -> bool:
 TRAIN_FRAC = 0.7 
 VAL_FRAC = 0.15 
 
-def _load_patient_arr(path: Path) -> np.ndarray: 
-    """ Load NPZ; return arr (k, C, H, W) float32. Handles (C, H,W) -> (1,C,H,W)"""
-    data =np.load(path) 
-    arr=data["arr"] 
-    if arr.ndim == 3: 
-        arr = arr[np.newaxis, ...] 
-    return arr.astype(np.float32) 
+def _load_patient_arr(path: Path) -> np.ndarray:
+    """Load NPZ; return arr (k, C, H, W) float32. Handles (C, H,W) -> (1,C,H,W)"""
+    data = np.load(path)
+    arr = data["arr"]
+    if arr.ndim == 3:
+        arr = arr[np.newaxis, ...]
+    return arr.astype(np.float32)
+
+
+def _imagenet_normalize_volume(x: torch.Tensor) -> torch.Tensor:
+    """Match CTDataset val/test: (k, C, H, W) with C=3."""
+    mean = torch.tensor([0.485, 0.456, 0.406], device=x.device, dtype=x.dtype).view(1, 3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225], device=x.device, dtype=x.dtype).view(1, 3, 1, 1)
+    return (x - mean) / std
 
 def _load_manifest(manifest: Path) -> list: 
     with open(manifest, encoding="utf-8") as f:  
@@ -117,44 +129,57 @@ def _apply_limit_and_random(entries: list, limit: Optional[int], random_n: Optio
 
     return out 
 
-def _load_model(checkpoint: Path) -> torch.nn.Module:
-    # Demo: load checkpoint, set eval mode (no dropout; fixed batchnorm).
+def _load_model(checkpoint: Path):
+    """Load checkpoint; returns (model, model_kind, agg_for_legacy)."""
     if not checkpoint.exists():
         raise FileNotFoundError(f"Checkpoint not found {checkpoint}")
 
-    try: 
-        ckpt = torch.load(checkpoint, map_location="cpu", weights_only=True) 
-    except TypeError: 
-        ckpt = torch.load(checkpoint, map_location="cpu") 
+    try:
+        ckpt = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    except TypeError:
+        ckpt = torch.load(checkpoint, map_location="cpu")
 
-    model = build_ct_model()
-    state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt 
-    model.load_state_dict(state)
+    state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+    model_kind = ckpt.get("model_kind", "legacy") if isinstance(ckpt, dict) else "legacy"
+    agg = ckpt.get("agg", "max") if isinstance(ckpt, dict) else "max"
+    rnn_type = ckpt.get("rnn_type", "lstm") if isinstance(ckpt, dict) else "lstm"
+
+    if model_kind == "sequence":
+        model = build_ct_sequence_model(rnn_type=rnn_type)
+    else:
+        model = build_ct_model()
+
+    model.load_state_dict(state, strict=True)
     model.eval()
     if torch.cuda.is_available():
         model = model.cuda()
-    return model
+    return model, model_kind, agg
 
 def _predict_one(
     model: torch.nn.Module,
-    x: torch.Tensor, 
-    use_grad: bool, 
-) -> np.ndarray: 
+    x: torch.Tensor,
+    use_grad: bool,
+    agg: str = "max",
+) -> np.ndarray:
     """
-    Returns probs as numpy array shape (2,). 
-    If use_grad is True, forward happens with gradiens enables (needed for grad-cam) 
+    x: (1, k, C, H, W) after ImageNet normalization.
+    Returns probs as numpy array shape (2,).
     """
-    if use_grad: 
-        model.zero_grad(set_to_none=True) 
-        with torch.enable_grad(): 
-            logits = model(x) 
-            probs = torch.softmax(logits, dim=1).squeeze(0).cpu().detach().numpy() 
+    if use_grad:
+        model.zero_grad(set_to_none=True)
+        with torch.enable_grad():
+            logits = patient_logits_from_model(model, x, agg=agg)
+            probs = torch.softmax(logits, dim=1).squeeze(0).cpu().detach().numpy()
         return probs
 
-    with torch.no_grad(): 
-        logits = model(x) 
-        probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy() 
-    return probs 
+    with torch.no_grad():
+        logits = patient_logits_from_model(model, x, agg=agg)
+        probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
+    return probs
+
+def _gradcam_layer_name(model: torch.nn.Module) -> str:
+    return "backbone.features.denseblock4" if is_sequence_ct_model(model) else "features.denseblock4"
+
 
 def _run_single_inference(
     checkpoint: Path,
@@ -162,7 +187,7 @@ def _run_single_inference(
     npz_path: Optional[Path] = None,
     cam_dir: Optional[Path] = None,
 ) -> None:
-    model = _load_model(checkpoint) 
+    model, _model_kind, agg = _load_model(checkpoint)
     device = next(model.parameters()).device
 
     # Demo: loads NPZ from manifest lookup or direct --npz path (no DICOM here).
@@ -171,54 +196,50 @@ def _run_single_inference(
         inp_desc = f"npz {npz_path}"
         cam_id = npz_path.stem
     elif patient_id:
-        manifest = META / "ct_processed_manifest.json" 
-        if not manifest.exists(): 
-            print(f"Manifest not found: {manifest}") 
-            return 
-        entries = _load_manifest(manifest) 
-        path = None 
-        for e in entries: 
-            if e.get("patient_id") == patient_id: 
-                path = Path(e["path"]) 
-                break 
-        if not path or not path.exists(): 
+        manifest = META / "ct_processed_manifest.json"
+        if not manifest.exists():
+            print(f"Manifest not found: {manifest}")
+            return
+        entries = _load_manifest(manifest)
+        path = None
+        for e in entries:
+            if e.get("patient_id") == patient_id:
+                path = Path(e["path"])
+                break
+        if not path or not path.exists():
             print(f"Patient {patient_id} not found in cache/manifest")
             return
-        inp_desc = f"patient_id {patient_id}" 
-        cam_id = patient_id 
-    else:  
-        print("Provide --patient-id or --npz for single patient mode, or leave both out for batch mode.") 
-        return 
+        inp_desc = f"patient_id {patient_id}"
+        cam_id = patient_id
+    else:
+        print("Provide --patient-id or --npz for single patient mode, or leave both out for batch mode.")
+        return
 
     print(f"Running inference on {inp_desc}")
 
-    # Design: add batch dim (1,3,256,256); inference expects (B,C,H,W).
     arr = _load_patient_arr(path)
-    x_all = torch.from_numpy(arr).float().to(device) 
-    use_grad = cam_dir is not None 
-    if use_grad: 
-        model.zero_grad(set_to_none=True)
-        with torch.enable_grad(): 
-            logits_all = model(x_all) 
-    else: 
-        with torch.no_grad(): 
-            logits_all = model(x_all) 
-    patient_logits = logits_all.mean(dim=0)
-    # detach so we can safely convert to numpy even when gradients are enabled for Grad-CAM
-    probs = torch.softmax(patient_logits, dim=0).detach().cpu().numpy()
+    x_raw = torch.from_numpy(arr).float().to(device)
+    x_all = _imagenet_normalize_volume(x_raw)
+    x_batch = x_all.unsqueeze(0)
+    use_grad = cam_dir is not None
+    probs = _predict_one(model, x_batch, use_grad=use_grad, agg=agg)
     pred = 1 if float(probs[1]) >= ABNORMAL_THRESHOLD else 0
     conf = float(probs[pred])
-    if cam_dir is not None: 
-        k = x_all.shape[0]
-        x_cam = x_all[k // 2: k// 2 + 1] 
-        gradcam = GradCAM(model, "layer4") 
-        _, overlay = gradcam(x_cam, target_class=pred, input_for_overlay=x_cam[0:1]) 
-        if overlay is not None: 
-            cam_dir = Path(cam_dir) 
-            cam_dir.mkdir(parents=True, exist_ok=True) 
-            out_path = cam_dir / f"{cam_id}.png" 
+    if cam_dir is not None:
+        k = x_raw.shape[0]
+        center_raw = x_raw[k // 2 : k // 2 + 1]
+        if is_sequence_ct_model(model):
+            x_cam = x_all[k // 2 : k // 2 + 1].unsqueeze(0)
+        else:
+            x_cam = x_all[k // 2 : k // 2 + 1]
+        gradcam = GradCAM(model, _gradcam_layer_name(model))
+        _, overlay = gradcam(x_cam, target_class=pred, input_for_overlay=center_raw)
+        if overlay is not None:
+            cam_dir = Path(cam_dir)
+            cam_dir.mkdir(parents=True, exist_ok=True)
+            out_path = cam_dir / f"{cam_id}.png"
             if _save_overlay_png(overlay, out_path):
-                print(f"CAM overlay saved to {out_path}") 
+                print(f"CAM overlay saved to {out_path}")
             else:
                 print("Install opencv-python or matplotlib to save CAM overlay.")
 
@@ -241,10 +262,10 @@ def _run_batch_inference(
         print(f"Manifest not found: {manifest_path}") 
         return []
     
-    model = _load_model(checkpoint) 
+    model, _model_kind, agg = _load_model(checkpoint)
     device = next(model.parameters()).device
 
-    entries = _load_manifest(manifest_path) 
+    entries = _load_manifest(manifest_path)
     entries = _get_split_entries(entries, split) 
     entries = _apply_limit_and_random(entries, limit=limit, random_n=random_n) 
 
@@ -258,32 +279,22 @@ def _run_batch_inference(
     cam_count = 0
     csv_has_cam = False 
 
-    use_grad = cam_dir is not None 
-    gradcam = GradCAM(model, "layer4") if cam_dir is not None else None 
+    use_grad = cam_dir is not None
+    gradcam = GradCAM(model, _gradcam_layer_name(model)) if cam_dir is not None else None
 
-    for e in entries: 
-        path = Path(e["path"]) 
-        pid = e.get("patient_id", "") 
+    for e in entries:
+        path = Path(e["path"])
+        pid = e.get("patient_id", "")
 
-        if not path.exists(): 
-            print(f" SKIP {pid}: npz not found at {path}") 
-            continue 
+        if not path.exists():
+            print(f" SKIP {pid}: npz not found at {path}")
+            continue
 
         arr = _load_patient_arr(path)
-        x_all = torch.from_numpy(arr).float().to(device)
-        if x_all.dim() == 3:
-            x_all = x_all.unsqueeze(0)
-        if use_grad:
-            model.zero_grad(set_to_none=True)
-            with torch.enable_grad(): 
-                logits_all = model(x_all) 
-        else:
-            with torch.no_grad():
-                logits_all = model(x_all)
-
-        patient_logits = logits_all.mean(dim=0)
-        # detach so we can safely convert to numpy even when gradients are enabled for Grad-CAM
-        probs = torch.softmax(patient_logits, dim=0).detach().cpu().numpy()
+        x_raw = torch.from_numpy(arr).float().to(device)
+        x_all = _imagenet_normalize_volume(x_raw)
+        x_batch = x_all.unsqueeze(0)
+        probs = _predict_one(model, x_batch, use_grad=use_grad, agg=agg)
         pred = 1 if float(probs[1]) >= ABNORMAL_THRESHOLD else 0
         conf = float(probs[pred])
 
@@ -305,9 +316,13 @@ def _run_batch_inference(
         )
 
         if do_cam and gradcam is not None:
-            k = x_all.shape[0]
-            x_cam = x_all[k // 2 : k // 2 + 1]
-            _, overlay = gradcam(x_cam, target_class=pred, input_for_overlay=x_cam)
+            k = x_raw.shape[0]
+            center_raw = x_raw[k // 2 : k // 2 + 1]
+            if is_sequence_ct_model(model):
+                x_cam = x_all[k // 2 : k // 2 + 1].unsqueeze(0)
+            else:
+                x_cam = x_all[k // 2 : k // 2 + 1]
+            _, overlay = gradcam(x_cam, target_class=pred, input_for_overlay=center_raw)
             if overlay is not None:
                 cam_dir_p = Path(cam_dir)
                 cam_dir_p.mkdir(parents=True, exist_ok=True)
@@ -409,29 +424,27 @@ def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus
     if not arr_path.exists():
         return None
 
-    model = _load_model(checkpoint)
+    model, _model_kind, agg = _load_model(checkpoint)
     device = next(model.parameters()).device
 
     arr = _load_patient_arr(arr_path)
-    x_all = torch.from_numpy(arr).float().to(device)
+    x_raw = torch.from_numpy(arr).float().to(device)
+    x_all = _imagenet_normalize_volume(x_raw)
+    x_batch = x_all.unsqueeze(0)
     use_grad = cam_dir is not None
-    if use_grad:
-        model.zero_grad(set_to_none=True)
-        with torch.enable_grad():
-            logits_all = model(x_all)
-    else:
-        with torch.no_grad():
-            logits_all = model(x_all)
-    patient_logits = logits_all.mean(dim=0)
-    probs = torch.softmax(patient_logits, dim=0).cpu().numpy()
+    probs = _predict_one(model, x_batch, use_grad=use_grad, agg=agg)
     pred = 1 if float(probs[1]) >= ABNORMAL_THRESHOLD else 0
 
     cam_path = None
     if use_grad and cam_dir:
-        gradcam = GradCAM(model, "layer4")
-        k = x_all.shape[0]
-        x_cam = x_all[k // 2 : k // 2 + 1]
-        _, overlay = gradcam(x_cam, target_class=pred, input_for_overlay=x_cam)
+        gradcam = GradCAM(model, _gradcam_layer_name(model))
+        k = x_raw.shape[0]
+        center_raw = x_raw[k // 2 : k // 2 + 1]
+        if is_sequence_ct_model(model):
+            x_cam = x_all[k // 2 : k // 2 + 1].unsqueeze(0)
+        else:
+            x_cam = x_all[k // 2 : k // 2 + 1]
+        _, overlay = gradcam(x_cam, target_class=pred, input_for_overlay=center_raw)
         if overlay is not None:
             cam_dir_p = Path(cam_dir)
             cam_dir_p.mkdir(parents=True, exist_ok=True)

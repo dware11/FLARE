@@ -23,6 +23,7 @@ pred = 1 if probs[1] >= YOUR_THRESHOLD else 0 (see infer.py ~line 206, 284, 424)
 import argparse
 from pathlib import Path
 import sys
+from typing import Optional
 
 import torch
 from torch.utils.data import DataLoader
@@ -31,7 +32,11 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from src.config import OUTPUTS
 from ml.brain.ct.dataset_ct import CTDataset
-from ml.brain.ct.model_ct import build_ct_model
+from ml.brain.ct.model_ct import (
+    build_ct_model,
+    build_ct_sequence_model,
+    patient_logits_from_model,
+)
 
 DEFAULT_THRESHOLDS = [0.45, 0.50, 0.55, 0.60, 0.65]
 
@@ -54,7 +59,7 @@ def _metrics(all_y, preds):
 def main(
     checkpoint: Path = None,
     batch_size: int = 16,
-    agg: str = "mean",
+    agg: Optional[str] = None,
     thresholds: list = None,
     out_file: Path = None,
 ) -> None:
@@ -72,9 +77,19 @@ def main(
     val_ds = CTDataset(split="val")
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
 
-    model = build_ct_model()
-    ckpt = torch.load(checkpoint, map_location="cpu")
-    model.load_state_dict(ckpt["model"])
+    try:
+        ckpt = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    except TypeError:
+        ckpt = torch.load(checkpoint, map_location="cpu")
+    model_kind = ckpt.get("model_kind", "legacy")
+    agg_eff = agg if agg is not None else ckpt.get("agg", "max")
+    rnn_type = ckpt.get("rnn_type", "lstm")
+
+    if model_kind == "sequence":
+        model = build_ct_sequence_model(rnn_type=rnn_type)
+    else:
+        model = build_ct_model()
+    model.load_state_dict(ckpt["model"], strict=True)
     model = model.cuda() if torch.cuda.is_available() else model
     device = next(model.parameters()).device
 
@@ -85,15 +100,8 @@ def main(
     with torch.no_grad():
         for X, y, _ in val_loader:
             X = X.to(device)
-            B, k, C, H, W = X.shape
-            X_flat = X.view(B * k, C, H, W)
-            logits_flat = model(X_flat)
-            logits_per_slice = logits_flat.view(B, k, -1)
-            if agg == "mean":
-                patient_logits = logits_per_slice.mean(dim=1)
-            else:
-                patient_logits = logits_per_slice.max(dim=1).values
-            probs = torch.softmax(patient_logits, dim=1)
+            logits = patient_logits_from_model(model, X, agg=agg_eff)
+            probs = torch.softmax(logits, dim=1)
             for i in range(y.size(0)):
                 if y[i].item() not in (0, 1):
                     continue
@@ -129,7 +137,13 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Threshold sweep on CT validation set")
     ap.add_argument("--checkpoint", type=Path, default=None, help=f"Default: {OUTPUTS}/ct_baseline_best.pt")
     ap.add_argument("--batch-size", type=int, default=16)
-    ap.add_argument("--agg", type=str, default="mean", choices=["mean", "max"])
+    ap.add_argument(
+        "--agg",
+        type=str,
+        default=None,
+        choices=["mean", "max"],
+        help="Legacy models only; default is value stored in checkpoint or max",
+    )
     ap.add_argument("--thresholds", type=float, nargs="+", default=DEFAULT_THRESHOLDS,
                     help="Space-separated thresholds, e.g. 0.45 0.5 0.55 0.6 0.65")
     ap.add_argument("--out", type=Path, default=None, help="Save table to this file (e.g. ct_threshold_sweep_val.txt)")

@@ -24,7 +24,14 @@ from src.config import RAW_CT, META, OUTPUTS  # noqa: E402
 from ml.brain.ct.ct_transforms import dicom_to_hu, ct_to_tensor  # noqa: E402
 from scripts.preprocess_ct import get_middle_dicom_path  # noqa: E402
 from ml.brain.ct.gradcam_ct import GradCAM  # noqa: E402
-from ml.brain.ct.infer import _load_manifest, _load_model, _predict_one  # noqa: E402
+from ml.brain.ct.model_ct import is_sequence_ct_model  # noqa: E402
+from ml.brain.ct.infer import (  # noqa: E402
+    _gradcam_layer_name,
+    _imagenet_normalize_volume,
+    _load_manifest,
+    _load_model,
+    _predict_one,
+)
 
 
 def _ensure_dir(path: Path) -> None:
@@ -159,18 +166,28 @@ def run_gradcam_and_scores(
     Run model inference with gradients enabled on the cached slice, compute
     Grad-CAM on layer4, and save the overlay PNG. Returns (cam_path, pred, conf, probs).
     """
-    model = _load_model(checkpoint)
+    model, _model_kind, agg = _load_model(checkpoint)
     device = next(model.parameters()).device
 
     arr = np.load(npz_path)["arr"]
-    x = torch.from_numpy(arr).float().unsqueeze(0).to(device)
+    if arr.ndim == 3:
+        arr = arr[np.newaxis, ...]
+    x_raw = torch.from_numpy(arr).float().to(device)
+    x_all = _imagenet_normalize_volume(x_raw)
+    x_batch = x_all.unsqueeze(0)
 
-    probs = _predict_one(model, x, use_grad=True)
+    probs = _predict_one(model, x_batch, use_grad=True, agg=agg)
     pred = int(np.argmax(probs))
     conf = float(probs[pred])
 
-    gradcam = GradCAM(model, "layer4")
-    _, overlay = gradcam(x, target_class=pred, input_for_overlay=x)
+    k = x_raw.shape[0]
+    center_raw = x_raw[k // 2 : k // 2 + 1]
+    if is_sequence_ct_model(model):
+        x_cam = x_all[k // 2 : k // 2 + 1].unsqueeze(0)
+    else:
+        x_cam = x_all[k // 2 : k // 2 + 1]
+    gradcam = GradCAM(model, _gradcam_layer_name(model))
+    _, overlay = gradcam(x_cam, target_class=pred, input_for_overlay=center_raw)
 
     cam_path: Optional[Path] = None
     if overlay is not None:

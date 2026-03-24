@@ -11,87 +11,96 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from src.config import OUTPUTS
 from ml.brain.ct.dataset_ct import CTDataset
-from ml.brain.ct.model_ct import build_ct_model
+from ml.brain.ct.model_ct import (
+    build_ct_model,
+    build_ct_sequence_model,
+    is_sequence_ct_model,
+    patient_logits_from_model,
+)
 
 
 def main(
-    epochs: int = 10,
+    epochs: int = 30,
     batch_size: int = 4,
     lr: float = 1e-4,
     weight_decay: float = 1e-4,
-    k_slices: int = 5,
-    agg: str = "mean",
+    k_slices: int = 15,
+    agg: str = "max",
+    model_kind: str = "sequence",
+    rnn_type: str = "lstm",
 ) -> None:
-    """Train ResNet18 on CT cache; saves best checkpoint to OUTPUTS/ct_baseline_best.pt."""
+    """
+    Train CT classifier on cached k-slice NPZ; saves best checkpoint to OUTPUTS/ct_baseline_best.pt.
+    Default: DenseNet slice encoder + bidirectional LSTM (sequence). Use --model legacy for per-slice logits + pool.
+    """
     OUTPUTS.mkdir(parents=True, exist_ok=True)
     train_ds = CTDataset(split="train")
     val_ds = CTDataset(split="val")
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
 
-    model = build_ct_model()
+    if model_kind == "sequence":
+        model = build_ct_sequence_model(rnn_type=rnn_type)
+    else:
+        model = build_ct_model()
+
     model = model.cuda() if torch.cuda.is_available() else model
     device = next(model.parameters()).device
 
-    print(
-        "Training: train/val sizes {}, {} | device {} | epochs {} | batch_size {} | lr {}".format(
-            len(train_ds), len(val_ds), device, epochs, batch_size, lr
+    if is_sequence_ct_model(model):
+        opt = torch.optim.AdamW(
+            [
+                {"params": list(model.backbone.parameters()), "lr": lr * 0.1},
+                {"params": list(model.rnn.parameters()) + list(model.head.parameters()), "lr": lr},
+            ],
+            weight_decay=weight_decay,
         )
-    )
-    print("Starting training...")
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(epochs, 1))
+    else:
+        backbone_params = list(model.features.parameters())
+        classifier_params = list(model.classifier.parameters())
+        opt = torch.optim.AdamW(
+            [
+                {"params": backbone_params, "lr": lr * 0.1},
+                {"params": classifier_params, "lr": lr},
+            ],
+            weight_decay=weight_decay,
+        )
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt,
+            mode="min",
+            factor=0.5,
+            patience=2,
+        )
 
-    # Optimizer: backbone (features) at 0.1*lr, classifier at lr 
-    backbone_params = list(model.features.parameters())
-    classifier_params = list (model.classifier.parameters()) 
-
-    opt = torch.optim.Adam(
-        [
-            {"params": backbone_params, "lr": lr * 0.1},
-            {"params": classifier_params, "lr": lr},
-        ],
-        weight_decay=weight_decay,
-    )
-    # Emphasize class 0 (normal) to reduce FPs and raise specificity
     class_weights = torch.tensor([1.5, 1.0], dtype=torch.float32, device=device)
     criterion = nn.CrossEntropyLoss(ignore_index=-1, weight=class_weights)
 
-    # LR scheduler on validation loss
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        opt,
-        mode="min",
-        factor=0.5,
-        patience=2,
+    print(
+        "Training: train/val sizes {}, {} | device {} | model={} | epochs {} | batch_size {} | lr {}".format(
+            len(train_ds), len(val_ds), device, model_kind, epochs, batch_size, lr
+        )
     )
+    if not is_sequence_ct_model(model):
+        print(f"  legacy aggregation over slices: {agg}")
+    print("Starting training...")
 
     best_val_loss = float("inf")
-
-    patience = 5 
-    epochs_without_improvement = 0 
+    patience = 5
+    epochs_without_improvement = 0
 
     for ep in range(epochs):
-        # --------------------
-        # Train epoch
-        # --------------------
         model.train()
         train_loss = 0.0
         for X, y, _ in train_loader:
             X, y = X.to(device), y.to(device)
-            B, k, C, H, W = X.shape
-            X_flat = X.view(B * k, C, H, W)
             opt.zero_grad()
-            logits_flat = model(X_flat)
-            logits_per_slice = logits_flat.view(B, k, -1)
-            if agg == "mean":
-                patient_logits = logits_per_slice.mean(dim=1)
-            else:
-                patient_logits = logits_per_slice.max(dim=1).values
-            loss = criterion(patient_logits, y)
+            logits = patient_logits_from_model(model, X, agg=agg)
+            loss = criterion(logits, y)
             loss.backward()
-            opt.step() 
+            opt.step()
             train_loss += loss.item()
-        # --------------------
-        # Validation + metrics
-        # --------------------
+
         model.eval()
         val_loss = 0.0
         correct = 0
@@ -105,17 +114,10 @@ def main(
         with torch.no_grad():
             for X, y, _ in val_loader:
                 X, y = X.to(device), y.to(device)
-                B, k, C, H, W = X.shape
-                X_flat = X.view(B * k, C, H, W)
-                logits_flat = model(X_flat)
-                logits_per_slice = logits_flat.view(B, k, -1)
-                if agg == "mean":
-                    patient_logits = logits_per_slice.mean(dim=1)
-                else:
-                    patient_logits = logits_per_slice.max(dim=1).values
-                batch_loss = criterion(patient_logits, y)
+                logits = patient_logits_from_model(model, X, agg=agg)
+                batch_loss = criterion(logits, y)
                 val_loss += batch_loss.item()
-                probs = torch.softmax(patient_logits, dim=1)
+                probs = torch.softmax(logits, dim=1)
                 preds = probs.argmax(dim=1)
                 for i in range(y.size(0)):
                     if y[i].item() not in (0, 1):
@@ -134,7 +136,7 @@ def main(
                         fp += 1
                     else:
                         fn += 1
-            
+
         train_avg = train_loss / len(train_loader) if len(train_loader) > 0 else 0.0
         val_avg = val_loss / len(val_loader) if len(val_loader) > 0 else 0.0
 
@@ -149,9 +151,9 @@ def main(
         else:
             roc_auc = 0.0
 
-        if total > 0: 
+        if total > 0:
             cm = confusion_matrix(all_y, all_preds, labels=[0, 1])
-            print(f"Confusion matrix (true=rows, pred=cols) [0=normal, 1=abnormal]:\n{cm}") 
+            print(f"Confusion matrix (true=rows, pred=cols) [0=normal, 1=abnormal]:\n{cm}")
 
         print(
             f"Epoch {ep+1} / {epochs} "
@@ -159,20 +161,32 @@ def main(
             f"acc={acc:.4f} sens={sens:.4f} spec={spec:.4f} prec={prec:.4f} f1={f1:.4f} roc_auc={roc_auc:.4f}"
         )
 
-        scheduler.step(val_avg)
+        if is_sequence_ct_model(model):
+            scheduler.step()
+        else:
+            scheduler.step(val_avg)
 
-        if len(val_loader) > 0: 
-            if val_avg < best_val_loss: 
-                best_val_loss = val_avg 
-                epochs_without_improvement = 0 
-                
-                ckpt = OUTPUTS / "ct_baseline_best.pt" 
-                torch.save({"model": model.state_dict(), "epoch": ep}, ckpt) 
-                print(f" -> saved {ckpt}") 
-            else: 
-                epochs_without_improvement += 1 
+        if len(val_loader) > 0:
+            if val_avg < best_val_loss:
+                best_val_loss = val_avg
+                epochs_without_improvement = 0
 
-                if epochs_without_improvement >= patience: 
+                ckpt = OUTPUTS / "ct_baseline_best.pt"
+                torch.save(
+                    {
+                        "model": model.state_dict(),
+                        "epoch": ep,
+                        "model_kind": model_kind,
+                        "agg": agg,
+                        "rnn_type": rnn_type,
+                    },
+                    ckpt,
+                )
+                print(f" -> saved {ckpt}")
+            else:
+                epochs_without_improvement += 1
+
+                if epochs_without_improvement >= patience:
                     print(f"Early stopping: no val loss improvement for {patience} epochs")
                     break
 
@@ -181,12 +195,21 @@ def main(
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--epochs", type=int, default=10)
+    ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--weight-decay", type=float, default=1e-4, dest="weight_decay")
-    ap.add_argument("--k-slices", type=int, default=5)
-    ap.add_argument("--agg", type=str, default="mean", choices=["mean", "max"])
+    ap.add_argument("--k-slices", type=int, default=15, help="Informational; NPZ k is defined at preprocess time")
+    ap.add_argument("--agg", type=str, default="max", choices=["mean", "max"], help="Legacy model only: slice pooling")
+    ap.add_argument(
+        "--model",
+        type=str,
+        default="sequence",
+        choices=["sequence", "legacy"],
+        dest="model_kind",
+        help="sequence: DenseNet + BiLSTM/BiGRU; legacy: DenseNet per slice + agg",
+    )
+    ap.add_argument("--rnn-type", type=str, default="lstm", choices=["lstm", "gru"])
     args = ap.parse_args()
     main(
         epochs=args.epochs,
@@ -195,4 +218,6 @@ if __name__ == "__main__":
         weight_decay=args.weight_decay,
         k_slices=args.k_slices,
         agg=args.agg,
+        model_kind=args.model_kind,
+        rnn_type=args.rnn_type,
     )
