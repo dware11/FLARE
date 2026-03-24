@@ -1,4 +1,5 @@
 import argparse
+import math
 from pathlib import Path
 import sys
 
@@ -22,12 +23,13 @@ from ml.brain.ct.model_ct import (
 def main(
     epochs: int = 30,
     batch_size: int = 4,
-    lr: float = 1e-4,
+    lr: float = 5e-5,
     weight_decay: float = 1e-4,
     k_slices: int = 15,
     agg: str = "max",
     model_kind: str = "sequence",
     rnn_type: str = "lstm",
+    grad_clip: float = 1.0,
 ) -> None:
     """
     Train CT classifier on cached k-slice NPZ; saves best checkpoint to OUTPUTS/ct_baseline_best.pt.
@@ -77,8 +79,8 @@ def main(
     criterion = nn.CrossEntropyLoss(ignore_index=-1, weight=class_weights)
 
     print(
-        "Training: train/val sizes {}, {} | device {} | model={} | epochs {} | batch_size {} | lr {}".format(
-            len(train_ds), len(val_ds), device, model_kind, epochs, batch_size, lr
+        "Training: train/val sizes {}, {} | device {} | model={} | epochs {} | batch_size {} | lr {} | grad_clip {}".format(
+            len(train_ds), len(val_ds), device, model_kind, epochs, batch_size, lr, grad_clip
         )
     )
     if not is_sequence_ct_model(model):
@@ -89,17 +91,31 @@ def main(
     patience = 5
     epochs_without_improvement = 0
 
+    def _fmt(x: float) -> str:
+        return f"{x:.4f}" if math.isfinite(x) else "nan"
+
     for ep in range(epochs):
         model.train()
         train_loss = 0.0
+        train_finite = 0
         for X, y, _ in train_loader:
             X, y = X.to(device), y.to(device)
             opt.zero_grad()
             logits = patient_logits_from_model(model, X, agg=agg)
             loss = criterion(logits, y)
+            if not torch.isfinite(loss):
+                print("  [warn] non-finite loss in train batch; skipping step")
+                continue
             loss.backward()
+            if grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             opt.step()
             train_loss += loss.item()
+            train_finite += 1
+
+        if train_finite == 0:
+            print("Epoch {}: no finite train batches; stopping.".format(ep + 1))
+            break
 
         model.eval()
         val_loss = 0.0
@@ -116,7 +132,9 @@ def main(
                 X, y = X.to(device), y.to(device)
                 logits = patient_logits_from_model(model, X, agg=agg)
                 batch_loss = criterion(logits, y)
-                val_loss += batch_loss.item()
+                bl = batch_loss.item()
+                if math.isfinite(bl):
+                    val_loss += bl
                 probs = torch.softmax(logits, dim=1)
                 preds = probs.argmax(dim=1)
                 for i in range(y.size(0)):
@@ -137,8 +155,8 @@ def main(
                     else:
                         fn += 1
 
-        train_avg = train_loss / len(train_loader) if len(train_loader) > 0 else 0.0
-        val_avg = val_loss / len(val_loader) if len(val_loader) > 0 else 0.0
+        train_avg = train_loss / train_finite if train_finite > 0 else float("nan")
+        val_avg = val_loss / len(val_loader) if len(val_loader) > 0 else float("nan")
 
         acc = correct / total if total > 0 else 0.0
         sens = tp / (tp + fn) if (tp + fn) > 0 else 0.0
@@ -157,16 +175,17 @@ def main(
 
         print(
             f"Epoch {ep+1} / {epochs} "
-            f"train_loss={train_avg:.4f} val_loss={val_avg:.4f} "
+            f"train_loss={_fmt(train_avg)} val_loss={_fmt(val_avg)} "
             f"acc={acc:.4f} sens={sens:.4f} spec={spec:.4f} prec={prec:.4f} f1={f1:.4f} roc_auc={roc_auc:.4f}"
         )
 
         if is_sequence_ct_model(model):
             scheduler.step()
         else:
-            scheduler.step(val_avg)
+            if math.isfinite(val_avg):
+                scheduler.step(val_avg)
 
-        if len(val_loader) > 0:
+        if len(val_loader) > 0 and math.isfinite(val_avg):
             if val_avg < best_val_loss:
                 best_val_loss = val_avg
                 epochs_without_improvement = 0
@@ -189,6 +208,12 @@ def main(
                 if epochs_without_improvement >= patience:
                     print(f"Early stopping: no val loss improvement for {patience} epochs")
                     break
+        elif len(val_loader) > 0 and not math.isfinite(val_avg):
+            print("  [warn] val_loss is not finite; not saving checkpoint this epoch")
+
+        if not math.isfinite(train_avg) or not math.isfinite(val_avg):
+            print("Epoch {}: non-finite loss; stopping training.".format(ep + 1))
+            break
 
     print("Done.")
 
@@ -197,8 +222,14 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch-size", type=int, default=4)
-    ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--lr", type=float, default=5e-5, help="Default tuned for sequence+LSTM stability")
     ap.add_argument("--weight-decay", type=float, default=1e-4, dest="weight_decay")
+    ap.add_argument(
+        "--grad-clip",
+        type=float,
+        default=1.0,
+        help="Max grad norm (0 disables). Reduces NaN risk with RNN+CNN.",
+    )
     ap.add_argument("--k-slices", type=int, default=15, help="Informational; NPZ k is defined at preprocess time")
     ap.add_argument("--agg", type=str, default="max", choices=["mean", "max"], help="Legacy model only: slice pooling")
     ap.add_argument(
@@ -220,4 +251,5 @@ if __name__ == "__main__":
         agg=args.agg,
         model_kind=args.model_kind,
         rnn_type=args.rnn_type,
+        grad_clip=args.grad_clip,
     )
