@@ -63,6 +63,16 @@ class CTDataset(Dataset):
         if not valid:
             valid = entries
 
+        # Supervised train/val/test: only binary labels (skip manifest label -1).
+        if split is not None:
+            valid = [e for e in valid if int(e.get("label", -1)) in (0, 1)]
+
+        if split is not None and len(valid) == 0:
+            raise ValueError(
+                f"No labeled samples (label 0/1) with existing NPZ paths in {manifest_path}. "
+                "Check DATA_ROOT / meta path, --labels in preprocess_ct, and id alignment to reads."
+            )
+
         rng = np.random.default_rng(seed)
         inx = rng.permutation(len(valid))
         n = len(valid)

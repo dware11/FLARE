@@ -1,6 +1,7 @@
 import argparse
 import math
 from pathlib import Path
+from typing import Optional
 import sys
 
 import torch
@@ -55,6 +56,7 @@ def main(
     focal_gamma: float = 0.0,
     auc_early_stop_patience: int = 5,
     auc_min_delta: float = 1e-5,
+    manifest_path: Optional[Path] = None,
 ) -> None:
     """
     Train CT classifier on cached k-slice NPZ; saves best checkpoint to OUTPUTS/ct_baseline_best.pt.
@@ -68,8 +70,8 @@ def main(
     (default 1.0) to stabilize CNN+RNN optimization.
     """
     OUTPUTS.mkdir(parents=True, exist_ok=True)
-    train_ds = CTDataset(split="train")
-    val_ds = CTDataset(split="val")
+    train_ds = CTDataset(manifest_path=manifest_path, split="train")
+    val_ds = CTDataset(manifest_path=manifest_path, split="val")
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
 
@@ -362,6 +364,12 @@ if __name__ == "__main__":
         default=1e-5,
         help="Minimum AUC gain to count as improvement when selecting checkpoints.",
     )
+    ap.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="Override path to ct_processed_manifest.json (default: META from src.config)",
+    )
     args = ap.parse_args()
     main(
         epochs=args.epochs,
@@ -380,4 +388,5 @@ if __name__ == "__main__":
         focal_gamma=args.focal_gamma,
         auc_early_stop_patience=args.auc_early_stop_patience,
         auc_min_delta=args.auc_min_delta,
+        manifest_path=args.manifest,
     )
