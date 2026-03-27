@@ -22,7 +22,7 @@ app = Flask(__name__)
 
 CORS(
     app,
-    resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000"]}},
+    resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173", "http://127.0.0.1:5173"]}},
 )
 
 
@@ -79,6 +79,7 @@ HOSPITAL_STATIC_DEMO_METRICS: dict[str, dict] = {
 # TODO: replace with SQLite/Postgres or JSON file if you need persistence.
 
 _review_cases: dict[str, dict] = {}
+_ehr_records: dict[str, dict] = {} 
 
 SUPPORTED_MODALITIES = ["brain_ct", "brain_mri", "breast_mammo", "breast_mri"]
 
@@ -194,6 +195,9 @@ def api_predict():
     patient_id = data.get("patient_id")
     modality = data.get("modality")
     hospital_id = data.get("hospitalId")
+    first_name = data.get("first_name") 
+    last_name = data.get("last_name") 
+    dob = data.get("dob") 
 
     if not patient_id:
         return jsonify({"error": "Missing patient_id", "code": "MISSING_PATIENT_ID"}), 400
@@ -242,6 +246,25 @@ def api_predict():
             "reviewerId": None,
             "reject_reason": None,
         }
+        _ehr_records[case_id] = {
+            "caseId": case_id, 
+            "patient_id": patient_id, 
+            "firstName": first_name, 
+            "lastName": last_name, 
+            "dob": dob, 
+            "hospitalId": hospital_id, 
+            "hospitalName": site["name"], 
+            "modality": modality, 
+            "prediction": result["pred_label"], 
+            "confidence": result["confidence"], 
+            "review_status": "pending", 
+            "createdAt": _review_cases[case_id]["createdAt"], 
+            "approvedAt": None, 
+            "rejectedAt": None, 
+            "reviewerId": None, 
+            "reject_reason": None, 
+            "signature": None, 
+        }
 
     out = {
         **result,
@@ -284,6 +307,17 @@ def reviews_approve(case_id: str):
     case["review_status"] = "approved"
     case["approvedAt"] = _utc_iso()
     case["reviewerId"] = reviewer_id
+
+    ehr = _ehr_records.get(case_id) 
+    if ehr: 
+        ehr["review_status"] = "approved"
+        ehr["approvedAt"] = case["approvedAt"]
+        ehr["rejectedAt"] = None 
+        ehr["reviewerId"] = reviewer_id
+        ehr["reject_reason"] = None 
+        sig = body.get("signature")
+        if sig is not None: 
+            ehr["signature"] = sig 
     return jsonify({"ok": True, "caseId": case_id, "status": "approved"}), 200
 
 
@@ -308,7 +342,31 @@ def reviews_reject(case_id: str):
     case["rejectedAt"] = _utc_iso()
     case["reviewerId"] = reviewer_id
     case["reject_reason"] = reason
+
+    ehr = _ehr_records.get(case_id) 
+    if ehr: 
+        ehr["review_status"] = "rejected"
+        ehr["rejectedAt"] = case["rejectedAt"]
+        ehr["approvedAt"] = None 
+        ehr["reviewerId"] = reviewer_id
+        ehr["reject_reason"] = reason 
+        sig = body.get("signature")
+        if sig is not None:
+            ehr["signature"] = sig
     return jsonify({"ok": True, "caseId": case_id, "status": "rejected"}), 200
+
+@app.route("/api/ehr", methods=["GET"]) 
+def ehr_list(): 
+    rows = list(_ehr_records.values()) 
+    rows.sort(key=lambda r: r.get("createdAt") or "", reverse=True) 
+    return jsonify({"records": rows}), 200
+
+@app.route("/api/ehr/<case_id>", methods=["GET"]) 
+def ehr_one(case_id: str): 
+    rec = _ehr_records.get(case_id) 
+    if not rec: 
+        return jsonify({"error": "Unknown caseId", "code": "NOT_FOUND"}), 404
+    return jsonify(rec), 200
 
 
 def _count_hospital(hospital_id: str) -> tuple[int, int]:
