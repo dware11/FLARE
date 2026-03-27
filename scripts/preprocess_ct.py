@@ -7,6 +7,7 @@ import json
 import math
 import sys
 import warnings
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -187,6 +188,20 @@ READS_KEY_FINDINGS = [
 ]
 READS_READERS = ("R1", "R2", "R3")
 
+def normalize_cq500_id(pid: str) -> str:
+    """
+    Canonical CQ500 patient ID: CQ500-CT-###.
+    CQ500CT123 -> CQ500-CT-123; CQ500-CT-123 unchanged; other IDs pass through.
+    """
+    pid = (pid or "").strip()
+    m = re.fullmatch(r"CQ500CT(\d+)", pid, flags=re.IGNORECASE)
+    if m:
+        return f"CQ500-CT-{m.group(1)}"
+    m = re.fullmatch(r"CQ500-CT-(\d+)", pid, flags=re.IGNORECASE)
+    if m:
+        return f"CQ500-CT-{m.group(1)}"
+    return pid
+
 
 def load_labels_from_reads(read_csv_path: Path, delimiter: str = ",") -> dict[str, int]:
     """
@@ -198,7 +213,6 @@ def load_labels_from_reads(read_csv_path: Path, delimiter: str = ",") -> dict[st
     with open(read_csv_path, newline="", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f, delimiter=delimiter):
             name = (row.get("name", row.get("\ufeffname", "")) or "").strip()
-            patient_id = name
             abnormal = 0
             for reader in READS_READERS:
                 for col in READS_KEY_FINDINGS:
@@ -214,8 +228,37 @@ def load_labels_from_reads(read_csv_path: Path, delimiter: str = ",") -> dict[st
                         pass
                 if abnormal:
                     break
-            out[patient_id] = abnormal
-    return out 
+            key = normalize_cq500_id(name)
+            out[key] = max(out.get(key, 0), abnormal)
+    return out
+
+
+def _merge_manifest_by_canonical_id(manifest: list, k_slices: int) -> list:
+    """Collapse duplicate manifest rows that differ only by CQ500 ID spelling."""
+    expected_name = f"slices_k{k_slices}.npz"
+    by_pid: dict[str, dict] = {}
+    for m in manifest:
+        pid = normalize_cq500_id((m.get("patient_id") or "").strip())
+        entry = dict(m)
+        entry["patient_id"] = pid
+        if pid not in by_pid:
+            by_pid[pid] = entry
+            continue
+        cur = by_pid[pid]
+        la, lb = int(cur.get("label", -1)), int(entry.get("label", -1))
+        if la == -1:
+            cur["label"] = lb
+        elif lb != -1 and la != lb:
+            cur["label"] = max(la, lb)
+        pa, pb = Path(cur.get("path", "")), Path(entry.get("path", ""))
+        want = CACHE_CT / pid / expected_name
+        if want.exists():
+            cur["path"] = str(want)
+        elif pb.exists() and not pa.exists():
+            cur["path"] = entry["path"]
+        elif pb.exists() and pa.name != expected_name and pb.name == expected_name:
+            cur["path"] = entry["path"]
+    return list(by_pid.values())
 
 
 def main(
@@ -282,7 +325,8 @@ def main(
     else:
         manifest = []
 
-    # Dict for lookup and in-place updates when reprocessing
+    manifest = _merge_manifest_by_canonical_id(manifest, k_slices)
+    # Dict for lookup and in-place updates when reprocessing (canonical patient_id keys)
     manifest_by_id = {m["patient_id"]: m for m in manifest}
 
     skipped_no_ct = 0
@@ -290,14 +334,15 @@ def main(
     expected_filename = f"slices_k{k_slices}.npz"
 
     for i, pdir in enumerate(to_process):
-        patient_id = pdir.name.strip()
+        folder_name = pdir.name.strip()
+        patient_id = normalize_cq500_id(folder_name)
 
         # Skip vs reprocess: --force always reprocess; else skip only if existing cache matches k_slices
         if not force and patient_id in manifest_by_id:
             existing_entry = manifest_by_id[patient_id]
             old_path = Path(existing_entry.get("path", ""))
             if old_path.name == expected_filename and old_path.exists():
-                print(f"  [{i+1}/{n_total}] SKIP {patient_id}: already has {expected_filename}")
+                print(f"  [{i+1}/{n_total}] SKIP {folder_name} (id={patient_id}): already has {expected_filename}")
                 continue
             # Else: wrong file (e.g. middle.npz) or missing -> reprocess below
 
@@ -330,7 +375,7 @@ def main(
             mid_path = dicom_paths[n_slices // 2]
             mid_header = pydicom.dcmread(str(mid_path), stop_before_pixels=True)
             slice_thickness_mm = np.float32(_read_slice_thickness_mm(mid_header))
-            out_dir = CACHE_CT / pdir.name
+            out_dir = CACHE_CT / patient_id
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"slices_k{k_slices}.npz"
             np.savez_compressed(
@@ -346,14 +391,19 @@ def main(
                 existing_entry = manifest_by_id[patient_id]
                 existing_entry["path"] = str(out_path)
                 existing_entry["label"] = label
-                print(f"  [{i+1}/{n_total}] REPROCESS {patient_id}: upgrading cache to {expected_filename}")
+                existing_entry["patient_id"] = patient_id
+                tag = f"{folder_name}" if folder_name != patient_id else patient_id
+                print(f"  [{i+1}/{n_total}] REPROCESS {tag} -> {patient_id}: upgrading cache to {expected_filename}")
             else:
-                manifest.append({
-                    "patient_id": pdir.name,
+                new_entry = {
+                    "patient_id": patient_id,
                     "path": str(out_path),
                     "label": label,
-                })
-                print(f"  [{i+1}/{n_total}] {pdir.name} -> {out_path.name}")
+                }
+                manifest.append(new_entry)
+                manifest_by_id[patient_id] = new_entry
+                tag = f"{folder_name}" if folder_name != patient_id else patient_id
+                print(f"  [{i+1}/{n_total}] {tag} -> {patient_id} / {out_path.name}")
 
             # Periodically persist manifest so we don't lose progress on interrupts.
             if (i + 1) % 10 == 0:
@@ -367,11 +417,21 @@ def main(
             _dbg({"hypothesisId": "H3", "message": "exception_skip", "data": {"patient_id": pdir.name, "error": str(e), "error_type": type(e).__name__}})
             print(f"  [{i+1}/{n_total}] SKIP {pdir.name}: {e}")
 
+    manifest = _merge_manifest_by_canonical_id(manifest, k_slices)
+
     # Label join debug summary (once after loop)
     matched = sum(1 for m in manifest if m["label"] != -1)
     unmatched = [m["patient_id"] for m in manifest if m["label"] == -1]
-    print("  Loaded labels: {} | Found extracted: {} | Matched: {} | Unmatched sample: {}".format(
-        len(labels), len(manifest), matched, unmatched[:10]))
+    pids = [m["patient_id"] for m in manifest]
+    n_dup_rows = len(pids) - len(set(pids))
+    print(
+        "  Summary: total_entries={} unique_patient_id={} duplicate_rows={}".format(
+            len(manifest), len(set(pids)), n_dup_rows
+        )
+    )
+    print("  Loaded labels: {} | Matched (label!=-1): {} | Unmatched (label==-1): {}".format(
+        len(labels), matched, len(unmatched)))
+    print("  Unmatched sample: {}".format(unmatched[:10]))
 
     # #region agent log
     _alog("preprocess_done", {"manifest_count": len(manifest), "manifest_path": str(META / "ct_processed_manifest.json")}, "H4")
