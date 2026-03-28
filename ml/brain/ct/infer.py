@@ -30,7 +30,7 @@ from ml.brain.ct.gradcam_ct import GradCAM
 LABELS = ["normal", "abnormal"]
 
 # Decision threshold for abnormal (class 1). Use 0.55 for validation-tuned boundary.
-ABNORMAL_THRESHOLD = 0.401
+ABNORMAL_THRESHOLD = 0.488
 
 SPLIT_SEED = 42 
 
