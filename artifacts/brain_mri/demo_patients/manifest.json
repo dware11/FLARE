@@ -1,0 +1,325 @@
+{
+  "total": 40,
+  "patients": [
+    {
+      "patient_id": "GL_001",
+      "class": "glioma",
+      "result_class": "Malignant",
+      "filename": "GL_001_brisc2025_test_00223_gl_sa_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/glioma/GL_001_brisc2025_test_00223_gl_sa_t1.jpg",
+      "quality_score": 73.82
+    },
+    {
+      "patient_id": "GL_002",
+      "class": "glioma",
+      "result_class": "Malignant",
+      "filename": "GL_002_brisc2025_test_00210_gl_sa_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/glioma/GL_002_brisc2025_test_00210_gl_sa_t1.jpg",
+      "quality_score": 68.8
+    },
+    {
+      "patient_id": "GL_003",
+      "class": "glioma",
+      "result_class": "Malignant",
+      "filename": "GL_003_brisc2025_test_00072_gl_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/glioma/GL_003_brisc2025_test_00072_gl_ax_t1.jpg",
+      "quality_score": 67.79
+    },
+    {
+      "patient_id": "GL_004",
+      "class": "glioma",
+      "result_class": "Malignant",
+      "filename": "GL_004_brisc2025_test_00219_gl_sa_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/glioma/GL_004_brisc2025_test_00219_gl_sa_t1.jpg",
+      "quality_score": 64.2
+    },
+    {
+      "patient_id": "GL_005",
+      "class": "glioma",
+      "result_class": "Malignant",
+      "filename": "GL_005_brisc2025_test_00171_gl_sa_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/glioma/GL_005_brisc2025_test_00171_gl_sa_t1.jpg",
+      "quality_score": 63.9
+    },
+    {
+      "patient_id": "GL_006",
+      "class": "glioma",
+      "result_class": "Malignant",
+      "filename": "GL_006_brisc2025_test_00004_gl_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/glioma/GL_006_brisc2025_test_00004_gl_ax_t1.jpg",
+      "quality_score": 63.37
+    },
+    {
+      "patient_id": "GL_007",
+      "class": "glioma",
+      "result_class": "Malignant",
+      "filename": "GL_007_brisc2025_test_00216_gl_sa_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/glioma/GL_007_brisc2025_test_00216_gl_sa_t1.jpg",
+      "quality_score": 63.18
+    },
+    {
+      "patient_id": "GL_008",
+      "class": "glioma",
+      "result_class": "Malignant",
+      "filename": "GL_008_brisc2025_test_00001_gl_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/glioma/GL_008_brisc2025_test_00001_gl_ax_t1.jpg",
+      "quality_score": 62.17
+    },
+    {
+      "patient_id": "GL_009",
+      "class": "glioma",
+      "result_class": "Malignant",
+      "filename": "GL_009_brisc2025_test_00045_gl_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/glioma/GL_009_brisc2025_test_00045_gl_ax_t1.jpg",
+      "quality_score": 62.14
+    },
+    {
+      "patient_id": "GL_010",
+      "class": "glioma",
+      "result_class": "Malignant",
+      "filename": "GL_010_brisc2025_test_00249_gl_sa_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/glioma/GL_010_brisc2025_test_00249_gl_sa_t1.jpg",
+      "quality_score": 61.17
+    },
+    {
+      "patient_id": "ME_001",
+      "class": "meningioma",
+      "result_class": "Benign",
+      "filename": "ME_001_brisc2025_test_00412_me_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/meningioma/ME_001_brisc2025_test_00412_me_co_t1.jpg",
+      "quality_score": 2111.05
+    },
+    {
+      "patient_id": "ME_002",
+      "class": "meningioma",
+      "result_class": "Benign",
+      "filename": "ME_002_brisc2025_test_00418_me_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/meningioma/ME_002_brisc2025_test_00418_me_co_t1.jpg",
+      "quality_score": 1683.98
+    },
+    {
+      "patient_id": "ME_003",
+      "class": "meningioma",
+      "result_class": "Benign",
+      "filename": "ME_003_brisc2025_test_00306_me_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/meningioma/ME_003_brisc2025_test_00306_me_ax_t1.jpg",
+      "quality_score": 1339.48
+    },
+    {
+      "patient_id": "ME_004",
+      "class": "meningioma",
+      "result_class": "Benign",
+      "filename": "ME_004_brisc2025_test_00411_me_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/meningioma/ME_004_brisc2025_test_00411_me_co_t1.jpg",
+      "quality_score": 1331.58
+    },
+    {
+      "patient_id": "ME_005",
+      "class": "meningioma",
+      "result_class": "Benign",
+      "filename": "ME_005_brisc2025_test_00409_me_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/meningioma/ME_005_brisc2025_test_00409_me_co_t1.jpg",
+      "quality_score": 1279.41
+    },
+    {
+      "patient_id": "ME_006",
+      "class": "meningioma",
+      "result_class": "Benign",
+      "filename": "ME_006_brisc2025_test_00302_me_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/meningioma/ME_006_brisc2025_test_00302_me_ax_t1.jpg",
+      "quality_score": 1118.13
+    },
+    {
+      "patient_id": "ME_007",
+      "class": "meningioma",
+      "result_class": "Benign",
+      "filename": "ME_007_brisc2025_test_00293_me_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/meningioma/ME_007_brisc2025_test_00293_me_ax_t1.jpg",
+      "quality_score": 1106.31
+    },
+    {
+      "patient_id": "ME_008",
+      "class": "meningioma",
+      "result_class": "Benign",
+      "filename": "ME_008_brisc2025_test_00296_me_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/meningioma/ME_008_brisc2025_test_00296_me_ax_t1.jpg",
+      "quality_score": 1010.22
+    },
+    {
+      "patient_id": "ME_009",
+      "class": "meningioma",
+      "result_class": "Benign",
+      "filename": "ME_009_brisc2025_test_00263_me_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/meningioma/ME_009_brisc2025_test_00263_me_ax_t1.jpg",
+      "quality_score": 984.77
+    },
+    {
+      "patient_id": "ME_010",
+      "class": "meningioma",
+      "result_class": "Benign",
+      "filename": "ME_010_brisc2025_test_00317_me_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/meningioma/ME_010_brisc2025_test_00317_me_ax_t1.jpg",
+      "quality_score": 962.29
+    },
+    {
+      "patient_id": "NO_001",
+      "class": "no_tumor",
+      "result_class": "Normal",
+      "filename": "NO_001_brisc2025_test_00636_no_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/no_tumor/NO_001_brisc2025_test_00636_no_co_t1.jpg",
+      "quality_score": 290.67
+    },
+    {
+      "patient_id": "NO_002",
+      "class": "no_tumor",
+      "result_class": "Normal",
+      "filename": "NO_002_brisc2025_test_00627_no_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/no_tumor/NO_002_brisc2025_test_00627_no_co_t1.jpg",
+      "quality_score": 276.73
+    },
+    {
+      "patient_id": "NO_003",
+      "class": "no_tumor",
+      "result_class": "Normal",
+      "filename": "NO_003_brisc2025_test_00621_no_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/no_tumor/NO_003_brisc2025_test_00621_no_co_t1.jpg",
+      "quality_score": 274.95
+    },
+    {
+      "patient_id": "NO_004",
+      "class": "no_tumor",
+      "result_class": "Normal",
+      "filename": "NO_004_brisc2025_test_00635_no_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/no_tumor/NO_004_brisc2025_test_00635_no_co_t1.jpg",
+      "quality_score": 260.33
+    },
+    {
+      "patient_id": "NO_005",
+      "class": "no_tumor",
+      "result_class": "Normal",
+      "filename": "NO_005_brisc2025_test_00639_no_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/no_tumor/NO_005_brisc2025_test_00639_no_co_t1.jpg",
+      "quality_score": 247.41
+    },
+    {
+      "patient_id": "NO_006",
+      "class": "no_tumor",
+      "result_class": "Normal",
+      "filename": "NO_006_brisc2025_test_00617_no_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/no_tumor/NO_006_brisc2025_test_00617_no_co_t1.jpg",
+      "quality_score": 242.2
+    },
+    {
+      "patient_id": "NO_007",
+      "class": "no_tumor",
+      "result_class": "Normal",
+      "filename": "NO_007_brisc2025_test_00564_no_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/no_tumor/NO_007_brisc2025_test_00564_no_ax_t1.jpg",
+      "quality_score": 237.6
+    },
+    {
+      "patient_id": "NO_008",
+      "class": "no_tumor",
+      "result_class": "Normal",
+      "filename": "NO_008_brisc2025_test_00645_no_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/no_tumor/NO_008_brisc2025_test_00645_no_co_t1.jpg",
+      "quality_score": 225.49
+    },
+    {
+      "patient_id": "NO_009",
+      "class": "no_tumor",
+      "result_class": "Normal",
+      "filename": "NO_009_brisc2025_test_00631_no_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/no_tumor/NO_009_brisc2025_test_00631_no_co_t1.jpg",
+      "quality_score": 222.79
+    },
+    {
+      "patient_id": "NO_010",
+      "class": "no_tumor",
+      "result_class": "Normal",
+      "filename": "NO_010_brisc2025_test_00616_no_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/no_tumor/NO_010_brisc2025_test_00616_no_co_t1.jpg",
+      "quality_score": 222.17
+    },
+    {
+      "patient_id": "PI_001",
+      "class": "pituitary",
+      "result_class": "Benign",
+      "filename": "PI_001_brisc2025_test_00930_pi_sa_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/pituitary/PI_001_brisc2025_test_00930_pi_sa_t1.jpg",
+      "quality_score": 519.75
+    },
+    {
+      "patient_id": "PI_002",
+      "class": "pituitary",
+      "result_class": "Benign",
+      "filename": "PI_002_brisc2025_test_00748_pi_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/pituitary/PI_002_brisc2025_test_00748_pi_ax_t1.jpg",
+      "quality_score": 435.35
+    },
+    {
+      "patient_id": "PI_003",
+      "class": "pituitary",
+      "result_class": "Benign",
+      "filename": "PI_003_brisc2025_test_00766_pi_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/pituitary/PI_003_brisc2025_test_00766_pi_ax_t1.jpg",
+      "quality_score": 426.18
+    },
+    {
+      "patient_id": "PI_004",
+      "class": "pituitary",
+      "result_class": "Benign",
+      "filename": "PI_004_brisc2025_test_00911_pi_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/pituitary/PI_004_brisc2025_test_00911_pi_co_t1.jpg",
+      "quality_score": 366.9
+    },
+    {
+      "patient_id": "PI_005",
+      "class": "pituitary",
+      "result_class": "Benign",
+      "filename": "PI_005_brisc2025_test_00860_pi_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/pituitary/PI_005_brisc2025_test_00860_pi_co_t1.jpg",
+      "quality_score": 94.44
+    },
+    {
+      "patient_id": "PI_006",
+      "class": "pituitary",
+      "result_class": "Benign",
+      "filename": "PI_006_brisc2025_test_00771_pi_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/pituitary/PI_006_brisc2025_test_00771_pi_ax_t1.jpg",
+      "quality_score": 82.48
+    },
+    {
+      "patient_id": "PI_007",
+      "class": "pituitary",
+      "result_class": "Benign",
+      "filename": "PI_007_brisc2025_test_00743_pi_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/pituitary/PI_007_brisc2025_test_00743_pi_ax_t1.jpg",
+      "quality_score": 82.06
+    },
+    {
+      "patient_id": "PI_008",
+      "class": "pituitary",
+      "result_class": "Benign",
+      "filename": "PI_008_brisc2025_test_00760_pi_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/pituitary/PI_008_brisc2025_test_00760_pi_ax_t1.jpg",
+      "quality_score": 82.02
+    },
+    {
+      "patient_id": "PI_009",
+      "class": "pituitary",
+      "result_class": "Benign",
+      "filename": "PI_009_brisc2025_test_00772_pi_ax_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/pituitary/PI_009_brisc2025_test_00772_pi_ax_t1.jpg",
+      "quality_score": 77.23
+    },
+    {
+      "patient_id": "PI_010",
+      "class": "pituitary",
+      "result_class": "Benign",
+      "filename": "PI_010_brisc2025_test_00887_pi_co_t1.jpg",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/pituitary/PI_010_brisc2025_test_00887_pi_co_t1.jpg",
+      "quality_score": 77.15
+    }
+  ]
+}

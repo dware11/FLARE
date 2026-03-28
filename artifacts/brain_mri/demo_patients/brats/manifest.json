@@ -1,0 +1,65 @@
+{
+  "total": 10,
+  "patients": [
+    {
+      "patient_id": "BT_001",
+      "filename": "BraTS-GLI-01160-001.npz",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/brats/BraTS-GLI-01160-001.npz",
+      "score": 0.7939
+    },
+    {
+      "patient_id": "BT_002",
+      "filename": "BraTS-GLI-00517-001.npz",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/brats/BraTS-GLI-00517-001.npz",
+      "score": 0.7715
+    },
+    {
+      "patient_id": "BT_003",
+      "filename": "BraTS-SSA-00157-000.npz",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/brats/BraTS-SSA-00157-000.npz",
+      "score": 0.7702
+    },
+    {
+      "patient_id": "BT_004",
+      "filename": "BraTS-GLI-00806-000.npz",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/brats/BraTS-GLI-00806-000.npz",
+      "score": 0.7692
+    },
+    {
+      "patient_id": "BT_005",
+      "filename": "BraTS-GLI-01142-000.npz",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/brats/BraTS-GLI-01142-000.npz",
+      "score": 0.7683
+    },
+    {
+      "patient_id": "BT_006",
+      "filename": "BraTS-GLI-01190-000.npz",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/brats/BraTS-GLI-01190-000.npz",
+      "score": 0.7657
+    },
+    {
+      "patient_id": "BT_007",
+      "filename": "BraTS-GLI-01321-000.npz",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/brats/BraTS-GLI-01321-000.npz",
+      "score": 0.7614
+    },
+    {
+      "patient_id": "BT_008",
+      "filename": "BraTS-GLI-00351-000.npz",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/brats/BraTS-GLI-00351-000.npz",
+      "score": 0.7588
+    },
+    {
+      "patient_id": "BT_009",
+      "filename": "BraTS-GLI-01361-000.npz",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/brats/BraTS-GLI-01361-000.npz",
+      "score": 0.7559
+    },
+    {
+      "patient_id": "BT_010",
+      "filename": "BraTS-SSA-00143-000.npz",
+      "path": "/scratch/bckk/flare/projects/FLARE/artifacts/brain_mri/demo_patients/brats/BraTS-SSA-00143-000.npz",
+      "score": 0.7435
+    }
+  ]
+}

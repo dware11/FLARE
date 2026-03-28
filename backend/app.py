@@ -13,6 +13,10 @@ from uuid import uuid4
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import random
+import os
+import uuid as _uuid
+from pathlib import Path
+from predict_mri import predict_mri
 
 # ============================================================================
 # App + CORS
@@ -25,6 +29,9 @@ CORS(
     resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173", "http://127.0.0.1:5173"]}},
 )
 
+UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "static", "uploads")
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+MRI_MODALITIES = {"brain_mri", "brain_brats"}
 
 # ============================================================================
 # Static hospital registry (identity + map coordinates)
@@ -81,8 +88,7 @@ HOSPITAL_STATIC_DEMO_METRICS: dict[str, dict] = {
 _review_cases: dict[str, dict] = {}
 _ehr_records: dict[str, dict] = {} 
 
-SUPPORTED_MODALITIES = ["brain_ct", "brain_mri", "breast_mammo", "breast_mri"]
-
+SUPPORTED_MODALITIES = ["brain_ct", "brain_mri", "brain_brats"]
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -274,6 +280,97 @@ def api_predict():
         "_mode": "MOCK",
     }
     return jsonify(out), 200
+
+@app.route("/api/mri/predict", methods=["POST"])
+
+def api_mri_predict():
+    """
+    Brain MRI / BraTS prediction (real pipeline).
+    Multipart/form-data:
+        file        → JPG/PNG for brain_mri | NPZ for brain_brats
+        patient_id  → string
+        modality    → "brain_mri" or "brain_brats"
+        hospitalId  → string
+        first_name, last_name, dob → optional
+    """
+    patient_id  = request.form.get("patient_id")
+    modality    = request.form.get("modality", "brain_mri")
+    hospital_id = request.form.get("hospitalId")
+    first_name  = request.form.get("first_name")
+    last_name   = request.form.get("last_name")
+    dob         = request.form.get("dob")
+
+    if not patient_id:
+        return jsonify({"error": "Missing patient_id"}), 400
+    if modality not in MRI_MODALITIES:
+        return jsonify({"error": f"Invalid modality for MRI endpoint: {modality}",
+                        "valid": list(MRI_MODALITIES)}), 400
+    if not hospital_id or not hospital_exists(hospital_id):
+        return jsonify({"error": "Missing or invalid hospitalId"}), 400
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    file = request.files["file"]
+    ext  = Path(file.filename).suffix.lower() if file.filename else ""
+    if ext not in {".jpg", ".jpeg", ".png", ".npz"}:
+        return jsonify({"error": "Invalid file type — use JPG, PNG, or NPZ"}), 400
+
+    # Save uploaded file
+    filename  = f"{patient_id}_{_uuid.uuid4().hex[:8]}{ext}"
+    file_path = os.path.join(UPLOAD_FOLDER, filename)
+    file.save(file_path)
+
+    # Run real MRI pipeline
+    result = predict_mri(file_path, modality=modality, patient_id=patient_id)
+    if "error" in result:
+        return jsonify(result), 500
+
+    # MRI: Malignant or Benign = abnormal, Normal = not abnormal
+    abnormal = result.get("result_class") in ("Malignant", "Benign")
+    case_id  = None
+
+    if abnormal:
+        case_id = str(uuid4())
+        site    = HOSPITAL_REGISTRY[hospital_id]
+        conf    = float(result["confidence"])
+
+        _review_cases[case_id] = {
+            "caseId":          case_id,
+            "hospitalId":      hospital_id,
+            "hospitalName":    site["name"],
+            "patient_id":      patient_id,
+            "modality":        modality,
+            "pred_label":      result["pred_label"],
+            "result_class":    result.get("result_class"),
+            "confidence":      conf,
+            "probabilities":   result.get("probabilities"),
+            "is_abnormal":     True,
+            "severity":        mock_severity(conf),
+            "review_status":   "pending",
+            "createdAt":       _utc_iso(),
+            "approvedAt":      None,
+            "rejectedAt":      None,
+            "reviewerId":      None,
+            "reject_reason":   None,
+            "segmentation":    result.get("segmentation"),
+            "input_image_url": result.get("input_image_url"),
+            "gradcam_url":     result.get("gradcam_url"),
+            "gradcam_ready":   result.get("gradcam_ready", False),
+        }
+        _ehr_records[case_id] = {
+            **_review_cases[case_id],
+            "firstName": first_name,
+            "lastName":  last_name,
+            "dob":       dob,
+            "signature": None,
+        }
+
+    return jsonify({
+        **result,
+        "hospitalId":      hospital_id,
+        "caseId":          case_id,
+        "review_required": abnormal,
+    }), 200
 
 
 @app.route("/api/reviews/pending", methods=["GET"])
