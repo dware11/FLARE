@@ -19,7 +19,8 @@ How to run on Delta:
   python ml/brain/ct/threshold_sweep.py --sens-floor 0.7 --dense-steps 200
 
 Training checkpoints are selected by **val_auc** in train_ct.py when both classes appear in val.
-For deployment, set infer ABNORMAL_THRESHOLD to your chosen sweep threshold.
+For deployment, use **infer.py --threshold** your chosen value, or set env **ABNORMAL_THRESHOLD**,
+or store **eval_threshold** in the checkpoint (train_ct.py saves it) and infer will pick it up when CLI/env omit it.
 """
 import argparse
 from pathlib import Path

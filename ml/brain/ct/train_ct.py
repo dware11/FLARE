@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 import sys
 
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,6 +14,7 @@ from torch.utils.data import DataLoader
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from src.config import OUTPUTS
+from ml.brain.ct.threshold_util import resolve_abnormal_threshold
 from ml.brain.ct.dataset_ct import CTDataset
 from ml.brain.ct.model_ct import (
     build_ct_model,
@@ -57,6 +59,7 @@ def main(
     auc_early_stop_patience: int = 5,
     auc_min_delta: float = 1e-5,
     manifest_path: Optional[Path] = None,
+    threshold_cli: Optional[float] = None,
 ) -> None:
     """
     Train CT classifier on cached k-slice NPZ; saves best checkpoint to OUTPUTS/ct_baseline_best.pt.
@@ -70,8 +73,16 @@ def main(
     (default 1.0) to stabilize CNN+RNN optimization.
     """
     OUTPUTS.mkdir(parents=True, exist_ok=True)
-    train_ds = CTDataset(manifest_path=manifest_path, split="train")
-    val_ds = CTDataset(manifest_path=manifest_path, split="val")
+
+    # Same rule as infer.py: --threshold > $ABNORMAL_THRESHOLD > 0.5
+    eval_threshold = resolve_abnormal_threshold(cli=threshold_cli, default=0.5)
+    print(
+        f"[threshold] Val confusion/sens/spec use P(abnormal)>={eval_threshold:.4f} "
+        f"(set --threshold or env ABNORMAL_THRESHOLD to match deployment)"
+    )
+
+    train_ds = CTDataset(manifest_path=manifest_path, split="train", expected_k_slices=k_slices)
+    val_ds = CTDataset(manifest_path=manifest_path, split="val", expected_k_slices=k_slices)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
 
@@ -117,9 +128,22 @@ def main(
             patience=2,
         )
 
-    class_weights = torch.tensor([1.5, 1.0], dtype=torch.float32, device=device)
+    # Higher weight on class 1 (abnormal) to improve recall on positives; used by CE and focal.
+    class_weights = torch.tensor([1.0, 1.5], dtype=torch.float32, device=device)
     ce_criterion = nn.CrossEntropyLoss(ignore_index=-1, weight=class_weights)
+    cw_list = class_weights.detach().cpu().tolist()
 
+    print(
+        "Run metadata: k_slices={} class_weights[normal,abnormal]={} focal_gamma={} "
+        "sequence_pool={} sequence_topk={} eval_threshold={:.4f}".format(
+            k_slices,
+            cw_list,
+            focal_gamma,
+            sequence_pool,
+            sequence_topk,
+            eval_threshold,
+        )
+    )
     print(
         "Training: train/val sizes {}, {} | device {} | model={} | epochs {} | batch_size {} | lr {} | "
         "grad_clip {} (clip_grad_norm_)".format(
@@ -198,21 +222,22 @@ def main(
                 if math.isfinite(bl):
                     val_loss += bl
                 probs = torch.softmax(logits, dim=1)
-                preds = probs.argmax(dim=1)
                 for i in range(y.size(0)):
                     if y[i].item() not in (0, 1):
                         continue
+                    p1 = probs[i, 1].item()
+                    pred_i = 1 if p1 >= eval_threshold else 0
                     total += 1
                     all_y.append(y[i].item())
-                    all_preds.append(preds[i].item())
-                    all_probs_pos.append(probs[i, 1].item())
-                    if preds[i].item() == y[i].item():
+                    all_preds.append(pred_i)
+                    all_probs_pos.append(p1)
+                    if pred_i == y[i].item():
                         correct += 1
-                    if preds[i].item() == 1 and y[i].item() == 1:
+                    if pred_i == 1 and y[i].item() == 1:
                         tp += 1
-                    elif preds[i].item() == 0 and y[i].item() == 0:
+                    elif pred_i == 0 and y[i].item() == 0:
                         tn += 1
-                    elif preds[i].item() == 1 and y[i].item() == 0:
+                    elif pred_i == 1 and y[i].item() == 0:
                         fp += 1
                     else:
                         fn += 1
@@ -280,6 +305,10 @@ def main(
                     "selection_metric": selection,
                     "best_val_auc": best_val_auc if use_auc_selection else None,
                     "best_val_loss": best_val_loss if math.isfinite(best_val_loss) else None,
+                    # Repro / alignment with preprocess & infer (optional reads in infer for K warn + docs).
+                    "k_slices": k_slices,
+                    "class_weights": cw_list,
+                    "eval_threshold": eval_threshold,
                 }
                 torch.save(payload, ckpt)
                 print(f" -> saved {ckpt} (best by {selection})")
@@ -370,6 +399,12 @@ if __name__ == "__main__":
         default=None,
         help="Override path to ct_processed_manifest.json (default: META from src.config)",
     )
+    ap.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="P(abnormal) cutoff for val confusion metrics; else env ABNORMAL_THRESHOLD else 0.5",
+    )
     args = ap.parse_args()
     main(
         epochs=args.epochs,
@@ -389,4 +424,5 @@ if __name__ == "__main__":
         auc_early_stop_patience=args.auc_early_stop_patience,
         auc_min_delta=args.auc_min_delta,
         manifest_path=args.manifest,
+        threshold_cli=args.threshold,
     )

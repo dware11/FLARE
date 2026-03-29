@@ -55,6 +55,7 @@ class CTDataset(Dataset):
         train_frac: float = 0.7,
         val_frac: float = 0.15,
         seed: int = 42,
+        expected_k_slices: Optional[int] = None,
     ):
         manifest_path = _resolve_manifest(manifest_path)
         with open(manifest_path, encoding="utf-8") as f:
@@ -86,6 +87,9 @@ class CTDataset(Dataset):
             self.entries = valid
         self.manifest_path = manifest_path
         self.split = split or "all"
+        # Match train_ct --k-slices; warn once per NPZ path if manifest points at wrong K.
+        self.expected_k_slices = expected_k_slices
+        self._k_warned_paths: set[str] = set()
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -97,6 +101,16 @@ class CTDataset(Dataset):
         arr = data["arr"]
         if arr.ndim == 3:
             arr = arr[np.newaxis, ...]
+        if self.expected_k_slices is not None:
+            k_got = int(arr.shape[0])
+            if k_got != self.expected_k_slices:
+                pkey = str(path.resolve())
+                if pkey not in self._k_warned_paths:
+                    self._k_warned_paths.add(pkey)
+                    print(
+                        f"WARNING: NPZ K-slices mismatch (expected {self.expected_k_slices}, got {k_got}) path={path}",
+                        flush=True,
+                    )
         x = torch.from_numpy(arr).float()
         y = int(e.get("label", -1))
         patient_id = e.get("patient_id", path.parent.name)

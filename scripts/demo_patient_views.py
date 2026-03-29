@@ -25,11 +25,13 @@ from ml.brain.ct.ct_transforms import dicom_to_hu, ct_to_tensor  # noqa: E402
 from scripts.preprocess_ct import get_middle_dicom_path  # noqa: E402
 from ml.brain.ct.gradcam_ct import GradCAM  # noqa: E402
 from ml.brain.ct.model_ct import is_sequence_ct_model  # noqa: E402
+from ml.brain.ct.threshold_util import resolve_abnormal_threshold  # noqa: E402
 from ml.brain.ct.infer import (  # noqa: E402
     _gradcam_layer_name,
     _imagenet_normalize_volume,
     _load_manifest,
     _load_model,
+    _load_patient_arr,
     _predict_one,
     _thickness_from_npz,
 )
@@ -167,19 +169,19 @@ def run_gradcam_and_scores(
     Run model inference with gradients enabled on the cached slice, compute
     Grad-CAM on layer4, and save the overlay PNG. Returns (cam_path, pred, conf, probs).
     """
-    model, _model_kind, agg = _load_model(checkpoint)
+    model, _model_kind, agg, k_slices_meta, ckpt_meta = _load_model(checkpoint)
+    eval_threshold = resolve_abnormal_threshold(cli=None, default=0.5, ckpt=ckpt_meta)
+    expected_k = int(k_slices_meta) if k_slices_meta is not None else None
     device = next(model.parameters()).device
 
-    arr = np.load(npz_path)["arr"]
-    if arr.ndim == 3:
-        arr = arr[np.newaxis, ...]
+    arr = _load_patient_arr(npz_path, expected_k=expected_k)
     x_raw = torch.from_numpy(arr).float().to(device)
     x_all = _imagenet_normalize_volume(x_raw)
     x_batch = x_all.unsqueeze(0)
     thick = _thickness_from_npz(npz_path, device)
 
     probs = _predict_one(model, x_batch, use_grad=True, agg=agg, thickness=thick)
-    pred = int(np.argmax(probs))
+    pred = 1 if float(probs[1]) >= eval_threshold else 0
     conf = float(probs[pred])
 
     k = x_raw.shape[0]

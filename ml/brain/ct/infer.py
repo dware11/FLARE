@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT)) 
 
 from src.config import META, OUTPUTS
+from ml.brain.ct.threshold_util import resolve_abnormal_threshold
 from ml.brain.ct.model_ct import (
     build_ct_model,
     build_ct_sequence_model,
@@ -29,10 +30,10 @@ from ml.brain.ct.gradcam_ct import GradCAM
 
 LABELS = ["normal", "abnormal"]
 
-# Decision threshold for abnormal (class 1). Use 0.55 for validation-tuned boundary.
-ABNORMAL_THRESHOLD = 0.488
+SPLIT_SEED = 42
 
-SPLIT_SEED = 42 
+# Warn once per NPZ path when K differs from checkpoint / expected preprocess depth.
+_K_WARNED_PATHS: set = set()
 
 
 def _save_overlay_png(overlay: np.ndarray, out_path: Path) -> bool:
@@ -52,13 +53,22 @@ def _save_overlay_png(overlay: np.ndarray, out_path: Path) -> bool:
 TRAIN_FRAC = 0.7 
 VAL_FRAC = 0.15 
 
-def _load_patient_arr(path: Path) -> np.ndarray:
+def _load_patient_arr(path: Path, expected_k: Optional[int] = None) -> np.ndarray:
     """Load NPZ; return arr (k, C, H, W) float32. Handles (C, H,W) -> (1,C,H,W)"""
     data = np.load(path)
     arr = data["arr"]
     if arr.ndim == 3:
         arr = arr[np.newaxis, ...]
-    return arr.astype(np.float32)
+    arr = arr.astype(np.float32)
+    if expected_k is not None and arr.shape[0] != expected_k:
+        key = str(path.resolve())
+        if key not in _K_WARNED_PATHS:
+            _K_WARNED_PATHS.add(key)
+            print(
+                f"WARNING: NPZ K-slices mismatch (expected {expected_k}, got {arr.shape[0]}) path={path}",
+                flush=True,
+            )
+    return arr
 
 
 def _thickness_from_npz(path: Path, device: torch.device) -> torch.Tensor:
@@ -142,7 +152,7 @@ def _apply_limit_and_random(entries: list, limit: Optional[int], random_n: Optio
     return out 
 
 def _load_model(checkpoint: Path):
-    """Load checkpoint; returns (model, model_kind, agg_for_legacy)."""
+    """Load checkpoint; returns (model, model_kind, agg, k_slices_or_none, ckpt_meta_dict)."""
     if not checkpoint.exists():
         raise FileNotFoundError(f"Checkpoint not found {checkpoint}")
 
@@ -177,7 +187,11 @@ def _load_model(checkpoint: Path):
     model.eval()
     if torch.cuda.is_available():
         model = model.cuda()
-    return model, model_kind, agg
+    ckpt_meta: Dict = {}
+    if isinstance(ckpt, dict) and "model" in ckpt:
+        ckpt_meta = ckpt
+    k_slices_meta = ckpt_meta.get("k_slices")
+    return model, model_kind, agg, k_slices_meta, ckpt_meta
 
 def _predict_one(
     model: torch.nn.Module,
@@ -212,8 +226,16 @@ def _run_single_inference(
     patient_id: Optional[str] = None,
     npz_path: Optional[Path] = None,
     cam_dir: Optional[Path] = None,
+    threshold_cli: Optional[float] = None,
 ) -> None:
-    model, _model_kind, agg = _load_model(checkpoint)
+    model, _model_kind, agg, k_slices_meta, ckpt_meta = _load_model(checkpoint)
+    eval_threshold = resolve_abnormal_threshold(cli=threshold_cli, default=0.5, ckpt=ckpt_meta)
+    print(
+        f"[threshold] Binary decision uses P(abnormal)>={eval_threshold:.4f} "
+        f"(CLI > env ABNORMAL_THRESHOLD > checkpoint eval_threshold > default)",
+        flush=True,
+    )
+    expected_k = int(k_slices_meta) if k_slices_meta is not None else None
     device = next(model.parameters()).device
 
     # Demo: loads NPZ from manifest lookup or direct --npz path (no DICOM here).
@@ -243,14 +265,14 @@ def _run_single_inference(
 
     print(f"Running inference on {inp_desc}")
 
-    arr = _load_patient_arr(path)
+    arr = _load_patient_arr(path, expected_k=expected_k)
     x_raw = torch.from_numpy(arr).float().to(device)
     x_all = _imagenet_normalize_volume(x_raw)
     x_batch = x_all.unsqueeze(0)
     thick = _thickness_from_npz(path, device)
     use_grad = cam_dir is not None
     probs = _predict_one(model, x_batch, use_grad=use_grad, agg=agg, thickness=thick)
-    pred = 1 if float(probs[1]) >= ABNORMAL_THRESHOLD else 0
+    pred = 1 if float(probs[1]) >= eval_threshold else 0
     conf = float(probs[pred])
     if cam_dir is not None:
         k = x_raw.shape[0]
@@ -284,12 +306,20 @@ def _run_batch_inference(
     cam_dir: Optional[Path] = None,
     cam_limit: Optional[int] = None,
     cam_when_abnormal: bool = False,
-) -> list: 
-    if not manifest_path.exists(): 
-        print(f"Manifest not found: {manifest_path}") 
+    threshold_cli: Optional[float] = None,
+) -> list:
+    if not manifest_path.exists():
+        print(f"Manifest not found: {manifest_path}")
         return []
-    
-    model, _model_kind, agg = _load_model(checkpoint)
+
+    model, _model_kind, agg, k_slices_meta, ckpt_meta = _load_model(checkpoint)
+    eval_threshold = resolve_abnormal_threshold(cli=threshold_cli, default=0.5, ckpt=ckpt_meta)
+    print(
+        f"[threshold] Binary decision uses P(abnormal)>={eval_threshold:.4f} "
+        f"(CLI > env ABNORMAL_THRESHOLD > checkpoint eval_threshold > default)",
+        flush=True,
+    )
+    expected_k = int(k_slices_meta) if k_slices_meta is not None else None
     device = next(model.parameters()).device
 
     entries = _load_manifest(manifest_path)
@@ -317,13 +347,13 @@ def _run_batch_inference(
             print(f" SKIP {pid}: npz not found at {path}")
             continue
 
-        arr = _load_patient_arr(path)
+        arr = _load_patient_arr(path, expected_k=expected_k)
         x_raw = torch.from_numpy(arr).float().to(device)
         x_all = _imagenet_normalize_volume(x_raw)
         x_batch = x_all.unsqueeze(0)
         thick = _thickness_from_npz(path, device)
         probs = _predict_one(model, x_batch, use_grad=use_grad, agg=agg, thickness=thick)
-        pred = 1 if float(probs[1]) >= ABNORMAL_THRESHOLD else 0
+        pred = 1 if float(probs[1]) >= eval_threshold else 0
         conf = float(probs[pred])
 
         row: Dict = {
@@ -407,6 +437,7 @@ def main(
     cam_dir: Optional[Path] = None,
     cam_limit: Optional[int] = None,
     cam_when_abnormal: bool = False,
+    threshold_cli: Optional[float] = None,
 ) -> None:
     checkpoint = checkpoint or OUTPUTS / "ct_baseline_best.pt"
     manifest_path = META / "ct_processed_manifest.json"
@@ -417,6 +448,7 @@ def main(
             patient_id=patient_id,
             npz_path=npz_path,
             cam_dir=cam_dir,
+            threshold_cli=threshold_cli,
         )
         return
 
@@ -430,10 +462,13 @@ def main(
         cam_dir=cam_dir,
         cam_limit=cam_limit,
         cam_when_abnormal=cam_when_abnormal,
+        threshold_cli=threshold_cli,
     )
 
-def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus"):
-    """Runs CT inference + GradCAM for one patient. Returns plain dict."""
+def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus", threshold: Optional[float] = None):
+    """Runs CT inference + GradCAM for one patient. Returns plain dict.
+    Threshold: argument > env ABNORMAL_THRESHOLD > checkpoint eval_threshold > 0.5.
+    """
     import numpy as np
     import torch
     from pathlib import Path
@@ -452,17 +487,19 @@ def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus
     if not arr_path.exists():
         return None
 
-    model, _model_kind, agg = _load_model(checkpoint)
+    model, _model_kind, agg, k_slices_meta, ckpt_meta = _load_model(checkpoint)
+    eval_threshold = resolve_abnormal_threshold(cli=threshold, default=0.5, ckpt=ckpt_meta)
+    expected_k = int(k_slices_meta) if k_slices_meta is not None else None
     device = next(model.parameters()).device
 
-    arr = _load_patient_arr(arr_path)
+    arr = _load_patient_arr(arr_path, expected_k=expected_k)
     x_raw = torch.from_numpy(arr).float().to(device)
     x_all = _imagenet_normalize_volume(x_raw)
     x_batch = x_all.unsqueeze(0)
     thick = _thickness_from_npz(arr_path, device)
     use_grad = cam_dir is not None
     probs = _predict_one(model, x_batch, use_grad=use_grad, agg=agg, thickness=thick)
-    pred = 1 if float(probs[1]) >= ABNORMAL_THRESHOLD else 0
+    pred = 1 if float(probs[1]) >= eval_threshold else 0
 
     cam_path = None
     if use_grad and cam_dir:
@@ -504,6 +541,12 @@ if __name__ == "__main__":
     ap.add_argument("--cam-dir", type=Path, default=None, help="Save CAM overlays here (optional)")
     ap.add_argument("--cam-limit", type=int, default=None, help="Max CAMs in batch (optional)")
     ap.add_argument("--cam-when-abnormal", action="store_true", help="Only CAM for pred=abnormal in batch")
+    ap.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="P(abnormal) cutoff; else env ABNORMAL_THRESHOLD, else checkpoint eval_threshold, else 0.5",
+    )
     args = ap.parse_args()
 
     main(
@@ -517,6 +560,7 @@ if __name__ == "__main__":
         cam_dir=args.cam_dir,
         cam_limit=args.cam_limit,
         cam_when_abnormal=args.cam_when_abnormal,
+        threshold_cli=args.threshold,
     )
 
 
