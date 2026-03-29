@@ -11,8 +11,9 @@ import sys
 from pathlib import Path 
 from typing import Optional, List, Dict 
 
-import numpy as np 
-import torch 
+import numpy as np
+import torch
+from sklearn.metrics import confusion_matrix
 
 ROOT = Path(__file__).resolve().parents[3] 
 sys.path.insert(0, str(ROOT)) 
@@ -402,8 +403,19 @@ def _run_batch_inference(
         correct = sum(1 for r in labeled if r["true_label"] == r["pred_label"])
         acc = correct / len(labeled)
         print(f"Accuracy on labeled subset: {acc:.3f} ({correct}/{len(labeled)})")
+        y_true = [int(r["true_label"]) for r in labeled]
+        y_pred = [int(r["pred_label"]) for r in labeled]
+        cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+        print(
+            "Confusion matrix (true=rows, pred=cols) [0=normal, 1=abnormal]:\n"
+            f"{cm}"
+        )
+        tn, fp, fn, tp = cm.ravel()
+        sens = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        spec = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        print(f"Sensitivity (abnormal): {sens:.4f}  Specificity: {spec:.4f}")
     else:
-        print("No ground-truth labels in manifest; accuracy not computed.")
+        print("No ground-truth labels in manifest; confusion matrix / accuracy not computed.")
 
     # Output: export predictions for analysis (CSV with optional cam_path column).
     if out_csv:
