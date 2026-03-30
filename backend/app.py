@@ -1,8 +1,8 @@
 """
 FLARE MOCK BACKEND (EDITABLE)
 
-- Local mock API for frontend + senior design demo.
-- Geotracker: in-memory review queue; only approved abnormal cases affect counts.
+- REST surface for the senior design demo + integration with the shared UI repo.
+- Geotracker: in-memory review queue; we replace this when we need real persistence.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+import json
 import random
 import os
 import uuid as _uuid
@@ -24,10 +25,18 @@ from predict_mri import predict_mri
 
 app = Flask(__name__)
 
-CORS(
-    app,
-    resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173", "http://127.0.0.1:5173"]}},
-)
+_DEV_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+
+CORS(app, origins=_DEV_ORIGINS, supports_credentials=True)
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "static", "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -86,7 +95,12 @@ HOSPITAL_STATIC_DEMO_METRICS: dict[str, dict] = {
 # TODO: replace with SQLite/Postgres or JSON file if you need persistence.
 
 _review_cases: dict[str, dict] = {}
-_ehr_records: dict[str, dict] = {} 
+_ehr_records: dict[str, dict] = {}
+# I back GET/POST /cases here in-memory until we persist somewhere real.
+_flare_saved_cases: list[dict] = []
+# Same idea for /api/cases — we have to keep this aligned with what the frontend ships.
+_api_cases_store: list[dict] = []
+
 
 SUPPORTED_MODALITIES = ["brain_ct", "brain_mri", "brain_brats"]
 
@@ -135,6 +149,111 @@ def run_mock_model(patient_id: str, modality: str) -> dict:
         "pred_label": pred_label,
         "confidence": confidence,
         "probabilities": probabilities,
+    }
+
+
+def _absolute_url_for_path(path: str | None) -> str | None:
+    """Full URL for static assets — we need this when Vite and Flask run on different ports."""
+    if not path:
+        return None
+    p = path.strip()
+    if p.startswith("http://") or p.startswith("https://"):
+        return p
+    base = request.host_url.rstrip("/")
+    if not p.startswith("/"):
+        p = "/" + p
+    return base + p
+
+
+def _run_mri_full_pipeline(
+    *,
+    file_storage,
+    patient_id: str,
+    modality: str,
+    hospital_id: str,
+    first_name: str | None,
+    last_name: str | None,
+    dob: str | None,
+) -> tuple[dict, int]:
+    """
+    Shared brain MRI/BraTS path for /api/mri/predict and POST /predict (one pipeline, two entrypoints).
+    Returns (response_dict, http_status).
+    """
+    ext = Path(file_storage.filename or "").suffix.lower()
+    if ext not in {".jpg", ".jpeg", ".png", ".npz"}:
+        return {"error": "Invalid file type — use JPG, PNG, or NPZ"}, 400
+
+    filename = f"{patient_id}_{_uuid.uuid4().hex[:8]}{ext}"
+    file_path = os.path.join(UPLOAD_FOLDER, filename)
+    file_storage.save(file_path)
+
+    result = predict_mri(file_path, modality=modality, patient_id=patient_id)
+    if "error" in result:
+        return result, 500
+
+    abnormal = result.get("result_class") in ("Malignant", "Benign")
+    case_id = None
+
+    if abnormal:
+        case_id = str(uuid4())
+        site = HOSPITAL_REGISTRY[hospital_id]
+        conf = float(result["confidence"])
+        _review_cases[case_id] = {
+            "caseId": case_id,
+            "hospitalId": hospital_id,
+            "hospitalName": site["name"],
+            "patient_id": patient_id,
+            "modality": modality,
+            "pred_label": result["pred_label"],
+            "result_class": result.get("result_class"),
+            "confidence": conf,
+            "probabilities": result.get("probabilities"),
+            "is_abnormal": True,
+            "severity": mock_severity(conf),
+            "review_status": "pending",
+            "createdAt": _utc_iso(),
+            "approvedAt": None,
+            "rejectedAt": None,
+            "reviewerId": None,
+            "reject_reason": None,
+            "segmentation": result.get("segmentation"),
+            "input_image_url": result.get("input_image_url"),
+            "gradcam_url": result.get("gradcam_url"),
+            "gradcam_ready": result.get("gradcam_ready", False),
+        }
+        _ehr_records[case_id] = {
+            **_review_cases[case_id],
+            "firstName": first_name,
+            "lastName": last_name,
+            "dob": dob,
+            "signature": None,
+        }
+
+    out = {
+        **result,
+        "hospitalId": hospital_id,
+        "caseId": case_id,
+        "review_required": abnormal,
+    }
+    return out, 200
+
+
+def _mri_to_flare_predict_response(cancer_type: str, body: dict) -> dict:
+    """Map MRI JSON into the predict response shape we already committed to on the client — I'm adapting here so we don't break the demo."""
+    rc = body.get("result_class") or "Normal"
+    if rc not in ("Normal", "Benign", "Malignant"):
+        rc = (
+            "Malignant"
+            if body.get("pred_label", "").lower() in ("abnormal", "tumor", "malignant")
+            else "Normal"
+        )
+    seg = body.get("segmentation") or {}
+    loc = seg.get("overlay_url") or seg.get("mask_url") or body.get("gradcam_url")
+    return {
+        "cancer_type": cancer_type,
+        "prediction": rc,
+        "confidence": float(body.get("confidence", 0)),
+        "localization_url": _absolute_url_for_path(loc),
     }
 
 
@@ -303,74 +422,159 @@ def api_mri_predict():
     if not patient_id:
         return jsonify({"error": "Missing patient_id"}), 400
     if modality not in MRI_MODALITIES:
-        return jsonify({"error": f"Invalid modality for MRI endpoint: {modality}",
-                        "valid": list(MRI_MODALITIES)}), 400
+        return (
+            jsonify(
+                {
+                    "error": f"Invalid modality for MRI endpoint: {modality}",
+                    "valid": list(MRI_MODALITIES),
+                }
+            ),
+            400,
+        )
+
     if not hospital_id or not hospital_exists(hospital_id):
         return jsonify({"error": "Missing or invalid hospitalId"}), 400
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
+    out, status = _run_mri_full_pipeline(
+        file_storage=request.files["file"],
+        patient_id=patient_id,
+        modality=modality,
+        hospital_id=hospital_id,
+        first_name=first_name,
+        last_name=last_name,
+        dob=dob,
+    )
+    return jsonify(out), status
+
+
+@app.route("/predict", methods=["POST"])
+def legacy_flare_predict():
+    """
+    Integration: multipart file + ?cancer_type=brain|breast to match the cancer demo's existing fetch.
+    Brain uses our real MRI stack; I default hospitalId to H001 when the request omits it.
+    Breast stays mock until we actually ship a breast model here.
+    """
+    cancer_type = (request.args.get("cancer_type") or "brain").lower()
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
     file = request.files["file"]
-    ext  = Path(file.filename).suffix.lower() if file.filename else ""
-    if ext not in {".jpg", ".jpeg", ".png", ".npz"}:
-        return jsonify({"error": "Invalid file type — use JPG, PNG, or NPZ"}), 400
+    patient_id = request.form.get("patient_id") or f"flare_{uuid4().hex[:10]}"
+    hospital_id = request.form.get("hospitalId") or "H001"
+    fn = request.form.get("first_name")
+    ln = request.form.get("last_name")
+    dob = request.form.get("dob")
 
-    # Save uploaded file
-    filename  = f"{patient_id}_{_uuid.uuid4().hex[:8]}{ext}"
-    file_path = os.path.join(UPLOAD_FOLDER, filename)
-    file.save(file_path)
+    if cancer_type == "brain":
+        modality = request.form.get("modality") or "brain_mri"
+        if modality not in MRI_MODALITIES:
+            modality = "brain_mri"
+        body, status = _run_mri_full_pipeline(
+            file_storage=file,
+            patient_id=patient_id,
+            modality=modality,
+            hospital_id=hospital_id,
+            first_name=fn,
+            last_name=ln,
+            dob=dob,
+        )
+        if status >= 400:
+            return jsonify(body), status
+        return jsonify(_mri_to_flare_predict_response("brain", body)), 200
 
-    # Run real MRI pipeline
-    result = predict_mri(file_path, modality=modality, patient_id=patient_id)
-    if "error" in result:
-        return jsonify(result), 500
+    if cancer_type == "breast":
+        m = run_mock_model(patient_id, "brain_ct")
+        pred = "Malignant" if m["pred_label"] == "abnormal" else "Normal"
+        return (
+            jsonify(
+                {
+                    "cancer_type": "breast",
+                    "prediction": pred,
+                    "confidence": m["confidence"],
+                    "localization_url": None,
+                }
+            ),
+            200,
+        )
 
-    # MRI: Malignant or Benign = abnormal, Normal = not abnormal
-    abnormal = result.get("result_class") in ("Malignant", "Benign")
-    case_id  = None
+    return jsonify({"error": "Unsupported cancer_type", "supported": ["brain", "breast"]}), 400
 
-    if abnormal:
-        case_id = str(uuid4())
-        site    = HOSPITAL_REGISTRY[hospital_id]
-        conf    = float(result["confidence"])
 
-        _review_cases[case_id] = {
-            "caseId":          case_id,
-            "hospitalId":      hospital_id,
-            "hospitalName":    site["name"],
-            "patient_id":      patient_id,
-            "modality":        modality,
-            "pred_label":      result["pred_label"],
-            "result_class":    result.get("result_class"),
-            "confidence":      conf,
-            "probabilities":   result.get("probabilities"),
-            "is_abnormal":     True,
-            "severity":        mock_severity(conf),
-            "review_status":   "pending",
-            "createdAt":       _utc_iso(),
-            "approvedAt":      None,
-            "rejectedAt":      None,
-            "reviewerId":      None,
-            "reject_reason":   None,
-            "segmentation":    result.get("segmentation"),
-            "input_image_url": result.get("input_image_url"),
-            "gradcam_url":     result.get("gradcam_url"),
-            "gradcam_ready":   result.get("gradcam_ready", False),
+@app.route("/cases", methods=["GET", "POST"])
+def legacy_flare_cases():
+    """Backs save/list case calls from the demo — in-memory until we decide on storage."""
+    if request.method == "GET":
+        return jsonify(_flare_saved_cases), 200
+    data = request.get_json(silent=True) or {}
+    _flare_saved_cases.append(data)
+    return jsonify({"ok": True}), 200
+
+
+@app.route("/api/cases", methods=["GET", "POST"])
+def api_cases():
+    """
+    POST: multipart (payload + files) for the create-case flow we're wiring to this backend.
+    GET: JSON array for the EHR-style case list. POST is still mock inference — I still have to upgrade that path when we're ready.
+    """
+    if request.method == "GET":
+        return jsonify(_api_cases_store), 200
+
+    if request.content_type and "multipart/form-data" in request.content_type:
+        raw = request.form.get("payload")
+        try:
+            p = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            return jsonify({"error": "Invalid payload JSON"}), 400
+        patient = p.get("patient") or {}
+        patient_id = patient.get("medicalId") or patient.get("medical_id")
+        if not patient_id:
+            return jsonify({"error": "Missing patient.medicalId"}), 400
+        ct = (p.get("cancerType") or p.get("cancer_type") or "brain").lower()
+        modality = "brain_mri" if ct == "brain" else "brain_ct"
+        r = run_mock_model(patient_id, modality)
+        classification = "Malignant" if r["pred_label"] == "abnormal" else "Normal"
+        case = {
+            "caseId": str(uuid4()),
+            "classification": classification,
+            "confidence": r["confidence"],
+            "localizationImageUrl": None,
+            "createdAt": _utc_iso(),
         }
-        _ehr_records[case_id] = {
-            **_review_cases[case_id],
-            "firstName": first_name,
-            "lastName":  last_name,
-            "dob":       dob,
-            "signature": None,
-        }
+        _api_cases_store.append(case)
+        return jsonify(case), 200
 
-    return jsonify({
-        **result,
-        "hospitalId":      hospital_id,
-        "caseId":          case_id,
-        "review_required": abnormal,
-    }), 200
+    data = request.get_json(silent=True) or {}
+    patient_id = data.get("patient_id") or (data.get("patient") or {}).get("medicalId")
+    if not patient_id:
+        return jsonify({"error": "Missing patient_id"}), 400
+    modality = data.get("modality") or "brain_mri"
+    if modality not in SUPPORTED_MODALITIES:
+        modality = "brain_mri"
+    r = run_mock_model(patient_id, modality)
+    classification = "Malignant" if r["pred_label"] == "abnormal" else "Normal"
+    case = {
+        "caseId": str(uuid4()),
+        "classification": classification,
+        "confidence": r["confidence"],
+        "localizationImageUrl": None,
+        "createdAt": _utc_iso(),
+    }
+    _api_cases_store.append(case)
+    return jsonify(case), 200
+
+
+@app.route("/api/patients", methods=["GET"])
+def api_patients_stub():
+    """Stub so the CT patient list call stops dying on a missing route; I'll return real IDs once CT is integrated."""
+    return jsonify({"patients": []}), 200
+
+
+@app.route("/api/outbreaks", methods=["GET"])
+def api_outbreaks_stub():
+    """Stub for now — we should either map geotracker summary into this shape or define a real outbreaks source."""
+    return jsonify([]), 200
 
 
 @app.route("/api/reviews/pending", methods=["GET"])
@@ -527,6 +731,25 @@ def geotracker_summary():
         ),
         200,
     )
+
+
+# ---------------------------------------------------------------------------
+# CT brain demo + fusion — not wired yet. I need to hook ml/brain/ct/infer here when we're ready.
+# The CT demo client in the repo expects roughly:
+#   GET  /api/patients   (stub above — I return { "patients": [] } for now)
+#   POST /api/predict    # can't use this URL for CT JSON — it clashes with our geotracker /api/predict;
+#                        we have to expose something like /api/ct/predict instead.
+#   GET  /api/cam/<name>
+# ---------------------------------------------------------------------------
+# @app.route("/api/ct/predict", methods=["POST"])
+# def api_ct_predict():
+#     """CT volume inference + fusion — implement when I wire the CT stack."""
+#     return jsonify({"error": "CT inference not configured"}), 501
+#
+# @app.route("/api/cam/<path:name>")
+# def api_ct_cam(name: str):
+#     """Grad-CAM / overlay PNG — add when CT demo needs it."""
+#     return jsonify({"error": "CT CAM not configured"}), 404
 
 
 if __name__ == "__main__":
