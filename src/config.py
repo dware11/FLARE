@@ -42,6 +42,25 @@ CACHE_CT = CT_ROOT / "cache" / "ct"
 CT_MANIFEST = CT_META / "ct_processed_manifest.json"
 CT_BEST_CKPT = CT_OUTPUTS / "ct_baseline_best.pt"
 CT_CAM_DIR = CT_OUTPUTS / "cam"
+# -----------------------------------------------------------------------------
+# RSNA Intracranial Hemorrhage — isolated from CQ500 (own raw dir, cache, manifest).
+# Folder layout under RSNA_RAW_ROOT may need adjustment after extraction is verified;
+# update paths here once the final RSNA tree is confirmed.
+# -----------------------------------------------------------------------------
+RSNA_RAW_ROOT = CT_ROOT / "raw_rsna"
+RSNA_CACHE_DIR = CT_ROOT / "cache" / "rsna"
+CT_RSNA_MANIFEST = CT_META / "ct_rsna_manifest.json"
+RSNA_LABELS_CSV_DEFAULT = CT_META / "rsna_labels.csv"
+RSNA_LABEL_ID_COLUMN = "ID"
+RSNA_LABEL_SUBTYPE_COLUMNS = (
+    "epidural",
+    "intraparenchymal",
+    "intraventricular",
+    "subarachnoid",
+    "subdural",
+    "any",
+)
+
 
 # -----------------------------------------------------------------------------
 # 4) MRI brain paths (explicit MRI_* for future expansion)

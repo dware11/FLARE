@@ -28,7 +28,7 @@ warnings.filterwarnings(
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from src.config import RAW_CT, CACHE_CT, META
+from src.config import RAW_CT, CACHE_CT, META, CT_RSNA_MANIFEST, RSNA_CACHE_DIR
 try:
     from src.debug import dbg as _dbg_log
 except ImportError:
@@ -180,6 +180,159 @@ def center_k_slice_indices(n_slices: int, k: int = 5) -> np.ndarray:
             np.full(pad_right, indices[-1] if len(indices) > 0 else 0), 
         ])
     return indices[:k]
+
+
+def save_ct_volume_npz_from_dicoms(dicom_paths: list, out_path: Path, k_slices: int) -> None:
+    """center_k + hu_to_multiwindow; same NPZ keys as CQ500 (arr, slice_indices, slice_thickness_mm)."""
+    n_slices = len(dicom_paths)
+    indices = center_k_slice_indices(n_slices, k_slices)
+    slope = intercept = None
+    slices_list = []
+    for idx in indices:
+        dcm = pydicom.dcmread(str(dicom_paths[idx]))
+        if slope is None:
+            slope = float(getattr(dcm, "RescaleSlope", 1.0))
+            intercept = float(getattr(dcm, "RescaleIntercept", 0.0))
+        hu = dicom_to_hu(dcm.pixel_array, slope, intercept)
+        slices_list.append(hu_to_multiwindow(hu))
+    stacked = np.stack(slices_list, axis=0).astype(np.float32)
+    mid_path = dicom_paths[n_slices // 2]
+    mid_header = pydicom.dcmread(str(mid_path), stop_before_pixels=True)
+    slice_thickness_mm = np.float32(_read_slice_thickness_mm(mid_header))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        out_path,
+        arr=stacked,
+        slice_indices=indices,
+        slice_thickness_mm=slice_thickness_mm,
+    )
+
+
+def _merge_rsna_manifest(manifest: list) -> list:
+    """Dedupe by patient_id. Do not use CQ500 merge (rewrites paths under CACHE_CT)."""
+    by_pid: dict[str, dict] = {}
+    for m in manifest:
+        pid = (m.get("patient_id") or "").strip()
+        if not pid:
+            continue
+        entry = dict(m)
+        entry["patient_id"] = pid
+        if pid not in by_pid:
+            by_pid[pid] = entry
+            continue
+        cur = by_pid[pid]
+        la, lb = int(cur.get("label", -1)), int(entry.get("label", -1))
+        if la == -1:
+            cur["label"] = lb
+        elif lb != -1 and la != lb:
+            cur["label"] = max(la, lb)
+        pa, pb = Path(cur.get("path", "")), Path(entry.get("path", ""))
+        if pb.is_file() and not pa.is_file():
+            cur["path"] = entry["path"]
+            cur["npz_path"] = entry.get("npz_path", entry["path"])
+        if entry.get("raw_dicom_dir") and not cur.get("raw_dicom_dir"):
+            cur["raw_dicom_dir"] = entry["raw_dicom_dir"]
+    return list(by_pid.values())
+
+
+"""
+Second pass (not implemented): evenly-spaced k slices, custom windows per dataset,
+mixed RSNA+CQ500 manifests, 3D models. Keep disabled until explicitly designed.
+"""
+
+
+def _main_rsna(
+    k_slices: int,
+    force: bool,
+    manifest_path: Path,
+    max_studies: Optional[int],
+    study_ids_file: Optional[Path],
+) -> None:
+    """Read/write RSNA manifest only; NPZ under RSNA_CACHE_DIR. Never touches ct_processed_manifest.json."""
+    if pydicom is None:
+        print("Install pydicom: pip install pydicom")
+        sys.exit(1)
+    if not manifest_path.is_file():
+        print(f"RSNA manifest not found: {manifest_path}")
+        print("Run: python scripts/prepare_rsna_manifest.py ...")
+        sys.exit(1)
+
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+    merged = _merge_rsna_manifest(manifest)
+    by_id: dict[str, dict] = {e["patient_id"]: dict(e) for e in merged}
+
+    allow: Optional[set[str]] = None
+    if study_ids_file and study_ids_file.is_file():
+        allow = set()
+        for line in study_ids_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            allow.add(line)
+            allow.add(line.replace("_", "."))
+
+    candidates = [e for e in merged if e.get("raw_dicom_dir")]
+    rows: list[dict] = []
+    for e in candidates:
+        pid = (e.get("patient_id") or "").strip()
+        su = (e.get("study_uid") or "").strip()
+        if allow is not None and pid not in allow and su not in allow:
+            continue
+        rows.append(e)
+
+    if max_studies is not None:
+        rows = rows[:max_studies]
+
+    expected_name = f"slices_k{k_slices}.npz"
+    skipped_raw = 0
+    errors = 0
+
+    print(f"RSNA preprocess: {len(rows)} studies (manifest {manifest_path})")
+    for i, entry in enumerate(rows):
+        pid = entry["patient_id"]
+        out_path = RSNA_CACHE_DIR / pid / expected_name
+        entry["path"] = str(out_path)
+        entry["npz_path"] = str(out_path)
+        entry.setdefault("source", "rsna")
+
+        if not force and out_path.is_file():
+            print(f"  [{i + 1}/{len(rows)}] SKIP {pid}: {expected_name} exists")
+            by_id[pid] = entry
+            continue
+
+        raw_dir = Path(entry.get("raw_dicom_dir", ""))
+        if not raw_dir.is_dir():
+            print(f"  [{i + 1}/{len(rows)}] SKIP {pid}: raw_dicom_dir missing {raw_dir}")
+            skipped_raw += 1
+            continue
+
+        try:
+            dicom_paths = get_sorted_dicom_paths(raw_dir)
+            if not dicom_paths:
+                skipped_raw += 1
+                continue
+            save_ct_volume_npz_from_dicoms(dicom_paths, out_path, k_slices)
+            entry["num_slices"] = len(dicom_paths)
+            by_id[pid] = entry
+            print(f"  [{i + 1}/{len(rows)}] {pid} -> {out_path.name}")
+        except Exception as ex:
+            errors += 1
+            print(f"  [{i + 1}/{len(rows)}] ERROR {pid}: {ex}")
+
+        if (i + 1) % 10 == 0:
+            out_sorted = sorted(by_id.values(), key=lambda x: x.get("patient_id", ""))
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(out_sorted, f, indent=2)
+
+    out_sorted = sorted(by_id.values(), key=lambda x: x.get("patient_id", ""))
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(out_sorted, f, indent=2)
+
+    print(f"RSNA done. Updated manifest: {manifest_path}  raw_skips={skipped_raw} errors={errors}")
+
 
 READS_KEY_FINDINGS = [
     "ICH", "IPH", "IVH", "SDH", "EDH", "SAH",
@@ -359,31 +512,9 @@ def main(
                 skipped_error += 1
                 print(f"  [{i+1}/{n_total}] SKIP {pdir.name}: no DICOMs")
                 continue
-            n_slices = len(dicom_paths)
-            indices = center_k_slice_indices(n_slices, k_slices)
-            slope = intercept = None
-            slices_list = []
-            for idx in indices:
-                dcm = pydicom.dcmread(str(dicom_paths[idx]))
-                if slope is None:
-                    slope = float(getattr(dcm, "RescaleSlope", 1.0))
-                    intercept = float(getattr(dcm, "RescaleIntercept", 0.0))
-                hu = dicom_to_hu(dcm.pixel_array, slope, intercept)
-                arr_slice = hu_to_multiwindow(hu)
-                slices_list.append(arr_slice)
-            stacked = np.stack(slices_list, axis=0).astype(np.float32)
-            mid_path = dicom_paths[n_slices // 2]
-            mid_header = pydicom.dcmread(str(mid_path), stop_before_pixels=True)
-            slice_thickness_mm = np.float32(_read_slice_thickness_mm(mid_header))
             out_dir = CACHE_CT / patient_id
-            out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"slices_k{k_slices}.npz"
-            np.savez_compressed(
-                out_path,
-                arr=stacked,
-                slice_indices=indices,
-                slice_thickness_mm=slice_thickness_mm,
-            )
+            save_ct_volume_npz_from_dicoms(dicom_paths, out_path, k_slices)
             label = labels.get(patient_id, -1)
 
             if patient_id in manifest_by_id:
@@ -445,33 +576,57 @@ def main(
     print(f"  Processed {len(manifest)}, skipped (error) {skipped_error}, skipped (no CT_SELECTED) {skipped_no_ct}.")
     print(f"  Manifest: {out_manifest} ({len(manifest)} entries)") 
 
-if __name__ == "__main__": 
+if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--limit", "-n", type=int, default=None,
-                    help="Process only N patients (e.g. -n 10 or --limit 10)")
-    ap.add_argument("--labels", type=Path, default=None, help="reads.csv or reads.tsv (name, R1:ICH, ...)")
-    ap.add_argument("--tsv", action="store_true", help="Labels file is TSV (tab-separated)") 
-    ap.add_argument("--k-slices", type=int, default=5, help="Number of slices per patient (center_k)")
+    ap.add_argument(
+        "--dataset-type",
+        choices=("cq500", "rsna"),
+        default="cq500",
+        help="cq500: raw/ + ct_processed_manifest.json. rsna: ct_rsna_manifest.json + cache/rsna/ only.",
+    )
+    ap.add_argument(
+        "--limit",
+        "-n",
+        type=int,
+        default=None,
+        help="CQ500: max patients. RSNA: ignored (use --max-studies).",
+    )
+    ap.add_argument("--labels", type=Path, default=None, help="CQ500 reads.csv / reads.tsv")
+    ap.add_argument("--tsv", action="store_true", help="CQ500 labels file is TSV")
+    ap.add_argument("--k-slices", type=int, default=5, help="K slices (center_k); RSNA baseline often 21")
     ap.add_argument("--slice-strategy", type=str, default="center_k", choices=["center_k"])
     ap.add_argument(
         "--link-selected-series",
         action="store_true",
-        help="Symlink best CT series DICOMs into CT_SELECTED/ before preprocessing",
+        help="CQ500: symlink best series into CT_SELECTED/",
     )
     ap.add_argument("--force", action="store_true", help="Reprocess even if patient is already in manifest")
+    ap.add_argument("--rsna-manifest", type=Path, default=None, help=f"default: {CT_RSNA_MANIFEST}")
+    ap.add_argument("--max-studies", type=int, default=None, help="RSNA: cap studies from manifest")
+    ap.add_argument("--study-ids-file", type=Path, default=None, help="RSNA: one study UID per line")
     args = ap.parse_args()
 
-    labels_path = args.labels or META / "reads.csv"
-    if not labels_path.exists() and (ROOT / "src" / "reads.csv").exists():
-        labels_path = ROOT / "src" / "reads.csv"
-    delimiter = "\t" if args.tsv else ","
-    main(
-        limit=args.limit,
-        labels_path=labels_path,
-        delimiter=delimiter,
-        link_selected_series=args.link_selected_series,
-        k_slices=args.k_slices,
-        slice_strategy=args.slice_strategy,
-        force=args.force,
-    ) 
-    
+    if args.dataset_type == "rsna":
+        mp = args.rsna_manifest or CT_RSNA_MANIFEST
+        _main_rsna(
+            k_slices=args.k_slices,
+            force=args.force,
+            manifest_path=mp,
+            max_studies=args.max_studies,
+            study_ids_file=args.study_ids_file,
+        )
+    else:
+        labels_path = args.labels or META / "reads.csv"
+        if not labels_path.exists() and (ROOT / "src" / "reads.csv").exists():
+            labels_path = ROOT / "src" / "reads.csv"
+        delimiter = "\t" if args.tsv else ","
+        main(
+            limit=args.limit,
+            labels_path=labels_path,
+            delimiter=delimiter,
+            link_selected_series=args.link_selected_series,
+            k_slices=args.k_slices,
+            slice_strategy=args.slice_strategy,
+            force=args.force,
+        )
+
