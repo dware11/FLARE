@@ -4,7 +4,8 @@ Build meta/ct_rsna_manifest.json for RSNA ICH (separate from CQ500).
 - Scans RSNA DICOMs under raw_rsna/, groups by StudyInstanceUID.
 - Reads competition CSV: per-image labels -> study label = 1 if any slice positive.
 - Picks one series folder when multiple exist (choose_best_series + fallback).
-- Writes manifest with path/npz_path under cache/rsna/ for later preprocess_ct --dataset-type rsna.
+- Writes manifest with path/npz_path under cache/rsna/; then run RSNA preprocess
+  (python scripts/preprocess_rsna.py ... or scripts/preprocess_ct.py --dataset-type rsna).
 """
 from __future__ import annotations
 
