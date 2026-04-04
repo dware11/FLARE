@@ -56,6 +56,7 @@ class CTDataset(Dataset):
         val_frac: float = 0.15,
         seed: int = 42,
         expected_k_slices: Optional[int] = None,
+        skip_manifest_split: bool = False,
     ):
         manifest_path = _resolve_manifest(manifest_path)
         with open(manifest_path, encoding="utf-8") as f:
@@ -75,16 +76,19 @@ class CTDataset(Dataset):
             )
 
         rng = np.random.default_rng(seed)
-        inx = rng.permutation(len(valid))
-        n = len(valid)
-        nt = int(n * train_frac)
-        nv = int(n * val_frac)
-        train_idx, val_idx, test_idx = inx[:nt], inx[nt : nt + nv], inx[nt + nv :]
-        split_map = {"train": set(train_idx), "val": set(val_idx), "test": set(test_idx)}
-        if split:
-            self.entries = [valid[i] for i in range(n) if i in split_map[split]]
-        else:
+        if split is None:
             self.entries = valid
+        elif skip_manifest_split:
+            inx = rng.permutation(len(valid))
+            self.entries = [valid[i] for i in inx]
+        else:
+            inx = rng.permutation(len(valid))
+            n = len(valid)
+            nt = int(n * train_frac)
+            nv = int(n * val_frac)
+            train_idx, val_idx, test_idx = inx[:nt], inx[nt : nt + nv], inx[nt + nv :]
+            split_map = {"train": set(train_idx), "val": set(val_idx), "test": set(test_idx)}
+            self.entries = [valid[i] for i in range(n) if i in split_map[split]]
         self.manifest_path = manifest_path
         self.split = split or "all"
         # Match train_ct --k-slices; warn once per NPZ path if manifest points at wrong K.
