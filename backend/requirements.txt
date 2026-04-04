@@ -1,7 +1,13 @@
 #
-# FLARE MOCK BACKEND (EDITABLE)
-# This requirements file is safe to change for local mock APIs.
+# FLARE backend — Flask API + optional real MRI inference (predict_mri.py).
+# Install: pip install -r requirements.txt
 #
 flask
 flask-cors
+numpy
+opencv-python-headless
+Pillow
+torch
+torchvision
+segmentation-models-pytorch
 

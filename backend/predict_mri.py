@@ -60,6 +60,7 @@ import os
 import shutil
 import warnings
 from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -72,11 +73,102 @@ import segmentation_models_pytorch as smp
 warnings.filterwarnings("ignore")
 
 
-# PATHS
+# PATHS — checkpoints (training-aligned resolution)
 # ==============================================================================
-CLS_CHECKPOINT   = "/scratch/bckk/flare/mri_brain/classification/outputs/output/best_model.pth"
-SEG_CHECKPOINT   = "/scratch/bckk/flare/mri_brain/segmentation_brisc/outputs/swin_unet/best_model_swin.pth"
-BRATS_CHECKPOINT = "/scratch/bckk/flare/projects/FLARE/ml/brain/mri/checkpoints/best_seg_model.pth"
+# Env overrides (used only if set AND the path exists): FLARE_MRI_CLS_CHECKPOINT,
+# FLARE_MRI_SEG_CHECKPOINT, FLARE_MRI_BRATS_CHECKPOINT.
+# Otherwise: preferred default file → newest *.pth in the task-specific directory only.
+_BACKEND_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _BACKEND_DIR.parent
+
+
+def _mri_root() -> Path:
+    try:
+        import sys
+
+        if str(_REPO_ROOT) not in sys.path:
+            sys.path.insert(0, str(_REPO_ROOT))
+        from src.config import MRI_ROOT
+
+        return Path(MRI_ROOT)
+    except Exception:
+        if os.name == "nt":
+            return Path(r"D:\FLARE_DATA\mri_brain")
+        return Path("/scratch/bckk/flare/mri_brain")
+
+
+def _newest_pth_in_directory(directory: Path) -> Optional[Path]:
+    if not directory.is_dir():
+        return None
+    pths = [p for p in directory.glob("*.pth") if p.is_file()]
+    if not pths:
+        return None
+    return max(pths, key=lambda p: p.stat().st_mtime)
+
+
+def _resolve_checkpoint(
+    *,
+    env_var: str,
+    preferred: Path,
+    search_dir: Path,
+    task_name: str,
+) -> str:
+    env_val = os.environ.get(env_var)
+    if env_val:
+        ep = Path(env_val).expanduser().resolve()
+        if ep.is_file():
+            print(f"[predict_mri] {task_name} checkpoint ({env_var}): {ep}", flush=True)
+            return str(ep)
+
+    pref = preferred.resolve()
+    if pref.is_file():
+        print(f"[predict_mri] {task_name} checkpoint (preferred): {pref}", flush=True)
+        return str(pref)
+
+    newest = _newest_pth_in_directory(search_dir)
+    if newest is not None:
+        resolved = newest.resolve()
+        print(
+            f"[predict_mri] {task_name} checkpoint (newest *.pth in {search_dir}): {resolved}",
+            flush=True,
+        )
+        return str(resolved)
+
+    raise FileNotFoundError(
+        f"predict_mri: no checkpoint for {task_name}. "
+        f"Set {env_var} to an existing file, place the preferred weight at {preferred}, "
+        f"or add a .pth under {search_dir}."
+    )
+
+
+_MRI_R = _mri_root()
+print(f"[predict_mri] MRI_ROOT: {_MRI_R.resolve()}", flush=True)
+
+_CLS_PREF = _MRI_R / "classification" / "outputs" / "training" / "best_model.pth"
+_CLS_SEARCH = _MRI_R / "classification" / "outputs" / "training"
+_SEG_PREF = _MRI_R / "segmentation" / "outputs" / "swin_unet" / "best_model_swin.pth"
+_SEG_SEARCH = _MRI_R / "segmentation" / "outputs" / "swin_unet"
+_BRATS_DIR = _REPO_ROOT / "ml" / "brain" / "mri" / "checkpoints"
+_BRATS_PREF = _BRATS_DIR / "best_seg_model.pth"
+
+CLS_CHECKPOINT = _resolve_checkpoint(
+    env_var="FLARE_MRI_CLS_CHECKPOINT",
+    preferred=_CLS_PREF,
+    search_dir=_CLS_SEARCH,
+    task_name="classification",
+)
+SEG_CHECKPOINT = _resolve_checkpoint(
+    env_var="FLARE_MRI_SEG_CHECKPOINT",
+    preferred=_SEG_PREF,
+    search_dir=_SEG_SEARCH,
+    task_name="segmentation",
+)
+BRATS_CHECKPOINT = _resolve_checkpoint(
+    env_var="FLARE_MRI_BRATS_CHECKPOINT",
+    preferred=_BRATS_PREF,
+    search_dir=_BRATS_DIR,
+    task_name="brats",
+)
 
 MASK_OUTPUT_DIR   = os.path.join(os.path.dirname(__file__), "static", "masks")
 UPLOAD_OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "static", "uploads")
