@@ -8,6 +8,7 @@ import ProtectedRoute from './routes/protectedRoute'
 import MainLayout from './components/mainLayout'
 import EhrDatabase from './pages/ehrDatabase'
 import BrainCtDemo from './pages/brainCtDemo'
+import GeoTracker from './pages/geoTracker'
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="/cancer-detection" element={<CancerDetection />} />
           <Route path="/brain-ct" element={<BrainCtDemo />} />
           <Route path="/outbreak-tracker" element={<OutbreakTracker />} />
+          <Route path="/geo-tracker" element={<GeoTracker />} />
           <Route path="/ehr-database" element={<EhrDatabase />} />
         </Route>
       </Route>

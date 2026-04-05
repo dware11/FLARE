@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Box,
   Typography,
@@ -20,7 +21,10 @@ import {
   TableHead,
   TableRow,
   Paper,
+  CircularProgress,
+  Alert,
 } from '@mui/material'
+import { fetchEhrRecords } from '../api/flareAPI'
 import SearchIcon from '@mui/icons-material/Search'
 import CloseIcon from '@mui/icons-material/Close'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
@@ -49,6 +53,32 @@ type PatientRecord = {
   originalImageUrl?: string
 }
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:5000'
+
+function toAbsoluteUrl(url: string | null | undefined): string | undefined {
+  if (!url) return undefined
+  const t = url.trim()
+  if (t.startsWith('http://') || t.startsWith('https://')) return t
+  const base = API_BASE.replace(/\/$/, '')
+  const path = t.startsWith('/') ? t : `/${t}`
+  return `${base}${path}`
+}
+
+function toModality(modality: string): ScanModality {
+  const x = (modality || '').toLowerCase()
+  if (x.includes('mamm')) return 'Mammography'
+  if (x.includes('ultra')) return 'Ultrasound'
+  if (x.includes('ct')) return 'CT'
+  return 'MRI'
+}
+
+function toResultClass(result_class: string): ResultClass {
+  const u = (result_class || '').toLowerCase()
+  if (u === 'malignant') return 'Malignant'
+  if (u === 'benign') return 'Benign'
+  return 'Normal'
+}
+
 function resultChipColor(result: ResultClass) {
   switch (result) {
     case 'Normal':
@@ -61,68 +91,57 @@ function resultChipColor(result: ResultClass) {
 }
 
 export default function EhrDatabase() {
-  // Mock records (replace with fetch from backend later)
-  const records: PatientRecord[] = useMemo(
-    () => [
-      {
-        id: 'case-1001',
-        firstName: 'Ava',
-        lastName: 'Johnson',
-        dob: '1991-05-18',
-        medicalId: 'HOU-23910',
-        location: 'Houston, TX',
-        cancerType: 'Breast',
-        modality: 'Mammography',
-        scanDate: '2026-01-05',
-        aiResult: 'Benign',
-        confidence: 86,
-        notes: 'Follow-up recommended in 6 months.',
-      },
-      {
-        id: 'case-1002',
-        firstName: 'Noah',
-        lastName: 'Williams',
-        dob: '1983-11-02',
-        medicalId: 'HOU-77102',
-        location: 'Houston, TX',
-        cancerType: 'Brain',
-        modality: 'MRI',
-        scanDate: '2026-01-06',
-        aiResult: 'Malignant',
-        confidence: 92,
-        notes: 'High confidence. Consider specialist review.',
-      },
-      {
-        id: 'case-1003',
-        firstName: 'Mia',
-        lastName: 'Brown',
-        dob: '2001-03-29',
-        medicalId: 'HOU-90871',
-        location: 'Houston, TX',
-        cancerType: 'Breast',
-        modality: 'Ultrasound',
-        scanDate: '2026-01-07',
-        aiResult: 'Normal',
-        confidence: 78,
-        notes: 'No suspicious findings detected.',
-      },
-      {
-        id: 'case-1004',
-        firstName: 'Ethan',
-        lastName: 'Davis',
-        dob: '1976-09-14',
-        medicalId: 'HOU-55019',
-        location: 'Houston, TX',
-        cancerType: 'Brain',
-        modality: 'CT',
-        scanDate: '2026-01-07',
-        aiResult: 'Benign',
-        confidence: 73,
-        notes: 'Low-risk features. Monitor symptoms.',
-      },
-    ],
-    []
-  )
+  const navigate = useNavigate()
+  const [records, setRecords] = useState<PatientRecord[]>([])
+  const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      setLoading(true)
+      setFetchError('')
+      try {
+        const { records: rows } = await fetchEhrRecords()
+        if (cancelled) return
+        const mapped: PatientRecord[] = (rows ?? []).map((r) => {
+          const created = r.createdAt?.split('T')[0] ?? ''
+          const overlay = r.segmentation?.overlay_url
+          const gradCamRaw = overlay ?? r.gradcam_url ?? undefined
+          return {
+            id: r.caseId,
+            firstName: r.firstName ?? '',
+            lastName: r.lastName ?? '',
+            dob: r.dob ?? '',
+            medicalId: (r.medicalId ?? r.patient_id) || '',
+            location: r.hospitalName ?? '',
+            cancerType: 'Brain',
+            modality: toModality(r.modality),
+            scanDate: created,
+            aiResult: toResultClass(r.result_class),
+            confidence: Math.round(Number(r.confidence) * 100),
+            notes:
+              r.reject_reason ??
+              (r.review_status === 'approved'
+                ? 'Approved by reviewer.'
+                : r.review_status === 'rejected'
+                  ? 'Rejected by reviewer.'
+                  : undefined),
+            gradCamUrl: toAbsoluteUrl(gradCamRaw),
+            originalImageUrl: toAbsoluteUrl(r.input_image_url),
+          }
+        })
+        setRecords(mapped)
+      } catch (e: unknown) {
+        if (!cancelled) setFetchError(e instanceof Error ? e.message : 'Failed to load EHR records.')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const [query, setQuery] = useState('')
   const [cancerFilter, setCancerFilter] = useState<CancerType | 'All'>('All')
@@ -193,7 +212,7 @@ export default function EhrDatabase() {
               borderRadius: 2,
               '&:hover': { backgroundColor: '#ff3b3b' },
             }}
-            onClick={() => alert('Mock action: route to Cancer Detection page to create a new scan')}
+            onClick={() => navigate('/cancer-detection')}
           >
             New Scan
           </Button>
@@ -276,6 +295,18 @@ export default function EhrDatabase() {
         </CardContent>
       </Card>
 
+      {loading && (
+        <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>
+          <CircularProgress sx={{ color: '#ff5c5c' }} />
+        </Box>
+      )}
+
+      {fetchError && (
+        <Alert severity="error" sx={{ mb: 2, backgroundColor: 'rgba(239,68,68,0.12)', color: '#fff' }}>
+          {fetchError}
+        </Alert>
+      )}
+
       {/* Table */}
       <TableContainer
         component={Paper}
@@ -286,7 +317,7 @@ export default function EhrDatabase() {
           overflow: 'hidden',
         }}
       >
-        <Table>
+        <Table sx={{ opacity: loading ? 0.4 : 1, pointerEvents: loading ? 'none' : 'auto' }}>
           <TableHead>
             <TableRow sx={{ backgroundColor: 'rgba(255,255,255,0.03)' }}>
               <TableCell sx={{ color: 'rgba(255,255,255,0.75)', fontWeight: 700 }}>Patient</TableCell>
@@ -462,7 +493,11 @@ export default function EhrDatabase() {
                     textTransform: 'none',
                     borderRadius: 2,
                   }}
-                  onClick={() => alert('Mock: open original scan image')}
+                  disabled={!selected.originalImageUrl}
+                  onClick={() => {
+                    const u = selected.originalImageUrl
+                    if (u) window.open(u, '_blank', 'noopener,noreferrer')
+                  }}
                 >
                   View Scan
                 </Button>
@@ -475,7 +510,11 @@ export default function EhrDatabase() {
                     borderRadius: 2,
                     '&:hover': { backgroundColor: '#ff3b3b' },
                   }}
-                  onClick={() => alert('Mock: open Grad-CAM / segmentation overlay')}
+                  disabled={!selected.gradCamUrl}
+                  onClick={() => {
+                    const u = selected.gradCamUrl
+                    if (u) window.open(u, '_blank', 'noopener,noreferrer')
+                  }}
                 >
                   View Localization
                 </Button>

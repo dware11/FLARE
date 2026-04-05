@@ -9,12 +9,21 @@ import {
   CardContent,
   Divider,
   Alert,
+  Chip,
 } from "@mui/material";
-import { predictScan, saveCase } from "../api/flareAPI";
+import { predictScan } from "../api/flareAPI";
 import type { CancerType, PredictResponse } from "../api/flareAPI";
 
+const HOSPITALS = [
+  { id: "H001", name: "Houston Methodist Hospital" },
+  { id: "H002", name: "Memorial Hermann - Texas Medical Center" },
+  { id: "H003", name: "Baylor St. Luke's Medical Center" },
+  { id: "H004", name: "Ben Taub Hospital" },
+  { id: "H005", name: "Texas Children's Hospital" },
+];
+
 export default function CancerDetection() {
-  const [location, setLocation] = useState("Houston");
+  const [hospitalId, setHospitalId] = useState("H001");
   const [cancerType, setCancerType] = useState<CancerType | "">("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -28,8 +37,8 @@ export default function CancerDetection() {
   const [error, setError] = useState("");
 
   const canUpload = useMemo(() => {
-    return Boolean(cancerType) && firstName && lastName && medicalId && dob && location;
-  }, [cancerType, firstName, lastName, medicalId, dob, location]);
+    return Boolean(cancerType) && firstName && lastName && medicalId && dob && hospitalId;
+  }, [cancerType, firstName, lastName, medicalId, dob, hospitalId]);
 
   const canSubmit = canUpload && file;
 
@@ -42,28 +51,25 @@ export default function CancerDetection() {
 
     setLoading(true);
     try {
-      // 1) run correct model based on cancerType
-      const result = await predictScan({ cancerType, file });
-      setPred(result);
-
-      // 2) save patient data + AI result for EHR
-      await saveCase({
-        first_name: firstName,
-        last_name: lastName,
+      const result = await predictScan({
+        cancerType,
+        file,
+        hospitalId,
+        firstName,
+        lastName,
         dob,
-        medical_id: medicalId,
-        location,
-        cancer_type: cancerType,
-        prediction: result.prediction,
-        confidence: result.confidence,
-        localization_url: result.localization_url ?? null,
+        medicalId,
       });
-    } catch (e: any) {
-      setError(e?.message ?? "Something went wrong.");
+      setPred(result);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
       setLoading(false);
     }
   }
+
+  const showGeoAlert =
+    pred && (pred.prediction === "Malignant" || pred.prediction === "Benign");
 
   return (
     <Box sx={{ px: { xs: 3, md: 10 }, py: 5 }}>
@@ -92,12 +98,16 @@ export default function CancerDetection() {
           >
             <TextField
               select
-              label="Location"
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
+              label="Hospital"
+              value={hospitalId}
+              onChange={(e) => setHospitalId(e.target.value)}
               sx={fieldSx}
             >
-              <MenuItem value="Houston">Houston</MenuItem>
+              {HOSPITALS.map((h) => (
+                <MenuItem key={h.id} value={h.id}>
+                  {h.name}
+                </MenuItem>
+              ))}
             </TextField>
 
             <TextField
@@ -106,13 +116,33 @@ export default function CancerDetection() {
               value={cancerType}
               onChange={(e) => {
                 setCancerType(e.target.value as CancerType);
-                setFile(null);   // reset upload when switching type
-                setPred(null);   // reset results
+                setFile(null);
+                setPred(null);
+              }}
+              SelectProps={{
+                renderValue: (v) =>
+                  v === "brain" ? "Brain" : v === "breast" ? "Breast" : "",
               }}
               sx={fieldSx}
             >
               <MenuItem value="brain">Brain</MenuItem>
-              <MenuItem value="breast">Breast</MenuItem>
+              <MenuItem value="breast">
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1, width: "100%" }}>
+                  Breast
+                  <Chip
+                    label="Coming Soon"
+                    size="small"
+                    sx={{
+                      height: 22,
+                      fontSize: "0.7rem",
+                      backgroundColor: "rgba(255,92,92,0.15)",
+                      border: "1px solid rgba(255,92,92,0.35)",
+                      color: "#ff5c5c",
+                      fontWeight: 700,
+                    }}
+                  />
+                </Box>
+              </MenuItem>
             </TextField>
 
             <TextField
@@ -146,7 +176,6 @@ export default function CancerDetection() {
 
           <Divider sx={{ borderColor: "rgba(255,255,255,0.08)", my: 3 }} />
 
-          {/* Upload appears only after cancerType + patient info are filled */}
           {canUpload ? (
             <Box>
               <Typography sx={{ mb: 1.2, color: "rgba(255,255,255,0.8)", fontWeight: 700 }}>
@@ -201,6 +230,20 @@ export default function CancerDetection() {
               <Typography sx={{ color: "rgba(255,255,255,0.85)" }}>
                 <b>Confidence:</b> {(pred.confidence * 100).toFixed(1)}%
               </Typography>
+
+              {showGeoAlert && (
+                <Alert
+                  severity="info"
+                  sx={{
+                    mt: 2,
+                    backgroundColor: "rgba(255,92,92,0.12)",
+                    color: "#fff",
+                    border: "1px solid rgba(255,92,92,0.35)",
+                  }}
+                >
+                  Abnormal result submitted to Geo Tracker for review.
+                </Alert>
+              )}
 
               {pred.localization_url && (
                 <Box sx={{ mt: 2 }}>
