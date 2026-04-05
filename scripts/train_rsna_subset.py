@@ -145,6 +145,7 @@ def main() -> None:
     ap.add_argument("--experiment-name", type=str, required=True)
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch-size", type=int, default=16)
+    ap.add_argument("--num-workers", type=int, default=4, help="DataLoader worker processes (0 = main process only).")
     ap.add_argument("--lr", type=float, default=3e-5)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--k-slices", type=int, default=21)
@@ -260,12 +261,18 @@ def main() -> None:
             replacement=True,
         )
         train_loader = DataLoader(
-            train_ds, batch_size=args.batch_size, sampler=sampler, shuffle=False, num_workers=0
+            train_ds,
+            batch_size=args.batch_size,
+            sampler=sampler,
+            shuffle=False,
+            num_workers=args.num_workers,
         )
     else:
-        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
-    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
+        train_loader = DataLoader(
+            train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers
+        )
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     model_kind = "sequence"
     agg = "max"
