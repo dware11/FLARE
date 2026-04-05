@@ -181,10 +181,22 @@ def _run_mri_full_pipeline(
     Returns (response_dict, http_status).
     """
     ext = Path(file_storage.filename or "").suffix.lower()
-    if ext not in {".jpg", ".jpeg", ".png", ".npz"}:
-        return {"error": "Invalid file type — use JPG, PNG, or NPZ"}, 400
+    fname_lower = (file_storage.filename or "").lower()
+    # Path.suffix is ".gz" for "x.nii.gz", not ".nii.gz" — use endswith for NIfTI
+    is_nifti = fname_lower.endswith(".nii.gz") or fname_lower.endswith(".nii")
 
-    filename = f"{patient_id}_{_uuid.uuid4().hex[:8]}{ext}"
+    if is_nifti and modality == "brain_brats":
+        return {"error": "BraTS modality requires NPZ, not NIfTI"}, 400
+
+    if not is_nifti and ext not in {".jpg", ".jpeg", ".png", ".npz"}:
+        return {"error": "Invalid file type — use JPG, PNG, NPZ, or NIfTI (.nii / .nii.gz)"}, 400
+
+    # Keep .nii vs .nii.gz on disk (do not rename uncompressed volumes to .gz)
+    if is_nifti:
+        nifti_ext = ".nii.gz" if fname_lower.endswith(".nii.gz") else ".nii"
+        filename = f"{patient_id}_{_uuid.uuid4().hex[:8]}{nifti_ext}"
+    else:
+        filename = f"{patient_id}_{_uuid.uuid4().hex[:8]}{ext}"
     file_path = os.path.join(UPLOAD_FOLDER, filename)
     file_storage.save(file_path)
 

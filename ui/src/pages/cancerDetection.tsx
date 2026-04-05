@@ -81,6 +81,13 @@ const placeholderBoxSx = {
   textAlign: "center" as const,
 };
 
+/** NIfTI volumes are binary — no <img> preview; server extracts one slice for BRISC. */
+function isNiftiFile(f: File | null): boolean {
+  if (!f) return false;
+  const n = f.name.toLowerCase();
+  return n.endsWith(".nii.gz") || n.endsWith(".nii");
+}
+
 export default function CancerDetection() {
   const [hospitalId, setHospitalId] = useState("H001");
   const [cancerType, setCancerType] = useState<CancerType | "">("");
@@ -97,7 +104,8 @@ export default function CancerDetection() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!file) {
+    // Only raster scans get a blob URL; NIfTI would produce a broken <img> src
+    if (!file || isNiftiFile(file)) {
       setImagePreviewUrl(null);
       return;
     }
@@ -127,7 +135,8 @@ export default function CancerDetection() {
       e.preventDefault();
       e.stopPropagation();
       const f = e.dataTransfer.files?.[0];
-      if (f && /\.(png|jpe?g)$/i.test(f.name)) onFileChosen(f);
+      // Match file input accept: JPG/PNG + NIfTI (not a bare .gz filter)
+      if (f && /\.(png|jpe?g|nii(\.gz)?)$/i.test(f.name)) onFileChosen(f);
     },
     [onFileChosen]
   );
@@ -275,7 +284,7 @@ export default function CancerDetection() {
                   Click to upload or drag and drop
                 </Typography>
                 <Typography sx={{ color: "rgba(255,255,255,0.45)", fontSize: "0.85rem", mt: 0.5 }}>
-                  PNG or JPG
+                  JPG/PNG or NIfTI (.nii / .nii.gz) for brain — volume → one slice on server
                 </Typography>
                 {file && (
                   <Typography sx={{ color: "#ff5c5c", mt: 1.5, fontWeight: 600, fontSize: "0.9rem" }}>
@@ -285,11 +294,38 @@ export default function CancerDetection() {
                 <input
                   id="flare-scan-upload"
                   type="file"
-                  accept=".png,.jpg,.jpeg"
+                  accept=".jpg,.jpeg,.png,.nii,.nii.gz"
                   style={{ display: "none" }}
                   onChange={(e) => onFileChosen(e.target.files?.[0] ?? null)}
                 />
               </Box>
+
+              {file && isNiftiFile(file) && (
+                <Box sx={{ mt: 2 }}>
+                  <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1 }}>Uploaded Scan</Typography>
+                  {/* NIfTI: show metadata only — binary file is not previewable in-browser */}
+                  <Box
+                    sx={{
+                      ...cardSx,
+                      maxWidth: 400,
+                      p: 2,
+                      textAlign: "left",
+                    }}
+                  >
+                    <Typography sx={{ color: "#9bb1ff", fontWeight: 700, mb: 1 }}>NIfTI Volume</Typography>
+                    <Typography sx={{ fontSize: "0.9rem", wordBreak: "break-all", mb: 0.5 }}>{file.name}</Typography>
+                    <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: "0.85rem", mb: 1.5 }}>
+                      {(file.size / 1024 / 1024).toFixed(1)} MB
+                    </Typography>
+                    <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: "0.85rem" }}>
+                      Best axial slice will be auto-extracted on Delta
+                    </Typography>
+                    <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: "0.85rem", mt: 0.5 }}>
+                      BRISC classification + segmentation pipeline
+                    </Typography>
+                  </Box>
+                </Box>
+              )}
 
               {imagePreviewUrl && (
                 <Box sx={{ mt: 2 }}>

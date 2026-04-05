@@ -10,4 +10,6 @@ Pillow
 torch
 torchvision
 segmentation-models-pytorch
+# NIfTI (.nii / .nii.gz) → slice PNG for brain_mri only; see predict_mri._extract_best_slice_from_nifti
+nibabel>=5.0.0
 

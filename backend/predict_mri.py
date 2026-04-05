@@ -7,7 +7,7 @@ Usage in app.py:
     result = predict_mri(file_path, modality, patient_id)
 
 Modalities:
-    brain_mri   → PNG/JPG → EfficientNetB0 classify → MiT-B3 segment
+    brain_mri   → PNG/JPG or NIfTI (.nii/.nii.gz → auto slice PNG) → same BRISC stack
     brain_brats → NPZ     → 3D U-Net glioma sub-regions
 
 Output (brain_mri):
@@ -174,6 +174,56 @@ MASK_OUTPUT_DIR   = os.path.join(os.path.dirname(__file__), "static", "masks")
 UPLOAD_OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "static", "uploads")
 os.makedirs(MASK_OUTPUT_DIR,   exist_ok=True)
 os.makedirs(UPLOAD_OUTPUT_DIR, exist_ok=True)
+
+
+# --- NIfTI preprocessing (brain_mri only) ---------------------------------------
+# BRISC models still expect a 2D PNG/JPG path. We pick one axial slice from a
+# 3D volume, window it (p2/p98), save PNG under static/uploads, then call
+# _predict_brisc unchanged. BraTS (brain_brats) stays NPZ-only — see app.py.
+def _extract_best_slice_from_nifti(nifti_path: str, patient_id: str) -> str:
+    """
+    Load a T1-weighted NIfTI volume, find the best axial slice
+    (most non-zero voxels in middle third), normalize with p2/p98 windowing,
+    and save as PNG for BRISC inference. Models receive a normal PNG.
+    """
+    import nibabel as nib
+
+    vol = nib.load(nifti_path).get_fdata().astype(np.float32)
+
+    # 4D (e.g. time/dynamics): use first 3D volume
+    if vol.ndim == 4:
+        vol = vol[..., 0]
+    if vol.ndim != 3:
+        raise ValueError(f"Expected 3D volume, got shape {vol.shape}")
+
+    n_slices = vol.shape[2]
+    # Search middle third only (skip top/bottom of stack where coverage is thin)
+    start = max(0, n_slices // 3)
+    end = min(n_slices, (2 * n_slices) // 3)
+    if start >= end:
+        start, end = 0, n_slices
+
+    best_idx = start + int(
+        np.argmax([np.count_nonzero(vol[:, :, i]) for i in range(start, end)])
+    )
+
+    slc = vol[:, :, best_idx].copy()
+
+    # Robust contrast vs raw min-max (outliers)
+    p2, p98 = np.percentile(slc, 2), np.percentile(slc, 98)
+    if p98 > p2:
+        slc = np.clip((slc - p2) / (p98 - p2), 0.0, 1.0)
+    else:
+        slc = np.zeros_like(slc)
+
+    slc_u8 = (slc * 255).astype(np.uint8)
+    slc_u8 = np.rot90(slc_u8)
+
+    out_path = os.path.join(UPLOAD_OUTPUT_DIR, f"{patient_id}_nifti_slice.png")
+    cv2.imwrite(out_path, slc_u8)
+    print(f"[predict_mri] NIfTI slice {best_idx}/{n_slices} saved: {out_path}")
+    return out_path
+
 
 # BRISC: 512x512 images, ~0.5mm pixel spacing
 PIXEL_SPACING_MM  = 0.5
@@ -597,19 +647,23 @@ def predict_mri(file_path: str,
                 modality:   str = "brain_mri",
                 patient_id: str = "MRI_000") -> dict:
     """
-    Args:
-        file_path:  PNG/JPG for brain_mri | NPZ for brain_brats
-        modality:   "brain_mri" or "brain_brats"
-        patient_id: used for output filenames
+    Entry point for Flask. JPG/PNG and NPZ behavior unchanged.
 
-    Returns:
-        dict — full prediction result
+    - brain_mri: optional .nii / .nii.gz → auto slice PNG, then existing BRISC path.
+    - brain_brats: NPZ only (NIfTI rejected in app.py before save).
     """
     if not os.path.exists(file_path):
         return {"error": f"File not found: {file_path}"}
     try:
         if modality == "brain_brats":
             return _predict_brats(file_path, patient_id)
+
+        # brain_mri: NIfTI → single-slice PNG, then same _predict_brisc as always
+        fname_lower = file_path.lower()
+        if fname_lower.endswith(".nii.gz") or fname_lower.endswith(".nii"):
+            print("[predict_mri] NIfTI detected — extracting best axial slice")
+            file_path = _extract_best_slice_from_nifti(file_path, patient_id)
+
         return _predict_brisc(file_path, patient_id)
     except Exception as e:
         return {"error": str(e), "pred_label": None, "modality": modality}
