@@ -249,12 +249,16 @@ def _mri_to_flare_predict_response(cancer_type: str, body: dict) -> dict:
         )
     seg = body.get("segmentation") or {}
     loc = seg.get("overlay_url") or seg.get("mask_url") or body.get("gradcam_url")
-    return {
+    out = {
         "cancer_type": cancer_type,
         "prediction": rc,
         "confidence": float(body.get("confidence", 0)),
         "localization_url": _absolute_url_for_path(loc),
+        "gradcam_ready": bool(body.get("gradcam_ready", False)),
     }
+    if body.get("probabilities") is not None:
+        out["probabilities"] = body.get("probabilities")
+    return out
 
 
 # ============================================================================
