@@ -301,14 +301,18 @@ def _main_rsna(
             by_id[pid] = entry
             continue
 
+        raw_single = entry.get("raw_dicom_path", "")
         raw_dir = Path(entry.get("raw_dicom_dir", ""))
-        if not raw_dir.is_dir():
-            print(f"  [{i + 1}/{len(rows)}] SKIP {pid}: raw_dicom_dir missing {raw_dir}")
+        if raw_single and Path(raw_single).is_file():
+            dicom_paths = [Path(raw_single)]
+        elif raw_dir.is_dir():
+            dicom_paths = get_sorted_dicom_paths(raw_dir)
+        else:
+            print(f"  [{i + 1}/{len(rows)}] SKIP {pid}: no valid dicom source")
             skipped_raw += 1
             continue
 
         try:
-            dicom_paths = get_sorted_dicom_paths(raw_dir)
             if not dicom_paths:
                 skipped_raw += 1
                 continue
