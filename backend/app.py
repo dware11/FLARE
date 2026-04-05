@@ -7,6 +7,7 @@ FLARE MOCK BACKEND (EDITABLE)
 
 from __future__ import annotations
 
+import argparse
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -757,4 +758,8 @@ def geotracker_summary():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    parser = argparse.ArgumentParser(description="FLARE Flask backend")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind host")
+    parser.add_argument("--port", type=int, default=5000, help="Bind port")
+    args = parser.parse_args()
+    app.run(host=args.host, port=args.port, debug=True)
