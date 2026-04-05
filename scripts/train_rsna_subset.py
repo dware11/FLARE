@@ -1,5 +1,8 @@
 """
 Train CT sequence model on pre-split RSNA subset manifests (skip internal 70/15/15).
+
+Use --checkpoint path/to/last.pt (or best.pt from this trainer) to resume; each epoch
+writes exp_dir/last.pt with optimizer and scheduler state.
 """
 from __future__ import annotations
 
@@ -142,6 +145,7 @@ def main() -> None:
     ap.add_argument("--experiment-name", type=str, required=True)
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch-size", type=int, default=16)
+    ap.add_argument("--num-workers", type=int, default=4, help="DataLoader worker processes (0 = main process only).")
     ap.add_argument("--lr", type=float, default=3e-5)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--k-slices", type=int, default=21)
@@ -178,6 +182,15 @@ def main() -> None:
         "--use-thickness",
         action="store_true",
         help="Fuse slice thickness from NPZ (must be present in cache).",
+    )
+    ap.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Load this .pt before training: full resume if it contains optimizer, scheduler, "
+            "and last_epoch (e.g. last.pt or a newer best.pt); otherwise weights-only warm start."
+        ),
     )
     args = ap.parse_args()
 
@@ -248,12 +261,18 @@ def main() -> None:
             replacement=True,
         )
         train_loader = DataLoader(
-            train_ds, batch_size=args.batch_size, sampler=sampler, shuffle=False, num_workers=0
+            train_ds,
+            batch_size=args.batch_size,
+            sampler=sampler,
+            shuffle=False,
+            num_workers=args.num_workers,
         )
     else:
-        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
-    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
+        train_loader = DataLoader(
+            train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers
+        )
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     model_kind = "sequence"
     agg = "max"
@@ -284,6 +303,48 @@ def main() -> None:
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(args.epochs, 1))
 
+    best_val_loss = float("inf")
+    best_val_auc = -1.0
+    epochs_without_improvement = 0
+    history: List[Dict[str, Any]] = []
+    start_epoch = 0
+
+    if args.checkpoint is not None:
+        ckpt_in = args.checkpoint.expanduser().resolve()
+        if not ckpt_in.is_file():
+            raise FileNotFoundError(f"--checkpoint not found: {ckpt_in}")
+        try:
+            ckpt0 = torch.load(ckpt_in, map_location=device, weights_only=False)
+        except TypeError:
+            ckpt0 = torch.load(ckpt_in, map_location=device)
+        if not isinstance(ckpt0, dict) or "model" not in ckpt0:
+            raise ValueError(f"Checkpoint must be a dict with a 'model' key: {ckpt_in}")
+        model.load_state_dict(ckpt0["model"], strict=True)
+        has_resume = (
+            ckpt0.get("optimizer_state_dict") is not None
+            and ckpt0.get("scheduler_state_dict") is not None
+            and ckpt0.get("last_epoch") is not None
+        )
+        if has_resume:
+            opt.load_state_dict(ckpt0["optimizer_state_dict"])
+            scheduler.load_state_dict(ckpt0["scheduler_state_dict"])
+            start_epoch = int(ckpt0["last_epoch"]) + 1
+            bvl = ckpt0.get("best_val_loss")
+            best_val_loss = float(bvl) if bvl is not None and math.isfinite(float(bvl)) else float("inf")
+            bva = ckpt0.get("best_val_auc")
+            best_val_auc = float(bva) if bva is not None and math.isfinite(float(bva)) else -1.0
+            epochs_without_improvement = int(ckpt0.get("epochs_without_improvement", 0))
+            history = list(ckpt0.get("history", []))
+            print(
+                f"Resumed training from {ckpt_in} (next epoch {start_epoch + 1} / {args.epochs})",
+                flush=True,
+            )
+        else:
+            print(
+                f"Loaded weights from {ckpt_in}; optimizer fresh; starting epoch 1.",
+                flush=True,
+            )
+
     class_weights = torch.tensor(cw_list, dtype=torch.float32, device=device)
     ce_criterion = nn.CrossEntropyLoss(ignore_index=-1, weight=class_weights)
     uniform_w = torch.tensor([1.0, 1.0], dtype=torch.float32, device=device)
@@ -305,12 +366,16 @@ def main() -> None:
     def _fmt(x: float) -> str:
         return f"{x:.4f}" if math.isfinite(x) else "nan"
 
-    best_val_loss = float("inf")
-    best_val_auc = -1.0
-    epochs_without_improvement = 0
-    history: List[Dict[str, Any]] = []
+    def _resume_payload(ep_done: int) -> Dict[str, Any]:
+        return {
+            "optimizer_state_dict": opt.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "last_epoch": ep_done,
+            "epochs_without_improvement": epochs_without_improvement,
+            "history": history,
+        }
 
-    for ep in range(args.epochs):
+    for ep in range(start_epoch, args.epochs):
         model.train()
         train_loss = 0.0
         train_finite = 0
@@ -412,48 +477,8 @@ def main() -> None:
 
             if improved:
                 epochs_without_improvement = 0
-                ckpt_path = exp_dir / "best.pt"
-                payload = {
-                    "model": model.state_dict(),
-                    "epoch": ep,
-                    "model_kind": model_kind,
-                    "agg": agg,
-                    "rnn_type": rnn_type,
-                    "sequence_pool": sequence_pool,
-                    "sequence_topk": sequence_topk,
-                    "rnn_dropout": rnn_dropout,
-                    "use_thickness": use_thickness,
-                    "focal_gamma": focal_gamma,
-                    "selection_metric": selection,
-                    "best_val_auc": best_val_auc if use_auc_selection else None,
-                    "best_val_loss": best_val_loss if math.isfinite(best_val_loss) else None,
-                    "k_slices": k_slices,
-                    "class_weights": cw_list,
-                    "eval_threshold": eval_threshold_train,
-                    "train_counts": {"normal": tr0, "abnormal": tr1},
-                    "val_counts": {"normal": va0, "abnormal": va1},
-                    "test_counts": {"normal": te0, "abnormal": te1},
-                    "imbalance_ratio_train_abnormal_over_normal": ir_train
-                    if math.isfinite(ir_train)
-                    else None,
-                    "imbalance_mode": imbalance_mode,
-                    "class_weights_used_in_loss": use_loss_weights,
-                    "weighted_sampler_used": sampler_used,
-                    "val_confusion_matrix_at_eval_threshold": cm_for_ckpt.tolist()
-                    if cm_for_ckpt is not None
-                    else None,
-                }
-                torch.save(payload, ckpt_path)
-                print(f" -> saved {ckpt_path} (best by {selection})", flush=True)
             else:
                 epochs_without_improvement += 1
-                if epochs_without_improvement >= args.auc_patience:
-                    print(
-                        f"Early stopping: no improvement for {args.auc_patience} epochs "
-                        f"({'val_auc' if use_auc_selection else 'val_loss'})",
-                        flush=True,
-                    )
-                    break
 
         history.append(
             {
@@ -476,6 +501,63 @@ def main() -> None:
             f"Epoch {ep+1} / {args.epochs} train_loss={_fmt(train_avg)} val_loss={_fmt(val_avg)} "
             f"val_auc={_fmt(roc_auc)}",
             flush=True,
+        )
+
+        ck_common: Dict[str, Any] = {
+            "epoch": ep,
+            "model_kind": model_kind,
+            "agg": agg,
+            "rnn_type": rnn_type,
+            "sequence_pool": sequence_pool,
+            "sequence_topk": sequence_topk,
+            "rnn_dropout": rnn_dropout,
+            "use_thickness": use_thickness,
+            "focal_gamma": focal_gamma,
+            "selection_metric": selection,
+            "best_val_auc": best_val_auc if use_auc_selection else None,
+            "best_val_loss": best_val_loss if math.isfinite(best_val_loss) else None,
+            "k_slices": k_slices,
+            "class_weights": cw_list,
+            "eval_threshold": eval_threshold_train,
+            "train_counts": {"normal": tr0, "abnormal": tr1},
+            "val_counts": {"normal": va0, "abnormal": va1},
+            "test_counts": {"normal": te0, "abnormal": te1},
+            "imbalance_ratio_train_abnormal_over_normal": ir_train if math.isfinite(ir_train) else None,
+            "imbalance_mode": imbalance_mode,
+            "class_weights_used_in_loss": use_loss_weights,
+            "weighted_sampler_used": sampler_used,
+            "val_confusion_matrix_at_eval_threshold": cm_for_ckpt.tolist()
+            if cm_for_ckpt is not None
+            else None,
+        }
+
+        if len(val_loader) > 0 and math.isfinite(val_avg):
+            if improved:
+                ckpt_path = exp_dir / "best.pt"
+                payload = {
+                    "model": model.state_dict(),
+                    **ck_common,
+                    **_resume_payload(ep),
+                }
+                torch.save(payload, ckpt_path)
+                print(f" -> saved {ckpt_path} (best by {selection})", flush=True)
+            elif epochs_without_improvement >= args.auc_patience:
+                print(
+                    f"Early stopping: no improvement for {args.auc_patience} epochs "
+                    f"({'val_auc' if use_auc_selection else 'val_loss'})",
+                    flush=True,
+                )
+                last_path = exp_dir / "last.pt"
+                torch.save(
+                    {"model": model.state_dict(), **ck_common, **_resume_payload(ep)},
+                    last_path,
+                )
+                break
+
+        last_path = exp_dir / "last.pt"
+        torch.save(
+            {"model": model.state_dict(), **ck_common, **_resume_payload(ep)},
+            last_path,
         )
 
         if not math.isfinite(train_avg) or not math.isfinite(val_avg):
