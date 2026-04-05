@@ -3,11 +3,15 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:5000";
 export type CancerType = "brain" | "breast";
 export type ResultClass = "Normal" | "Benign" | "Malignant";
 
+export type ClassProbability = { label: string; value: number };
+
 export type PredictResponse = {
   cancer_type: CancerType;
   prediction: ResultClass;
   confidence: number;
   localization_url?: string | null;
+  probabilities?: ClassProbability[] | null;
+  gradcam_ready?: boolean;
 };
 
 export type CreateCaseRequest = {
