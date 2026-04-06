@@ -451,6 +451,47 @@ def api_mri_predict():
 
     if not hospital_id or not hospital_exists(hospital_id):
         return jsonify({"error": "Missing or invalid hospitalId"}), 400
+
+    # BraTS patient folder: multipart t1n, t1c, t2w, t2f (one NIfTI each). Fusion → NPZ / 3D not implemented yet.
+    t1n_f = request.files.get("t1n")
+    t1c_f = request.files.get("t1c")
+    t2w_f = request.files.get("t2w")
+    t2f_f = request.files.get("t2f")
+    quartet = [t1n_f, t1c_f, t2w_f, t2f_f]
+    if any(f is not None and getattr(f, "filename", None) for f in quartet):
+        if modality != "brain_brats":
+            return (
+                jsonify({"error": "t1n/t1c/t2w/t2f multipart requires modality=brain_brats"}),
+                400,
+            )
+        if not all(f is not None and getattr(f, "filename", None) for f in quartet):
+            missing = [
+                n
+                for n, f in zip(("t1n", "t1c", "t2w", "t2f"), quartet)
+                if f is None or not getattr(f, "filename", None)
+            ]
+            return (
+                jsonify(
+                    {
+                        "error": "BraTS folder: all four fields required: t1n, t1c, t2w, t2f.",
+                        "missing": missing,
+                    }
+                ),
+                400,
+            )
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "BraTS multi-sequence NIfTI folder ingest is not implemented yet. "
+                        "Use a single .npz (4×128³) with modality brain_brats, or single-file BRISC (brain_mri)."
+                    ),
+                    "hint": "Planned: stack t1n/t1c/t2w/t2f on server into NPZ or 3D pipeline input.",
+                }
+            ),
+            501,
+        )
+
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
@@ -752,6 +793,7 @@ def geotracker_summary():
 
 # ---------------------------------------------------------------------------
 # CT brain demo + fusion — not wired yet. I need to hook ml/brain/ct/infer here when we're ready.
+# UI hook (patient folder, *-ct.nii.gz): ui/src/pages/cancerDetection.tsx + flareAPI predictCtPatientFolder stub.
 # The CT demo client in the repo expects roughly:
 #   GET  /api/patients   (stub above — I return { "patients": [] } for now)
 #   POST /api/predict    # can't use this URL for CT JSON — it clashes with our geotracker /api/predict;
