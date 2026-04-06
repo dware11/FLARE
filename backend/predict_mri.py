@@ -64,13 +64,11 @@ from typing import Optional
 
 import cv2
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torchvision import models, transforms
-import segmentation_models_pytorch as smp
 
 warnings.filterwarnings("ignore")
+
+# torch / torchvision / smp are imported inside inference helpers so Flask can
+# import this module in seconds; first request pays the import + model load cost.
 
 
 # PATHS — checkpoints (training-aligned resolution)
@@ -263,10 +261,19 @@ BRATS_COLORS_BGR = {
 
 # DEVICE + MODEL CACHE — load once, reuse across requests
 # ==============================================================================
-_device      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+_device: object | None = None
 _cls_model   = None
 _seg_model   = None
 _brats_model = None
+
+
+def _get_device():
+    global _device
+    if _device is None:
+        import torch
+
+        _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return _device
 
 
 # MODEL LOADING
@@ -275,6 +282,11 @@ def _load_cls_model():
     global _cls_model
     if _cls_model is not None:
         return _cls_model
+    import torch
+    import torch.nn as nn
+    from torchvision import models
+
+    device = _get_device()
     model = models.efficientnet_b0(weights=None)
     in_f  = model.classifier[1].in_features
     model.classifier = nn.Sequential(
@@ -284,9 +296,9 @@ def _load_cls_model():
         nn.Dropout(p=0.15),
         nn.Linear(256, 4),
     )
-    ckpt  = torch.load(CLS_CHECKPOINT, map_location=_device, weights_only=False)
+    ckpt  = torch.load(CLS_CHECKPOINT, map_location=device, weights_only=False)
     model.load_state_dict(ckpt.get("model_state_dict", ckpt), strict=True)
-    model.eval().to(_device)
+    model.eval().to(device)
     _cls_model = model
     return model
 
@@ -295,6 +307,10 @@ def _load_seg_model():
     global _seg_model
     if _seg_model is not None:
         return _seg_model
+    import torch
+    import segmentation_models_pytorch as smp
+
+    device = _get_device()
     model = smp.Unet(
         encoder_name="mit_b3",
         encoder_weights=None,
@@ -302,9 +318,9 @@ def _load_seg_model():
         classes=1,
         activation=None,
     )
-    ckpt  = torch.load(SEG_CHECKPOINT, map_location=_device, weights_only=False)
+    ckpt  = torch.load(SEG_CHECKPOINT, map_location=device, weights_only=False)
     model.load_state_dict(ckpt.get("model_state_dict", ckpt), strict=True)
-    model.eval().to(_device)
+    model.eval().to(device)
     _seg_model = model
     return model
 
@@ -314,8 +330,15 @@ def _load_brats_model():
     if _brats_model is not None:
         return _brats_model
 
+    import torch
+    import torch.nn as nn
+
+    device = _get_device()
+
     class ConvBlock(nn.Module):
         def __init__(self, in_ch, out_ch):
+            import torch.nn as nn
+
             super().__init__()
             self.block = nn.Sequential(
                 nn.Conv3d(in_ch, out_ch, 3, padding=1),
@@ -329,6 +352,8 @@ def _load_brats_model():
 
     class SegmentationUNet(nn.Module):
         def __init__(self, in_channels=4, out_channels=4):
+            import torch.nn as nn
+
             super().__init__()
             self.enc1 = ConvBlock(in_channels, 32);  self.pool1 = nn.MaxPool3d(2)
             self.enc2 = ConvBlock(32, 64);            self.pool2 = nn.MaxPool3d(2)
@@ -346,6 +371,10 @@ def _load_brats_model():
             self.seg_head = nn.Conv3d(32, out_channels, 1)
 
         def forward(self, x):
+            # Method globals are the module's — not _load_brats_model's locals — so torch
+            # is not in scope unless imported here (see nested-class LEGB in Python).
+            import torch
+
             e1 = self.enc1(x)
             e2 = self.enc2(self.pool1(e1))
             e3 = self.enc3(self.pool2(e2))
@@ -358,9 +387,9 @@ def _load_brats_model():
             return self.seg_head(d1)
 
     model = SegmentationUNet()
-    ckpt  = torch.load(BRATS_CHECKPOINT, map_location=_device, weights_only=False)
+    ckpt  = torch.load(BRATS_CHECKPOINT, map_location=device, weights_only=False)
     model.load_state_dict(ckpt.get("model_state_dict", ckpt), strict=True)
-    model.eval().to(_device)
+    model.eval().to(device)
     _brats_model = model
     return model
 
@@ -369,6 +398,9 @@ def _load_brats_model():
 # ==============================================================================
 def _preprocess_for_classification(image_path: str):
     """PNG/JPG → tensor for EfficientNetB0. Matches BRISC training exactly."""
+    import torch
+    from torchvision import transforms
+
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise ValueError(f"Cannot read: {image_path}")
@@ -390,6 +422,9 @@ def _preprocess_for_classification(image_path: str):
 
 def _preprocess_for_segmentation(image_path: str):
     """PNG/JPG → tensor for MiT-B3. Matches BRISC seg training exactly."""
+    import torch
+    import torch.nn.functional as F
+
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise ValueError(f"Cannot read: {image_path}")
@@ -528,13 +563,17 @@ def _save_brats_outputs(pred_3d: np.ndarray, image_4ch: np.ndarray,
 # ==============================================================================
 def _predict_brisc(image_path: str, patient_id: str) -> dict:
     """BRISC: classify → branch → segment if tumor found."""
+    import torch
+    import torch.nn.functional as F
+
+    device = _get_device()
 
     # Classification
     cls_model                         = _load_cls_model()
     tensor, display, (orig_h, orig_w) = _preprocess_for_classification(image_path)
 
     with torch.no_grad():
-        probs = F.softmax(cls_model(tensor.to(_device)), dim=1).cpu().squeeze().numpy()
+        probs = F.softmax(cls_model(tensor.to(device)), dim=1).cpu().squeeze().numpy()
 
     pred_idx   = int(np.argmax(probs))
     pred_label = CLASS_NAMES[pred_idx]
@@ -566,7 +605,7 @@ def _predict_brisc(image_path: str, patient_id: str) -> dict:
         }
     else:
         try:
-            seg_tensor = _preprocess_for_segmentation(image_path).to(_device)
+            seg_tensor = _preprocess_for_segmentation(image_path).to(device)
 
             with torch.no_grad():
                 mask_np = (torch.sigmoid(
@@ -599,13 +638,16 @@ def _predict_brisc(image_path: str, patient_id: str) -> dict:
 
 def _predict_brats(npz_path: str, patient_id: str) -> dict:
     """BraTS: 3D U-Net glioma sub-region segmentation."""
+    import torch
+
+    device = _get_device()
     data   = np.load(npz_path, allow_pickle=True)
     image  = data["image"].astype(np.float32)
 
     if image.shape != (4, 128, 128, 128):
         raise ValueError(f"Expected (4,128,128,128), got {image.shape}")
 
-    tensor = torch.tensor(image, dtype=torch.float32).unsqueeze(0).to(_device)
+    tensor = torch.tensor(image, dtype=torch.float32).unsqueeze(0).to(device)
 
     with torch.no_grad():
         probs   = torch.softmax(_load_brats_model()(tensor), dim=1)
