@@ -49,7 +49,10 @@ CT_CAM_DIR = CT_OUTPUTS / "cam"
 # -----------------------------------------------------------------------------
 RSNA_RAW_ROOT = CT_ROOT / "raw_rsna"
 RSNA_CACHE_DIR = CT_ROOT / "cache" / "rsna"
+# Literature-aligned 3-window NPZ (brain / subdural / bone); does not replace RSNA_CACHE_DIR.
+RSNA_WINDOWED_CACHE_DIR = CT_ROOT / "cache" / "rsna_windowed"
 CT_RSNA_MANIFEST = CT_META / "ct_rsna_manifest.json"
+CT_RSNA_MANIFEST_WINDOWED = CT_META / "ct_rsna_manifest_windowed.json"
 RSNA_LABELS_CSV_DEFAULT = CT_META / "rsna_labels.csv"
 RSNA_LABEL_ID_COLUMN = "ID"
 RSNA_LABEL_SUBTYPE_COLUMNS = (

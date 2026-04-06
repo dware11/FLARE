@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from src.config import OUTPUTS
 from ml.brain.ct.threshold_util import resolve_abnormal_threshold
-from ml.brain.ct.dataset_ct import CTDataset
+from ml.brain.ct.dataset_ct import CTDataset, ct_batch_collate, unpack_ct_batch
 from ml.brain.ct.model_ct import (
     build_ct_model,
     build_ct_sequence_model,
@@ -201,12 +201,25 @@ def main(
             replacement=True,
         )
         train_loader = DataLoader(
-            train_ds, batch_size=batch_size, sampler=sampler, shuffle=False, num_workers=0
+            train_ds,
+            batch_size=batch_size,
+            sampler=sampler,
+            shuffle=False,
+            num_workers=0,
+            collate_fn=ct_batch_collate,
         )
     else:
-        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=0,
+            collate_fn=ct_batch_collate,
+        )
 
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False, num_workers=0, collate_fn=ct_batch_collate
+    )
 
     if model_kind == "sequence":
         model = build_ct_sequence_model(
@@ -307,7 +320,7 @@ def main(
         train_loss = 0.0
         train_finite = 0
         for batch in train_loader:
-            X, y, _, thick = batch
+            X, y, _, thick = unpack_ct_batch(batch)
             thick = thick.to(device)
             X, y = X.to(device), y.to(device)
             if not use_thickness:
@@ -341,7 +354,7 @@ def main(
 
         with torch.no_grad():
             for batch in val_loader:
-                X, y, _, thick = batch
+                X, y, _, thick = unpack_ct_batch(batch)
                 thick = thick.to(device)
                 X, y = X.to(device), y.to(device)
                 if not use_thickness:

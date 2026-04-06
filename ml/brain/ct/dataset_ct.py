@@ -2,9 +2,10 @@
 Dataset: reads cached NPZ slices from manifest; applies train-time augmentations.
 """
 import json
+import logging
 import math
 from pathlib import Path
-from typing import Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -12,9 +13,12 @@ import torchvision.transforms.functional as TF
 from torch.utils.data import Dataset
 
 import sys
+
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from src.config import META
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MANIFEST = META / "ct_processed_manifest.json"
 
@@ -27,6 +31,28 @@ def _resolve_manifest(manifest_path: Optional[Path]) -> Path:
     if manifest_path is None:
         return DEFAULT_MANIFEST
     return Path(manifest_path)
+
+
+def ct_batch_collate(batch: List[Tuple[torch.Tensor, int, str, torch.Tensor]]) -> Dict[str, Any]:
+    """Stack batch into a dict for fusion-friendly training (patient_id always present)."""
+    xs, ys, pids, ths = zip(*batch)
+    return {
+        "x": torch.stack(xs, dim=0),
+        "y": torch.tensor(ys, dtype=torch.long),
+        "patient_id": list(pids),
+        "thickness": torch.stack(ths, dim=0),
+    }
+
+
+def unpack_ct_batch(
+    batch: Union[Dict[str, Any], Tuple[torch.Tensor, torch.Tensor, Any, torch.Tensor]],
+) -> Tuple[torch.Tensor, torch.Tensor, List[str], torch.Tensor]:
+    """Normalize DataLoader batch: dict (preferred) or legacy 4-tuple."""
+    if isinstance(batch, dict):
+        return batch["x"], batch["y"], batch["patient_id"], batch["thickness"]
+    X, y, pid, thick = batch
+    pids = [str(p) if not isinstance(p, str) else p for p in pid]
+    return X, y, pids, thick
 
 
 def _random_erasing(x: torch.Tensor, p: float = 0.3, scale_lo: float = 0.02, scale_hi: float = 0.15) -> torch.Tensor:
@@ -42,12 +68,30 @@ def _random_erasing(x: torch.Tensor, p: float = 0.3, scale_lo: float = 0.02, sca
     rh, rw = min(rh, H), min(rw, W)
     top = torch.randint(0, H - rh + 1, (1,)).item()
     left = torch.randint(0, W - rw + 1, (1,)).item()
-    x[:, top:top + rh, left:left + rw] = 0.0
+    x[:, top : top + rh, left : left + rw] = 0.0
     return x
+
+
+def _filter_corrupt_npz_entries(entries: List[dict]) -> List[dict]:
+    """Drop manifest rows whose NPZ cannot be read (logs warning)."""
+    good: List[dict] = []
+    for e in entries:
+        p = Path(e.get("path", ""))
+        if not p.is_file():
+            continue
+        try:
+            with np.load(p) as data:
+                _ = data["arr"]
+        except Exception as ex:
+            logger.warning("Skipping corrupt or unreadable NPZ %s: %s", p, ex)
+            continue
+        good.append(e)
+    return good
 
 
 class CTDataset(Dataset):
     """Dataset over cached CT npz from manifest; yields volume, label, id, and optional thickness."""
+
     def __init__(
         self,
         manifest_path: Optional[Path] = None,
@@ -57,6 +101,7 @@ class CTDataset(Dataset):
         seed: int = 42,
         expected_k_slices: Optional[int] = None,
         skip_manifest_split: bool = False,
+        manifest_split_filter: Optional[Literal["train", "val", "test"]] = None,
     ):
         manifest_path = _resolve_manifest(manifest_path)
         with open(manifest_path, encoding="utf-8") as f:
@@ -76,6 +121,32 @@ class CTDataset(Dataset):
             )
 
         rng = np.random.default_rng(seed)
+
+        # CQ500 / combined manifest: subset by explicit "split" field or deterministic 70/15/15 on this file.
+        if skip_manifest_split and manifest_split_filter is not None:
+            labeled = [e for e in valid if e.get("split") == manifest_split_filter]
+            if labeled:
+                valid = labeled
+            else:
+                n = len(valid)
+                if n == 0:
+                    pass
+                else:
+                    inx = rng.permutation(n)
+                    nt = int(n * train_frac)
+                    nv = int(n * val_frac)
+                    train_idx = set(inx[:nt])
+                    val_idx = set(inx[nt : nt + nv])
+                    test_idx = set(inx[nt + nv :])
+                    split_map = {"train": train_idx, "val": val_idx, "test": test_idx}
+                    idx_set = split_map[manifest_split_filter]
+                    valid = [valid[i] for i in range(n) if i in idx_set]
+
+        if split is not None and len(valid) == 0:
+            raise ValueError(
+                f"No samples left after manifest_split_filter={manifest_split_filter!r} in {manifest_path}."
+            )
+
         if split is None:
             self.entries = valid
         elif skip_manifest_split:
@@ -89,9 +160,16 @@ class CTDataset(Dataset):
             train_idx, val_idx, test_idx = inx[:nt], inx[nt : nt + nv], inx[nt + nv :]
             split_map = {"train": set(train_idx), "val": set(val_idx), "test": set(test_idx)}
             self.entries = [valid[i] for i in range(n) if i in split_map[split]]
+
+        self.entries = _filter_corrupt_npz_entries(self.entries)
+        if split is not None and len(self.entries) == 0:
+            raise ValueError(
+                f"No usable samples after filtering corrupt NPZ in {manifest_path}. "
+                "Check cache paths and NPZ integrity."
+            )
+
         self.manifest_path = manifest_path
         self.split = split or "all"
-        # Match train_ct --k-slices; warn once per NPZ path if manifest points at wrong K.
         self.expected_k_slices = expected_k_slices
         self._k_warned_paths: set[str] = set()
 
@@ -101,8 +179,13 @@ class CTDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int, str, torch.Tensor]:
         e = self.entries[idx]
         path = Path(e["path"])
-        data = np.load(path)
-        arr = data["arr"]
+        try:
+            data = np.load(path)
+            arr = data["arr"]
+        except Exception as ex:
+            logger.warning("NPZ read failed at %s: %s", path, ex)
+            raise RuntimeError(f"Corrupt NPZ (should have been filtered at init): {path}") from ex
+
         if arr.ndim == 3:
             arr = arr[np.newaxis, ...]
         if self.expected_k_slices is not None:
@@ -148,7 +231,6 @@ class CTDataset(Dataset):
         """
         k = x.shape[0]
 
-        # --- shared spatial params (same geometry on every slice so Z-stack stays aligned) ---
         do_hflip = torch.rand(1).item() < 0.35
         do_vflip = torch.rand(1).item() < 0.08
         angle = (torch.rand(1).item() - 0.5) * 16.0 if torch.rand(1).item() < 0.45 else 0.0
@@ -160,9 +242,8 @@ class CTDataset(Dataset):
         _, _, H, W = x.shape
 
         for s in range(k):
-            sl = x[s]  # (C, H, W)
+            sl = x[s]
 
-            # -- spatial (shared) --
             if do_hflip:
                 sl = torch.flip(sl, dims=[2])
             if do_vflip:
@@ -177,10 +258,9 @@ class CTDataset(Dataset):
                 sl = TF.resize(sl, [nh, nw])
                 sl = TF.center_crop(sl, [H, W])
 
-            # -- intensity (per-slice) --
             if torch.rand(1).item() < 0.5:
-                scale = 0.8 + 0.4 * torch.rand(1).item()
-                sl = (sl * scale).clamp(0.0, 1.0)
+                scale_i = 0.8 + 0.4 * torch.rand(1).item()
+                sl = (sl * scale_i).clamp(0.0, 1.0)
             if torch.rand(1).item() < 0.4:
                 gamma = 0.7 + 0.6 * torch.rand(1).item()
                 sl = sl.clamp(1e-8, 1.0).pow(gamma)

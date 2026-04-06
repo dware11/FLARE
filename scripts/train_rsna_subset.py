@@ -1,8 +1,8 @@
 """
 Train CT sequence model on pre-split RSNA subset manifests (skip internal 70/15/15).
 
-Use --checkpoint path/to/last.pt (or best.pt from this trainer) to resume; each epoch
-writes exp_dir/last.pt with optimizer and scheduler state.
+Resumes from exp_dir/last.pt when present (overrides --checkpoint for training).
+Use --eval-only to run val/test metrics only without training.
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from ml.brain.ct.dataset_ct import CTDataset  # noqa: E402
+from ml.brain.ct.dataset_ct import CTDataset, ct_batch_collate, unpack_ct_batch  # noqa: E402
 from ml.brain.ct.model_ct import (  # noqa: E402
     build_ct_sequence_model,
     is_sequence_ct_model,
@@ -46,6 +46,42 @@ def _set_seeds(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _resolve_training_checkpoint(exp_dir: Path, args_checkpoint: Optional[Path]) -> Optional[Path]:
+    """Prefer experiment last.pt; else optional --checkpoint."""
+    last_pt = exp_dir / "last.pt"
+    if last_pt.is_file():
+        return last_pt
+    if args_checkpoint is not None:
+        p = args_checkpoint.expanduser().resolve()
+        if p.is_file():
+            return p
+        raise FileNotFoundError(f"--checkpoint not found: {p}")
+    return None
+
+
+def _resolve_eval_checkpoint(exp_dir: Path, args_checkpoint: Optional[Path]) -> Optional[Path]:
+    """Priority: args.checkpoint → exp_dir/best.pt → exp_dir/last.pt."""
+    if args_checkpoint is not None:
+        p = args_checkpoint.expanduser().resolve()
+        if p.is_file():
+            return p
+        raise FileNotFoundError(f"--checkpoint not found: {p}")
+    best = exp_dir / "best.pt"
+    if best.is_file():
+        return best
+    last_pt = exp_dir / "last.pt"
+    if last_pt.is_file():
+        return last_pt
+    return None
+
+
+def _load_checkpoint_dict(ckpt_path: Path, device: torch.device) -> Dict[str, Any]:
+    try:
+        return torch.load(ckpt_path, map_location=device, weights_only=False)
+    except TypeError:
+        return torch.load(ckpt_path, map_location=device)
+
+
 def _collect_probs_labels_ids(
     model: nn.Module,
     loader: DataLoader,
@@ -59,7 +95,7 @@ def _collect_probs_labels_ids(
     ids: List[str] = []
     with torch.no_grad():
         for batch in loader:
-            X, y, pid, thick = batch
+            X, y, pid, thick = unpack_ct_batch(batch)
             thick = thick.to(device)
             X = X.to(device)
             if not use_thickness:
@@ -136,6 +172,98 @@ def _write_cm_csv(path: Path, cm: np.ndarray) -> None:
         w.writerow(["True_1_Abnormal", int(cm[1, 0]), int(cm[1, 1])])
 
 
+def run_val_test_report(
+    exp_dir: Path,
+    model: nn.Module,
+    val_loader: DataLoader,
+    test_loader: DataLoader,
+    device: torch.device,
+    args: argparse.Namespace,
+    tr0: int,
+    tr1: int,
+    best_val_auc: float,
+    use_thickness: bool,
+    agg: str,
+) -> None:
+    ckpt_path = _resolve_eval_checkpoint(exp_dir, args.checkpoint)
+    if ckpt_path is None:
+        raise FileNotFoundError(
+            "No checkpoint for evaluation: set --checkpoint or place best.pt/last.pt under experiment dir."
+        )
+    ckpt = _load_checkpoint_dict(ckpt_path, device)
+    if not isinstance(ckpt, dict) or "model" not in ckpt:
+        raise ValueError(f"Checkpoint must contain 'model' state dict: {ckpt_path}")
+    model.load_state_dict(ckpt["model"], strict=True)
+    eval_thr = resolve_abnormal_threshold(cli=args.threshold, default=0.5, ckpt=ckpt)
+
+    y_val, p_val, id_val = _collect_probs_labels_ids(model, val_loader, device, agg, use_thickness)
+    y_te, p_te, id_te = _collect_probs_labels_ids(model, test_loader, device, agg, use_thickness)
+
+    tuned_thr: Optional[float] = None
+    tuned_f1_val: Optional[float] = None
+    report_thr = eval_thr
+    if args.tune_f1_on_val and len(y_val) > 0:
+        tuned_thr, tuned_f1_val = _tune_threshold_f1(y_val, p_val)
+        report_thr = tuned_thr
+
+    pred_val = _preds_at_threshold(p_val, report_thr)
+    pred_te = _preds_at_threshold(p_te, report_thr)
+
+    _write_predictions_csv(exp_dir / "val_predictions.csv", id_val, y_val, p_val, pred_val)
+    _write_predictions_csv(exp_dir / "test_predictions.csv", id_te, y_te, p_te, pred_te)
+
+    cm_val = confusion_matrix(y_val, pred_val, labels=[0, 1])
+    cm_te = confusion_matrix(y_te, pred_te, labels=[0, 1])
+    _write_cm_csv(exp_dir / "val_confusion_matrix.csv", cm_val)
+    _write_cm_csv(exp_dir / "test_confusion_matrix.csv", cm_te)
+
+    m_val = _metrics_from_cm(cm_val)
+    m_te = _metrics_from_cm(cm_te)
+    auc_val = _roc_auc_safe(y_val, p_val)
+    auc_te = _roc_auc_safe(y_te, p_te)
+
+    support_val = {"normal": int((y_val == 0).sum()), "abnormal": int((y_val == 1).sum()), "total": int(len(y_val))}
+    support_te = {"normal": int((y_te == 0).sum()), "abnormal": int((y_te == 1).sum()), "total": int(len(y_te))}
+
+    metrics = {
+        "eval_checkpoint": str(ckpt_path.resolve()),
+        "eval_only": bool(getattr(args, "eval_only", False)),
+        "resolved_threshold": eval_thr,
+        "tuned_threshold": tuned_thr,
+        "tuned_f1_on_val": tuned_f1_val,
+        "threshold_used_for_reporting": report_thr,
+        "best_val_auc_training": float(best_val_auc) if math.isfinite(best_val_auc) and best_val_auc >= 0 else None,
+        "val": {**m_val, "roc_auc": auc_val, "support": support_val},
+        "test": {**m_te, "roc_auc": auc_te, "support": support_te},
+        "train_counts": {"normal": tr0, "abnormal": tr1},
+    }
+    with open(exp_dir / "metrics_summary.json", "w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2)
+
+    lines = [
+        "RSNA subset metrics",
+        f"eval_checkpoint: {ckpt_path}",
+        f"resolved_threshold (CLI/env/ckpt/default): {eval_thr}",
+        f"tuned_threshold (val max F1): {tuned_thr}",
+        f"tuned_f1_on_val: {tuned_f1_val}",
+        f"threshold_used_for_reporting: {report_thr}",
+        f"best_val_auc (training selection): {metrics['best_val_auc_training']}",
+        "",
+        "Validation:",
+        f"  accuracy={m_val['accuracy']:.4f} precision={m_val['precision']:.4f} recall={m_val['recall']:.4f} "
+        f"f1={m_val['f1']:.4f} roc_auc={auc_val} sens={m_val['sensitivity']:.4f} spec={m_val['specificity']:.4f}",
+        f"  support: {support_val}",
+        "",
+        "Test:",
+        f"  accuracy={m_te['accuracy']:.4f} precision={m_te['precision']:.4f} recall={m_te['recall']:.4f} "
+        f"f1={m_te['f1']:.4f} roc_auc={auc_te} sens={m_te['sensitivity']:.4f} spec={m_te['specificity']:.4f}",
+        f"  support: {support_te}",
+    ]
+    (exp_dir / "metrics_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("\n".join(lines), flush=True)
+    print(f"Done. Artifacts in {exp_dir}", flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Train CT model on RSNA subset manifests.")
     ap.add_argument("--train-manifest", type=Path, required=True)
@@ -161,36 +289,38 @@ def main() -> None:
         default="none",
         choices=["none", "class_weights", "weighted_sampler", "both"],
     )
-    ap.add_argument(
-        "--class-weight-normal",
-        type=float,
-        default=None,
-        dest="class_weight_normal",
-    )
-    ap.add_argument(
-        "--class-weight-abnormal",
-        type=float,
-        default=None,
-        dest="class_weight_abnormal",
-    )
+    ap.add_argument("--class-weight-normal", type=float, default=None, dest="class_weight_normal")
+    ap.add_argument("--class-weight-abnormal", type=float, default=None, dest="class_weight_abnormal")
     ap.add_argument(
         "--tune-f1-on-val",
         action="store_true",
         help="Search thresholds on val probs (dense grid) for max F1; use for reported val/test metrics.",
     )
-    ap.add_argument(
-        "--use-thickness",
-        action="store_true",
-        help="Fuse slice thickness from NPZ (must be present in cache).",
-    )
+    ap.add_argument("--use-thickness", action="store_true", help="Fuse slice thickness from NPZ (must be present).")
     ap.add_argument(
         "--checkpoint",
         type=Path,
         default=None,
-        help=(
-            "Load this .pt before training: full resume if it contains optimizer, scheduler, "
-            "and last_epoch (e.g. last.pt or a newer best.pt); otherwise weights-only warm start."
-        ),
+        help="Warm-start or resume when last.pt missing; for --eval-only: overrides best.pt/last.pt priority if set.",
+    )
+    ap.add_argument(
+        "--eval-only",
+        action="store_true",
+        help="Skip training; load checkpoint (see docs) and write val/test metrics only.",
+    )
+    ap.add_argument(
+        "--val-manifest-split",
+        type=str,
+        default=None,
+        choices=["train", "val", "test"],
+        help="When val manifest is a combined CQ500-style JSON, keep only this split (explicit field or 70/15/15).",
+    )
+    ap.add_argument(
+        "--test-manifest-split",
+        type=str,
+        default=None,
+        choices=["train", "val", "test"],
+        help="Same as --val-manifest-split for the test manifest.",
     )
     args = ap.parse_args()
 
@@ -228,6 +358,7 @@ def main() -> None:
         skip_manifest_split=True,
         expected_k_slices=k_slices,
         seed=args.seed,
+        manifest_split_filter=args.val_manifest_split,
     )
     test_ds = CTDataset(
         manifest_path=args.test_manifest,
@@ -235,6 +366,7 @@ def main() -> None:
         skip_manifest_split=True,
         expected_k_slices=k_slices,
         seed=args.seed,
+        manifest_split_filter=args.test_manifest_split,
     )
 
     tr0, tr1 = _count_normal_abnormal(train_ds)
@@ -253,6 +385,7 @@ def main() -> None:
     else:
         cw_list = [1.0, 1.0]
 
+    collate = ct_batch_collate
     if sampler_used:
         sampler_weights = _study_level_sampler_weights(train_ds)
         sampler = WeightedRandomSampler(
@@ -266,13 +399,22 @@ def main() -> None:
             sampler=sampler,
             shuffle=False,
             num_workers=args.num_workers,
+            collate_fn=collate,
         )
     else:
         train_loader = DataLoader(
-            train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers
+            train_ds,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            collate_fn=collate,
         )
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+    val_loader = DataLoader(
+        val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate
+    )
 
     model_kind = "sequence"
     agg = "max"
@@ -292,6 +434,22 @@ def main() -> None:
     model = model.cuda() if torch.cuda.is_available() else model
     device = next(model.parameters()).device
 
+    if args.eval_only:
+        run_val_test_report(
+            exp_dir,
+            model,
+            val_loader,
+            test_loader,
+            device,
+            args,
+            tr0,
+            tr1,
+            best_val_auc=-1.0,
+            use_thickness=use_thickness,
+            agg=agg,
+        )
+        return
+
     head_params = list(model.slice_head.parameters())
     fusion_params = list(model.thickness_fusion.parameters()) if model.thickness_fusion is not None else []
     opt = torch.optim.AdamW(
@@ -309,14 +467,9 @@ def main() -> None:
     history: List[Dict[str, Any]] = []
     start_epoch = 0
 
-    if args.checkpoint is not None:
-        ckpt_in = args.checkpoint.expanduser().resolve()
-        if not ckpt_in.is_file():
-            raise FileNotFoundError(f"--checkpoint not found: {ckpt_in}")
-        try:
-            ckpt0 = torch.load(ckpt_in, map_location=device, weights_only=False)
-        except TypeError:
-            ckpt0 = torch.load(ckpt_in, map_location=device)
+    ckpt_in = _resolve_training_checkpoint(exp_dir, args.checkpoint)
+    if ckpt_in is not None:
+        ckpt0 = _load_checkpoint_dict(ckpt_in, device)
         if not isinstance(ckpt0, dict) or "model" not in ckpt0:
             raise ValueError(f"Checkpoint must be a dict with a 'model' key: {ckpt_in}")
         model.load_state_dict(ckpt0["model"], strict=True)
@@ -380,7 +533,7 @@ def main() -> None:
         train_loss = 0.0
         train_finite = 0
         for batch in train_loader:
-            X, y, _, thick = batch
+            X, y, _, thick = unpack_ct_batch(batch)
             thick = thick.to(device)
             X, y = X.to(device), y.to(device)
             if not use_thickness:
@@ -413,7 +566,7 @@ def main() -> None:
 
         with torch.no_grad():
             for batch in val_loader:
-                X, y, _, thick = batch
+                X, y, _, thick = unpack_ct_batch(batch)
                 thick = thick.to(device)
                 X, y = X.to(device), y.to(device)
                 if not use_thickness:
@@ -569,77 +722,26 @@ def main() -> None:
 
     ckpt_file = exp_dir / "best.pt"
     if not ckpt_file.is_file():
-        raise FileNotFoundError(f"No checkpoint saved at {ckpt_file}; train/val may be empty.")
+        raise FileNotFoundError(
+            f"No checkpoint saved at {ckpt_file}; train/val may be empty. Use --eval-only with a checkpoint to evaluate only."
+        )
 
-    try:
-        ckpt = torch.load(ckpt_file, map_location=device, weights_only=False)
-    except TypeError:
-        ckpt = torch.load(ckpt_file, map_location=device)
+    ckpt = _load_checkpoint_dict(ckpt_file, device)
     model.load_state_dict(ckpt["model"])
-    eval_thr = resolve_abnormal_threshold(cli=args.threshold, default=0.5, ckpt=ckpt)
 
-    y_val, p_val, id_val = _collect_probs_labels_ids(model, val_loader, device, agg, use_thickness)
-    y_te, p_te, id_te = _collect_probs_labels_ids(model, test_loader, device, agg, use_thickness)
-
-    tuned_thr: Optional[float] = None
-    tuned_f1_val: Optional[float] = None
-    report_thr = eval_thr
-    if args.tune_f1_on_val and len(y_val) > 0:
-        tuned_thr, tuned_f1_val = _tune_threshold_f1(y_val, p_val)
-        report_thr = tuned_thr
-
-    pred_val = _preds_at_threshold(p_val, report_thr)
-    pred_te = _preds_at_threshold(p_te, report_thr)
-
-    _write_predictions_csv(exp_dir / "val_predictions.csv", id_val, y_val, p_val, pred_val)
-    _write_predictions_csv(exp_dir / "test_predictions.csv", id_te, y_te, p_te, pred_te)
-
-    cm_val = confusion_matrix(y_val, pred_val, labels=[0, 1])
-    cm_te = confusion_matrix(y_te, pred_te, labels=[0, 1])
-    _write_cm_csv(exp_dir / "val_confusion_matrix.csv", cm_val)
-    _write_cm_csv(exp_dir / "test_confusion_matrix.csv", cm_te)
-
-    m_val = _metrics_from_cm(cm_val)
-    m_te = _metrics_from_cm(cm_te)
-    auc_val = _roc_auc_safe(y_val, p_val)
-    auc_te = _roc_auc_safe(y_te, p_te)
-
-    support_val = {"normal": int((y_val == 0).sum()), "abnormal": int((y_val == 1).sum()), "total": int(len(y_val))}
-    support_te = {"normal": int((y_te == 0).sum()), "abnormal": int((y_te == 1).sum()), "total": int(len(y_te))}
-
-    metrics = {
-        "resolved_threshold": eval_thr,
-        "tuned_threshold": tuned_thr,
-        "tuned_f1_on_val": tuned_f1_val,
-        "threshold_used_for_reporting": report_thr,
-        "best_val_auc_training": float(best_val_auc) if math.isfinite(best_val_auc) and best_val_auc >= 0 else None,
-        "val": {**m_val, "roc_auc": auc_val, "support": support_val},
-        "test": {**m_te, "roc_auc": auc_te, "support": support_te},
-        "train_counts": {"normal": tr0, "abnormal": tr1},
-    }
-    with open(exp_dir / "metrics_summary.json", "w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2)
-
-    lines = [
-        "RSNA subset training metrics",
-        f"resolved_threshold (CLI/env/ckpt/default): {eval_thr}",
-        f"tuned_threshold (val max F1): {tuned_thr}",
-        f"tuned_f1_on_val: {tuned_f1_val}",
-        f"threshold_used_for_reporting: {report_thr}",
-        f"best_val_auc (training selection): {metrics['best_val_auc_training']}",
-        "",
-        "Validation:",
-        f"  accuracy={m_val['accuracy']:.4f} precision={m_val['precision']:.4f} recall={m_val['recall']:.4f} "
-        f"f1={m_val['f1']:.4f} roc_auc={auc_val} sens={m_val['sensitivity']:.4f} spec={m_val['specificity']:.4f}",
-        f"  support: {support_val}",
-        "",
-        "Test:",
-        f"  accuracy={m_te['accuracy']:.4f} precision={m_te['precision']:.4f} recall={m_te['recall']:.4f} "
-        f"f1={m_te['f1']:.4f} roc_auc={auc_te} sens={m_te['sensitivity']:.4f} spec={m_te['specificity']:.4f}",
-        f"  support: {support_te}",
-    ]
-    (exp_dir / "metrics_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"Done. Artifacts in {exp_dir}", flush=True)
+    run_val_test_report(
+        exp_dir,
+        model,
+        val_loader,
+        test_loader,
+        device,
+        args,
+        tr0,
+        tr1,
+        best_val_auc=best_val_auc,
+        use_thickness=use_thickness,
+        agg=agg,
+    )
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@ from torch.utils.data import DataLoader
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from src.config import OUTPUTS
-from ml.brain.ct.dataset_ct import CTDataset
+from ml.brain.ct.dataset_ct import CTDataset, ct_batch_collate, unpack_ct_batch
 from ml.brain.ct.model_ct import (
     build_ct_model,
     build_ct_sequence_model,
@@ -139,7 +139,9 @@ def main(
 
     OUTPUTS.mkdir(parents=True, exist_ok=True)
     val_ds = CTDataset(split="val")
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False, num_workers=0, collate_fn=ct_batch_collate
+    )
 
     try:
         ckpt = torch.load(checkpoint, map_location="cpu", weights_only=True)
@@ -176,7 +178,8 @@ def main(
 
     model.eval()
     with torch.no_grad():
-        for X, y, _, thick in val_loader:
+        for batch in val_loader:
+            X, y, _, thick = unpack_ct_batch(batch)
             X = X.to(device)
             thick = thick.to(device)
             if not use_thickness:
