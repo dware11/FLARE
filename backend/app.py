@@ -229,6 +229,7 @@ def _run_mri_full_pipeline(
             "rejectedAt": None,
             "reviewerId": None,
             "reject_reason": None,
+            "signature": None,
             "segmentation": result.get("segmentation"),
             "input_image_url": result.get("input_image_url"),
             "gradcam_url": result.get("gradcam_url"),
@@ -387,6 +388,7 @@ def api_predict():
             "rejectedAt": None,
             "reviewerId": None,
             "reject_reason": None,
+            "signature": None,
         }
         _ehr_records[case_id] = {
             "caseId": case_id, 
@@ -655,6 +657,7 @@ def reviews_approve(case_id: str):
 
     body = request.get_json(silent=True) or {}
     reviewer_id = body.get("reviewerId", "anonymous-reviewer")
+    signature = body.get("signature")
 
     if case["review_status"] == "approved":
         return jsonify({"ok": True, "caseId": case_id, "status": "approved", "note": "already approved"}), 200
@@ -666,6 +669,8 @@ def reviews_approve(case_id: str):
     case["review_status"] = "approved"
     case["approvedAt"] = _utc_iso()
     case["reviewerId"] = reviewer_id
+    if signature is not None:
+        case["signature"] = signature
 
     ehr = _ehr_records.get(case_id) 
     if ehr: 
@@ -674,9 +679,8 @@ def reviews_approve(case_id: str):
         ehr["rejectedAt"] = None 
         ehr["reviewerId"] = reviewer_id
         ehr["reject_reason"] = None 
-        sig = body.get("signature")
-        if sig is not None: 
-            ehr["signature"] = sig 
+        if signature is not None:
+            ehr["signature"] = signature
     return jsonify({"ok": True, "caseId": case_id, "status": "approved"}), 200
 
 
@@ -689,6 +693,7 @@ def reviews_reject(case_id: str):
     body = request.get_json(silent=True) or {}
     reviewer_id = body.get("reviewerId", "anonymous-reviewer")
     reason = body.get("reason")
+    signature = body.get("signature")
 
     if case["review_status"] == "rejected":
         return jsonify({"ok": True, "caseId": case_id, "status": "rejected", "note": "already rejected"}), 200
@@ -701,6 +706,8 @@ def reviews_reject(case_id: str):
     case["rejectedAt"] = _utc_iso()
     case["reviewerId"] = reviewer_id
     case["reject_reason"] = reason
+    if signature is not None:
+        case["signature"] = signature
 
     ehr = _ehr_records.get(case_id) 
     if ehr: 
@@ -709,9 +716,8 @@ def reviews_reject(case_id: str):
         ehr["approvedAt"] = None 
         ehr["reviewerId"] = reviewer_id
         ehr["reject_reason"] = reason 
-        sig = body.get("signature")
-        if sig is not None:
-            ehr["signature"] = sig
+        if signature is not None:
+            ehr["signature"] = signature
     return jsonify({"ok": True, "caseId": case_id, "status": "rejected"}), 200
 
 @app.route("/api/ehr", methods=["GET"]) 
