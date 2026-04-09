@@ -748,6 +748,28 @@ def _count_hospital(hospital_id: str) -> tuple[int, int]:
     return approved_n, pending_n
 
 
+@app.route("/api/geotracker/hospital/<hospital_id>/cases", methods=["GET"])
+def geotracker_hospital_cases(hospital_id: str):
+    if not hospital_exists(hospital_id):
+        return jsonify({"error": "Unknown hospitalId", "code": "INVALID_HOSPITAL_ID"}), 404
+
+    cases = [
+        r
+        for r in _ehr_records.values()
+        if r.get("hospitalId") == hospital_id
+        and r.get("review_status") == "approved"
+        and (
+            r.get("is_abnormal") is True
+            or str(r.get("prediction", "")).lower() in ("abnormal", "tumor", "malignant", "benign")
+            or str(r.get("result_class", "")).lower() in ("malignant", "benign")
+        )
+    ]
+
+    cases.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
+
+    return jsonify({"cases": cases[:5]}), 200
+
+
 @app.route("/api/geotracker/summary", methods=["GET"])
 def geotracker_summary():
     hospitals_out: list[dict] = []
@@ -775,10 +797,15 @@ def geotracker_summary():
 
         hospitals_out.append(
             {
+                "id": hid,
                 "hospitalId": hid,
                 "name": site["name"],
                 "latitude": site["latitude"],
                 "longitude": site["longitude"],
+                "total_cases": approved_n + pending_n,
+                "pending": pending_n,
+                "approved": approved_n,
+                "approved_abnormal": approved_n,
                 "approvedAbnormalCount": approved_n,
                 "pendingCount": pending_n,
                 "severityColor": severity_color,
@@ -790,7 +817,12 @@ def geotracker_summary():
         jsonify(
             {
                 "hospitals": hospitals_out,
-                "totals": {"pending": total_pending, "approvedAbnormal": total_approved},
+                "totals": {
+                    "pending": total_pending,
+                    "approved": total_approved,
+                    "approved_abnormal": total_approved,
+                    "approvedAbnormal": total_approved,
+                },
             }
         ),
         200,
