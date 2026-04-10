@@ -902,6 +902,119 @@ def add_security_headers(response):
     return response
 
 
+def _save_upload(file_storage, patient_id: str, prefix: str = "file") -> str:
+    import os
+    from werkzeug.utils import secure_filename
+    upload_dir = os.path.join(os.path.dirname(__file__), "static", "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    ext = os.path.splitext(file_storage.filename or "")[-1] or ".bin"
+    fname = f"{patient_id}_{prefix}{ext}"
+    fpath = os.path.join(upload_dir, secure_filename(fname))
+    file_storage.seek(0)
+    file_storage.save(fpath)
+    return fpath
+
+
+@app.route("/api/fusion/predict", methods=["POST"])
+@limiter.limit("20 per minute")
+def api_fusion_predict():
+    """Late fusion: CT + MRI weighted average (CT=0.6, MRI=0.4)."""
+    patient_id  = request.form.get("patient_id")
+    hospital_id = request.form.get("hospitalId") or "H001"
+    first_name  = request.form.get("first_name")
+    last_name   = request.form.get("last_name")
+    dob         = request.form.get("dob")
+
+    if not patient_id:
+        return jsonify({"error": "Missing patient_id"}), 400
+    if not hospital_exists(hospital_id):
+        return jsonify({"error": "Invalid hospitalId"}), 400
+
+    ct_file  = request.files.get("ct_file")
+    mri_file = request.files.get("mri_file")
+
+    if not ct_file and not mri_file:
+        return jsonify({"error": "At least one of ct_file or mri_file required"}), 400
+
+    for f in [ct_file, mri_file]:
+        if f is not None:
+            ok, msg = _validate_upload(f)
+            if not ok:
+                return jsonify({"error": msg, "code": "INVALID_FILE"}), 400
+
+    ct_prob    = None
+    ct_result  = None
+    mri_prob   = None
+    mri_result = None
+
+    if ct_file is not None:
+        try:
+            ct_path = _save_upload(ct_file, patient_id, prefix="ct")
+            from ml.brain.ct.infer import run_ct_for_patient
+            CT_CKPT = "/scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt"
+            ct_result = run_ct_for_patient(
+                patient_id,
+                checkpoint=CT_CKPT,
+                cam_dir="backend/cam",
+                threshold=0.488,
+            )
+            if ct_result:
+                ct_prob = float(ct_result["p_abnormal"])
+        except Exception as ex:
+            return jsonify({"error": f"CT inference failed: {ex}"}), 500
+
+    if mri_file is not None:
+        try:
+            mri_path = _save_upload(mri_file, patient_id, prefix="mri")
+            from predict_mri import predict_mri
+            mri_result = predict_mri(mri_path, "brain_mri", patient_id)
+            if mri_result:
+                mri_conf = float(mri_result.get("confidence", 0.5))
+                mri_is_abnormal = mri_result.get("result_class", "").lower() in (
+                    "malignant", "abnormal", "tumor"
+                )
+                mri_prob = mri_conf if mri_is_abnormal else (1.0 - mri_conf)
+        except Exception as ex:
+            return jsonify({"error": f"MRI inference failed: {ex}"}), 500
+
+    CT_WEIGHT  = 0.6
+    MRI_WEIGHT = 0.4
+
+    if ct_prob is not None and mri_prob is not None:
+        fusion_score = (ct_prob * CT_WEIGHT) + (mri_prob * MRI_WEIGHT)
+        fusion_mode  = "ct_mri"
+    elif ct_prob is not None:
+        fusion_score = ct_prob
+        fusion_mode  = "ct_only"
+    elif mri_prob is not None:
+        fusion_score = mri_prob
+        fusion_mode  = "mri_only"
+    else:
+        return jsonify({"error": "Both models returned no result"}), 500
+
+    FUSION_THRESHOLD = 0.5
+    is_abnormal  = fusion_score >= FUSION_THRESHOLD
+    pred_label   = "Abnormal" if is_abnormal else "Normal"
+    result_class = "Malignant" if is_abnormal else "Benign"
+
+    return jsonify({
+        "patient_id":   patient_id,
+        "fusion_mode":  fusion_mode,
+        "fusion_score": round(fusion_score, 4),
+        "pred_label":   pred_label,
+        "result_class": result_class,
+        "confidence":   round(fusion_score, 4),
+        "is_abnormal":  is_abnormal,
+        "ct_prob":      round(ct_prob, 4) if ct_prob is not None else None,
+        "mri_prob":     round(mri_prob, 4) if mri_prob is not None else None,
+        "ct_weight":    CT_WEIGHT,
+        "mri_weight":   MRI_WEIGHT,
+        "threshold":    FUSION_THRESHOLD,
+        "ct_details":   ct_result,
+        "mri_details":  mri_result,
+    }), 200
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FLARE Flask backend")
     parser.add_argument("--host", default="127.0.0.1", help="Bind host")
