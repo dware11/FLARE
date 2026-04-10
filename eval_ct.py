@@ -30,7 +30,6 @@ from sklearn.metrics import (  # noqa: E402
 )
 
 from ml.brain.ct.dataset_ct import CTDataset, ct_batch_collate, unpack_ct_batch  # noqa: E402
-from ml.brain.ct.infer import _normalize_state_dict_keys  # noqa: E402
 from ml.brain.ct.model_ct import (  # noqa: E402
     build_ct_model,
     build_ct_sequence_model,
@@ -39,6 +38,17 @@ from ml.brain.ct.model_ct import (  # noqa: E402
     patient_logits_from_model,
 )
 from ml.brain.ct.threshold_util import resolve_abnormal_threshold  # noqa: E402
+
+def _normalize_state_dict_keys(state: dict) -> dict:
+    """Strip common key prefixes (module., model.) from state dict."""
+    new = {}
+    for k, v in state.items():
+        for pfx in ("module.", "model."):
+            if k.startswith(pfx):
+                k = k[len(pfx):]
+                break
+        new[k] = v
+    return new
 from src.config import CT_MANIFEST, CT_RSNA_MANIFEST  # noqa: E402
 
 
