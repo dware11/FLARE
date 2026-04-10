@@ -102,13 +102,6 @@ function isNiftiFile(f: File | null): boolean {
   return n.endsWith(".nii.gz") || n.endsWith(".nii");
 }
 
-/** NIfTI volumes are binary — no <img> preview; server extracts one slice for BRISC. */
-function isNiftiFile(f: File | null): boolean {
-  if (!f) return false;
-  const n = f.name.toLowerCase();
-  return n.endsWith(".nii.gz") || n.endsWith(".nii");
-}
-
 export default function CancerDetection() {
   const [hospitalId, setHospitalId] = useState("H001");
   const [cancerType, setCancerType] = useState<CancerType | "">("");

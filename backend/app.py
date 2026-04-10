@@ -26,6 +26,17 @@ from predict_mri import predict_mri
 
 app = Flask(__name__)
 
+# SECURITY: Rate limiting — prevents API abuse on AI inference endpoints (HIPAA consideration)
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["60 per minute"],
+    storage_uri="memory://",
+)
+
 _DEV_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -107,6 +118,27 @@ SUPPORTED_MODALITIES = ["brain_ct", "brain_mri", "brain_brats"]
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+# SECURITY: File upload validation — blocks malicious or oversized uploads (HIPAA consideration)
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50MB
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".npz", ".nii", ".gz", ".dcm"}
+
+
+def _validate_upload(file) -> tuple[bool, str]:
+    if file is None:
+        return False, "No file provided"
+    file.seek(0, 2)
+    size = file.tell()
+    file.seek(0)
+    if size > MAX_UPLOAD_BYTES:
+        return False, f"File too large (max 50MB, got {size // 1024 // 1024}MB)"
+    filename = file.filename or ""
+    ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if filename.endswith(".nii.gz"):
+        ext = ".gz"
+    if ext not in ALLOWED_EXTENSIONS:
+        return False, f"File type not allowed: {ext}"
+    return True, "ok" 
 
 
 def hospital_exists(hospital_id: str | None) -> bool:
@@ -329,6 +361,7 @@ def get_hospitals():
 
 
 @app.route("/api/predict", methods=["POST"])
+@limiter.limit("20 per minute")
 def api_predict():
     """
     Body: patient_id, modality, hospitalId (camelCase).
@@ -420,7 +453,7 @@ def api_predict():
     return jsonify(out), 200
 
 @app.route("/api/mri/predict", methods=["POST"])
-
+@limiter.limit("20 per minute")
 def api_mri_predict():
     """
     Brain MRI / BraTS prediction (real pipeline).
@@ -497,8 +530,13 @@ def api_mri_predict():
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
+    upload = request.files["file"]
+    ok, msg = _validate_upload(upload)
+    if not ok:
+        return jsonify({"error": msg, "code": "INVALID_FILE"}), 400
+
     out, status = _run_mri_full_pipeline(
-        file_storage=request.files["file"],
+        file_storage=upload,
         patient_id=patient_id,
         modality=modality,
         hospital_id=hospital_id,
@@ -521,6 +559,10 @@ def legacy_flare_predict():
         return jsonify({"error": "No file uploaded"}), 400
 
     file = request.files["file"]
+    ok, msg = _validate_upload(file)
+    if not ok:
+        return jsonify({"error": msg, "code": "INVALID_FILE"}), 400
+
     patient_id = request.form.get("patient_id") or f"flare_{uuid4().hex[:10]}"
     hospital_id = request.form.get("hospitalId") or "H001"
     fn = request.form.get("first_name")
@@ -847,6 +889,17 @@ def geotracker_summary():
 # def api_ct_cam(name: str):
 #     """Grad-CAM / overlay PNG — add when CT demo needs it."""
 #     return jsonify({"error": "CT CAM not configured"}), 404
+
+# SECURITY: HTTP security headers — prevents caching of PHI on client devices (HIPAA consideration)
+@app.after_request
+def add_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 
 if __name__ == "__main__":
