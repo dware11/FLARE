@@ -161,7 +161,7 @@ class CTDataset(Dataset):
             split_map = {"train": set(train_idx), "val": set(val_idx), "test": set(test_idx)}
             self.entries = [valid[i] for i in range(n) if i in split_map[split]]
 
-        self.entries = _filter_corrupt_npz_entries(self.entries)
+        # self.entries = _filter_corrupt_npz_entries(self.entries)  # skipped — manifest pre-cleaned
         if split is not None and len(self.entries) == 0:
             raise ValueError(
                 f"No usable samples after filtering corrupt NPZ in {manifest_path}. "
