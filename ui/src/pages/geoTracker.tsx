@@ -23,6 +23,8 @@ import {
   rejectReview,
 } from "../api/flareAPI";
 import type { GeoSummary, ReviewCase, HospitalSummary } from "../api/flareAPI";
+import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
+import "leaflet/dist/leaflet.css";
 
 function severityLabel(hex: string): string {
   const m: Record<string, string> = {
@@ -163,6 +165,46 @@ export default function GeoTracker() {
                 </Typography>
               </CardContent>
             </Card>
+          </Box>
+
+          {/* MAP */}
+          <Box
+            sx={{
+              mb: 4,
+              borderRadius: 3,
+              overflow: "hidden",
+              height: 400,
+              border: "1px solid rgba(255,255,255,0.08)",
+            }}
+          >
+            <MapContainer center={[29.7604, -95.3698]} zoom={11} style={{ height: "100%", width: "100%" }}>
+              <TileLayer
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
+              {geo.hospitals.map((h) => (
+                <CircleMarker
+                  key={h.hospitalId}
+                  center={[h.latitude, h.longitude]}
+                  radius={14}
+                  pathOptions={{
+                    color: h.severityColor,
+                    fillColor: h.severityColor,
+                    fillOpacity: 0.85,
+                  }}
+                >
+                  <Popup>
+                    <strong>{h.name}</strong>
+                    <br />
+                    Pending: {h.pendingCount}
+                    <br />
+                    Approved Abnormal: {h.approvedAbnormalCount}
+                    <br />
+                    Status: {severityLabel(h.severityColor)}
+                  </Popup>
+                </CircleMarker>
+              ))}
+            </MapContainer>
           </Box>
 
           <Box
