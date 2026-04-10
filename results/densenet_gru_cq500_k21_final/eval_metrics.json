@@ -1,0 +1,40 @@
+{
+  "model": "densenet_gru",
+  "loaded_kind": "sequence",
+  "checkpoint": "/scratch/bckk/flare/ct_brain/outputs/ct_k21_lr2e-5_none.pt",
+  "manifest": "/scratch/bckk/flare/ct_brain/meta/ct_processed_manifest_k21.json",
+  "dataset": "cq500",
+  "split": "test",
+  "status": "PRELIMINARY",
+  "roc_auc": 0.7165178571428572,
+  "train_samples": 343,
+  "val_samples": 73,
+  "test_samples": 74,
+  "evaluated_samples": 74,
+  "expected_k_slices": 21,
+  "agg": "max",
+  "thresholds": {
+    "0.488000": {
+      "threshold": 0.488,
+      "accuracy": 0.6486486486486487,
+      "precision": 0.7352941176470589,
+      "recall": 0.5952380952380952,
+      "specificity": 0.71875,
+      "f1_binary": 0.6578947368421053,
+      "f1_macro": 0.6483918128654971,
+      "confusion_matrix": [
+        [
+          23,
+          9
+        ],
+        [
+          17,
+          25
+        ]
+      ],
+      "missed_abnormals": 17,
+      "false_abnormals": 9
+    }
+  },
+  "primary_threshold_resolved": 0.488
+}

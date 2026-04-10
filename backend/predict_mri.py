@@ -610,7 +610,7 @@ def _predict_brisc(image_path: str, patient_id: str) -> dict:
             with torch.no_grad():
                 mask_np = (torch.sigmoid(
                     _load_seg_model()(seg_tensor)
-                ) > 0.5).float().cpu().squeeze().numpy()
+                ) > 0.7).float().cpu().squeeze().numpy()
 
             mask_resized    = cv2.resize(mask_np.astype(np.float32),
                                          (orig_w, orig_h),

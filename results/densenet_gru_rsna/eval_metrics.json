@@ -1,0 +1,61 @@
+{
+  "model": "densenet_gru",
+  "loaded_kind": "sequence",
+  "checkpoint": "/scratch/bckk/flare/ct_brain/outputs/rsna_k21_balanced16k_exp1/best.pt",
+  "manifest": "/scratch/bckk/flare/ct_brain/meta/ct_rsna_manifest.json",
+  "dataset": "rsna",
+  "split": "test",
+  "status": "PRELIMINARY",
+  "roc_auc": 0.958709755973528,
+  "train_samples": 41447,
+  "val_samples": 8881,
+  "test_samples": 8883,
+  "evaluated_samples": 8883,
+  "expected_k_slices": 21,
+  "agg": "max",
+  "thresholds": {
+    "0.613000": {
+      "threshold": 0.613,
+      "accuracy": 0.843183609141056,
+      "precision": 0.4757551669316375,
+      "recall": 0.9417781274586939,
+      "specificity": 0.8267209668943774,
+      "f1_binary": 0.6321626617375231,
+      "f1_macro": 0.7662565937631031,
+      "confusion_matrix": [
+        [
+          6293,
+          1319
+        ],
+        [
+          74,
+          1197
+        ]
+      ],
+      "missed_abnormals": 74,
+      "false_abnormals": 1319
+    },
+    "0.488000": {
+      "threshold": 0.488,
+      "accuracy": 0.8268602949454014,
+      "precision": 0.4503901895206243,
+      "recall": 0.953579858379229,
+      "specificity": 0.8057015239096164,
+      "f1_binary": 0.6118122160524987,
+      "f1_macro": 0.7501976177335805,
+      "confusion_matrix": [
+        [
+          6133,
+          1479
+        ],
+        [
+          59,
+          1212
+        ]
+      ],
+      "missed_abnormals": 59,
+      "false_abnormals": 1479
+    }
+  },
+  "primary_threshold_resolved": 0.613
+}
