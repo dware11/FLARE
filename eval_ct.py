@@ -33,7 +33,6 @@ from ml.brain.ct.dataset_ct import CTDataset, ct_batch_collate, unpack_ct_batch 
 from ml.brain.ct.infer import _normalize_state_dict_keys  # noqa: E402
 from ml.brain.ct.model_ct import (  # noqa: E402
     build_ct_model,
-    build_ct_resnet18_model,
     build_ct_sequence_model,
     is_sequence_ct_model,
     load_sequence_weights_compat,
@@ -63,7 +62,6 @@ def _resolve_manifest_path(dataset: str, manifest_override: Optional[Path]) -> P
 
 
 def _build_combined_manifest() -> Path:
-    """Merge CQ500 + RSNA manifests into a temp JSON under repo .cache (deterministic split in CTDataset)."""
     cache_dir = ROOT / ".cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     out = cache_dir / "ct_eval_combined_manifest.json"
@@ -93,10 +91,6 @@ def load_model_for_eval(
     checkpoint: Path,
     model: str,
 ) -> Tuple[nn.Module, str, str, Optional[int], Dict[str, Any]]:
-    """
-    Load weights with architecture chosen by --model (must match checkpoint).
-    Returns (model, loaded_kind, agg, k_slices, ckpt_meta).
-    """
     ckpt = _torch_load_checkpoint(checkpoint)
     meta: Dict[str, Any] = {}
     if isinstance(ckpt, dict) and "model" in ckpt:
@@ -119,7 +113,7 @@ def load_model_for_eval(
 
     model = model.strip().lower()
     if model == "resnet18":
-        m = build_ct_resnet18_model(num_classes=2, pretrained_backbone=False)
+        m = build_ct_model(num_classes=2, pretrained=False)
         r = m.load_state_dict(state, strict=False)
         if r.missing_keys:
             print(f"[warn] resnet18 load missing_keys (first 8): {r.missing_keys[:8]}", flush=True)
@@ -226,7 +220,6 @@ def split_counts(manifest_path: Path, expected_k: Optional[int], seed: int) -> D
 
 def _save_roc_png(path: Path, y_true: np.ndarray, p_ab: np.ndarray) -> None:
     import matplotlib
-
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -249,7 +242,6 @@ def _save_roc_png(path: Path, y_true: np.ndarray, p_ab: np.ndarray) -> None:
 
 def _save_cm_png(path: Path, cm: np.ndarray, title: str) -> None:
     import matplotlib
-
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -290,31 +282,23 @@ def main() -> None:
         "--secondary-threshold",
         type=float,
         default=None,
-        help="Optional second threshold (e.g. 0.488 vs 0.613 for DenseNet+GRU sensitivity sweep).",
+        help="Optional second threshold.",
     )
     ap.add_argument(
         "--dataset",
         type=str,
         default="combined",
         choices=["cq500", "rsna", "combined"],
-        help="Which manifest to use (combined merges CQ500 + RSNA manifests).",
+        help="Which manifest to use.",
     )
     ap.add_argument("--manifest", type=Path, default=None, help="Override manifest JSON path.")
-    ap.add_argument("--output-dir", type=Path, default=None, help="Output directory (default: results/<model>/).")
+    ap.add_argument("--output-dir", type=Path, default=None, help="Output directory.")
     ap.add_argument("--split", type=str, default="test", choices=["train", "val", "test"])
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--num-workers", type=int, default=2)
-    ap.add_argument("--k-slices", type=int, default=None, help="Override expected K in NPZ (default: from checkpoint).")
-    ap.add_argument(
-        "--preliminary",
-        action="store_true",
-        help="Mark results as PRELIMINARY (e.g. RSNA training still running).",
-    )
-    ap.add_argument(
-        "--dual-default-thresholds",
-        action="store_true",
-        help="For densenet_gru only: evaluate at t=0.613 (primary) and t=0.488 (secondary) regardless of --threshold.",
-    )
+    ap.add_argument("--k-slices", type=int, default=None)
+    ap.add_argument("--preliminary", action="store_true")
+    ap.add_argument("--dual-default-thresholds", action="store_true")
     args = ap.parse_args()
 
     manifest_path = _resolve_manifest_path(args.dataset, args.manifest)
