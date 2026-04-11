@@ -540,6 +540,61 @@ def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus
     }
 
 
+def run_ct_from_npz(npz_path, checkpoint=None, cam_dir=None, threshold=None):
+    """Run CT inference directly from an NPZ file path. Returns same dict shape as run_ct_for_patient."""
+    from src.config import OUTPUTS
+
+    if checkpoint is None:
+        checkpoint = OUTPUTS / "ct_baseline_best.pt"
+    else:
+        checkpoint = Path(checkpoint)
+
+    arr_path = Path(npz_path)
+    if not arr_path.exists():
+        return None
+
+    model, _model_kind, agg, k_slices_meta, ckpt_meta = _load_model(checkpoint)
+    eval_threshold = resolve_abnormal_threshold(cli=threshold, default=0.5, ckpt=ckpt_meta)
+    expected_k = int(k_slices_meta) if k_slices_meta is not None else None
+    device = next(model.parameters()).device
+
+    arr = _load_patient_arr(arr_path, expected_k=expected_k)
+    x_raw = torch.from_numpy(arr).float().to(device)
+    x_all = _imagenet_normalize_volume(x_raw)
+    x_batch = x_all.unsqueeze(0)
+    thick = _thickness_from_npz(arr_path, device)
+    use_grad = cam_dir is not None
+    probs = _predict_one(model, x_batch, use_grad=use_grad, agg=agg, thickness=thick)
+    pred = 1 if float(probs[1]) >= eval_threshold else 0
+
+    cam_path = None
+    if use_grad and cam_dir:
+        gradcam = GradCAM(model, _gradcam_layer_name(model))
+        k = x_raw.shape[0]
+        center_raw = x_raw[k // 2 : k // 2 + 1]
+        if is_sequence_ct_model(model):
+            x_cam = x_all[k // 2 : k // 2 + 1].unsqueeze(0)
+        else:
+            x_cam = x_all[k // 2 : k // 2 + 1]
+        _, overlay = gradcam(x_cam, target_class=pred, input_for_overlay=center_raw)
+        if overlay is not None:
+            cam_dir_p = Path(cam_dir)
+            cam_dir_p.mkdir(parents=True, exist_ok=True)
+            cam_path_obj = cam_dir_p / f"{arr_path.stem}.png"
+            if _save_overlay_png(overlay, cam_path_obj):
+                cam_path = str(cam_path_obj)
+
+    patient_id = arr_path.parent.name
+    return {
+        "patient_id": patient_id,
+        "label": LABELS[pred],
+        "confidence": float(probs[pred]),
+        "p_normal": float(probs[0]),
+        "p_abnormal": float(probs[1]),
+        "cam_path": cam_path,
+    }
+
+
 if __name__ == "__main__":
     # CLI flags control demo behavior: single vs batch, checkpoint, CAM options.
     ap = argparse.ArgumentParser(description="Run CT inference (single patient or batch from manifest).")

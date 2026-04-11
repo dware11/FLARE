@@ -19,6 +19,8 @@ import {
 import {
   predictScan,
   predictMriBraTSFolder,
+  predictCtFile,
+  predictFusion,
   API_BASE,
   type CancerScanResult,
 } from "../api/flareAPI";
@@ -102,6 +104,33 @@ function isNiftiFile(f: File | null): boolean {
   return n.endsWith(".nii.gz") || n.endsWith(".nii");
 }
 
+function isNpzFile(f: File | null): boolean {
+  if (!f) return false;
+  return f.name.toLowerCase().endsWith(".npz");
+}
+
+type BrainPipeline = "mri" | "ct" | "fusion";
+
+function absolutizeStaticUrl(path: string | null | undefined): string | null {
+  if (path == null || path === "") return null;
+  if (path.startsWith("http://") || path.startsWith("https://")) return path;
+  const base = API_BASE.replace(/\/$/, "");
+  return path.startsWith("/") ? `${base}${path}` : `${base}/${path}`;
+}
+
+function fusionModeLabel(mode: string): string {
+  switch (mode) {
+    case "ct_mri":
+      return "CT + MRI";
+    case "ct_only":
+      return "CT only";
+    case "mri_only":
+      return "MRI only";
+    default:
+      return mode;
+  }
+}
+
 export default function CancerDetection() {
   const [hospitalId, setHospitalId] = useState("H001");
   const [cancerType, setCancerType] = useState<CancerType | "">("");
@@ -114,12 +143,18 @@ export default function CancerDetection() {
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   /** Brain only: single slice/volume vs BraTS-style patient folder. */
   const [brainUploadMode, setBrainUploadMode] = useState<"single" | "folder">("single");
+  const [brainPipeline, setBrainPipeline] = useState<BrainPipeline>("mri");
   const [folderFiles, setFolderFiles] = useState<File[]>([]);
   const [folderInputKey, setFolderInputKey] = useState(0);
+  const [fusionCtFile, setFusionCtFile] = useState<File | null>(null);
+  const [fusionMriFile, setFusionMriFile] = useState<File | null>(null);
+  const [fusionInputKey, setFusionInputKey] = useState(0);
 
   const [loading, setLoading] = useState(false);
   /** Legacy `/predict` shape vs newer `/api/mri/predict` classification + segmentation JSON. */
   const [scanResult, setScanResult] = useState<CancerScanResult | null>(null);
+  const [ctScanResult, setCtScanResult] = useState<Record<string, unknown> | null>(null);
+  const [fusionScanResult, setFusionScanResult] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -127,8 +162,8 @@ export default function CancerDetection() {
       setImagePreviewUrl(null);
       return;
     }
-    // Only raster scans get a blob URL; NIfTI would produce a broken <img> src
-    if (!file || isNiftiFile(file)) {
+    // Only raster scans get a blob URL; NIfTI / NPZ would produce a broken <img> src
+    if (!file || isNiftiFile(file) || isNpzFile(file)) {
       setImagePreviewUrl(null);
       return;
     }
@@ -148,14 +183,25 @@ export default function CancerDetection() {
   const canSubmit = useMemo(() => {
     if (!canUpload) return false;
     if (cancerType !== "brain") return Boolean(file);
+    if (brainPipeline === "ct") return Boolean(file && isNpzFile(file));
+    if (brainPipeline === "fusion") return Boolean(fusionCtFile && fusionMriFile);
     if (brainUploadMode === "single") return Boolean(file);
     if (folderFiles.length === 0) return false;
     if (folderAnalysis.kind === "mri_brats" && mriBraTSFolderComplete(folderAnalysis.mriSequences)) {
       return true;
     }
-    // CT + unknown: do not submit until CT / spec is wired (see flareAPI comment block)
     return false;
-  }, [canUpload, cancerType, brainUploadMode, file, folderFiles.length, folderAnalysis]);
+  }, [
+    canUpload,
+    cancerType,
+    brainPipeline,
+    brainUploadMode,
+    file,
+    folderFiles.length,
+    folderAnalysis,
+    fusionCtFile,
+    fusionMriFile,
+  ]);
 
   const scanDateToday = useMemo(() => new Date().toISOString().split("T")[0], []);
 
@@ -164,6 +210,8 @@ export default function CancerDetection() {
     setFolderFiles([]);
     setFolderInputKey((k) => k + 1);
     setScanResult(null);
+    setCtScanResult(null);
+    setFusionScanResult(null);
     setError("");
   }, []);
 
@@ -173,6 +221,8 @@ export default function CancerDetection() {
     setFile(null);
     setImagePreviewUrl(null);
     setScanResult(null);
+    setCtScanResult(null);
+    setFusionScanResult(null);
     setError("");
   }, []);
 
@@ -186,15 +236,77 @@ export default function CancerDetection() {
         return;
       }
       const f = e.dataTransfer.files?.[0];
-      if (f && /\.(png|jpe?g|nii(\.gz)?)$/i.test(f.name)) onFileChosen(f);
+      if (f && /\.(png|jpe?g|nii(\.gz)?|npz)$/i.test(f.name)) onFileChosen(f);
     },
     [cancerType, brainUploadMode, onFileChosen, onFolderChosen]
   );
 
+  const onDropFusionCt = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const f = e.dataTransfer.files?.[0];
+    if (f && f.name.toLowerCase().endsWith(".npz")) {
+      setFusionCtFile(f);
+      setCtScanResult(null);
+      setFusionScanResult(null);
+      setError("");
+    }
+  }, []);
+
+  const onDropFusionMri = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const f = e.dataTransfer.files?.[0];
+    if (f && /\.(png|jpe?g|nii(\.gz)?|npz)$/i.test(f.name)) {
+      setFusionMriFile(f);
+      setCtScanResult(null);
+      setFusionScanResult(null);
+      setError("");
+    }
+  }, []);
+
   async function onRun() {
     setError("");
     setScanResult(null);
+    setCtScanResult(null);
+    setFusionScanResult(null);
     if (!cancerType) return setError("Please select a cancer type.");
+
+    if (cancerType === "brain" && brainPipeline === "fusion") {
+      if (!fusionCtFile || !fusionMriFile) {
+        return setError("Upload both CT (.npz) and MRI scans.");
+      }
+      if (!fusionCtFile.name.toLowerCase().endsWith(".npz")) {
+        return setError("CT file must be a .npz volume.");
+      }
+      setLoading(true);
+      try {
+        const r = await predictFusion(fusionCtFile, fusionMriFile, medicalId, hospitalId);
+        setFusionScanResult(r);
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : "Something went wrong.");
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    if (cancerType === "brain" && brainPipeline === "ct") {
+      if (!file || !file.name.toLowerCase().endsWith(".npz")) {
+        return setError("Brain CT requires a .npz file.");
+      }
+      setLoading(true);
+      try {
+        const r = await predictCtFile(file, medicalId, hospitalId, firstName, lastName, dob);
+        setCtScanResult(r);
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : "Something went wrong.");
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     if (cancerType === "brain" && brainUploadMode === "folder") {
       if (!mriBraTSFolderComplete(folderAnalysis.mriSequences)) {
         return setError("Select a patient folder with all four BraTS sequences (t1n, t1c, t2w, t2f).");
@@ -299,7 +411,13 @@ export default function CancerDetection() {
                 setFolderFiles([]);
                 setFolderInputKey((k) => k + 1);
                 setBrainUploadMode("single");
+                setBrainPipeline("mri");
+                setFusionCtFile(null);
+                setFusionMriFile(null);
+                setFusionInputKey((k) => k + 1);
                 setScanResult(null);
+                setCtScanResult(null);
+                setFusionScanResult(null);
               }}
               SelectProps={{
                 renderValue: (v) => (v === "brain" ? "Brain" : v === "breast" ? "Breast" : ""),
@@ -350,6 +468,46 @@ export default function CancerDetection() {
               {cancerType === "brain" && (
                 <ToggleButtonGroup
                   exclusive
+                  value={brainPipeline}
+                  onChange={(_, v) => {
+                    if (v == null) return;
+                    setBrainPipeline(v);
+                    setFile(null);
+                    setFolderFiles([]);
+                    setFolderInputKey((k) => k + 1);
+                    setFusionCtFile(null);
+                    setFusionMriFile(null);
+                    setFusionInputKey((k) => k + 1);
+                    setScanResult(null);
+                    setCtScanResult(null);
+                    setFusionScanResult(null);
+                    setError("");
+                  }}
+                  sx={{
+                    mb: 2,
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 0.5,
+                    "& .MuiToggleButton-root": {
+                      color: "rgba(255,255,255,0.75)",
+                      textTransform: "none",
+                      borderColor: "rgba(255,255,255,0.2)",
+                    },
+                    "& .MuiToggleButton-root.Mui-selected": {
+                      backgroundColor: "rgba(255,92,92,0.22)",
+                      color: "#fff",
+                    },
+                  }}
+                >
+                  <ToggleButton value="mri">Brain MRI</ToggleButton>
+                  <ToggleButton value="ct">Brain CT</ToggleButton>
+                  <ToggleButton value="fusion">CT + MRI Fusion</ToggleButton>
+                </ToggleButtonGroup>
+              )}
+
+              {cancerType === "brain" && brainPipeline === "mri" && (
+                <ToggleButtonGroup
+                  exclusive
                   value={brainUploadMode}
                   onChange={(_, v) => {
                     if (v == null) return;
@@ -358,6 +516,8 @@ export default function CancerDetection() {
                     setFolderFiles([]);
                     setFolderInputKey((k) => k + 1);
                     setScanResult(null);
+                    setCtScanResult(null);
+                    setFusionScanResult(null);
                     setError("");
                   }}
                   sx={{
@@ -378,70 +538,191 @@ export default function CancerDetection() {
                 </ToggleButtonGroup>
               )}
 
-              <Box
-                component="label"
-                htmlFor={cancerType === "brain" && brainUploadMode === "folder" ? "flare-folder-upload" : "flare-scan-upload"}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-                onDrop={onDrop}
-                sx={{
-                  display: "block",
-                  cursor: "pointer",
-                  border: "1px dashed rgba(255,255,255,0.15)",
-                  borderRadius: 2,
-                  py: 4,
-                  px: 2,
-                  textAlign: "center",
-                  backgroundColor: "rgba(255,255,255,0.03)",
-                  transition: "background-color 0.2s",
-                  "&:hover": { backgroundColor: "rgba(255,255,255,0.05)" },
-                }}
-              >
-                <Typography sx={{ color: "rgba(255,255,255,0.75)" }}>
-                  {cancerType === "brain" && brainUploadMode === "folder"
-                    ? "Click to choose a folder or drag files here"
-                    : "Click to upload or drag and drop"}
-                </Typography>
-                <Typography sx={{ color: "rgba(255,255,255,0.45)", fontSize: "0.85rem", mt: 0.5 }}>
-                  {cancerType === "brain" && brainUploadMode === "folder"
-                    ? "BraTS-style: *-t1n.nii.gz, *-t1c.nii.gz, *-t2w.nii.gz, *-t2f.nii.gz ( *-seg.nii.gz ignored )"
-                    : "JPG/PNG or NIfTI (.nii / .nii.gz) for brain — volume → one slice on server"}
-                </Typography>
-                {cancerType === "brain" && brainUploadMode === "folder" && folderFiles.length > 0 && (
-                  <Typography sx={{ color: "#ff5c5c", mt: 1.5, fontWeight: 600, fontSize: "0.9rem" }}>
-                    {folderFiles.length} file{folderFiles.length !== 1 ? "s" : ""} in folder
+              {cancerType === "brain" && brainPipeline === "fusion" ? (
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                    gap: 2,
+                  }}
+                >
+                  <Box
+                    component="label"
+                    htmlFor="flare-fusion-ct-upload"
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                    onDrop={onDropFusionCt}
+                    sx={{
+                      display: "block",
+                      cursor: "pointer",
+                      border: "1px dashed rgba(251,191,36,0.35)",
+                      borderRadius: 2,
+                      py: 3,
+                      px: 2,
+                      textAlign: "center",
+                      backgroundColor: "rgba(255,255,255,0.03)",
+                      "&:hover": { backgroundColor: "rgba(255,255,255,0.05)" },
+                    }}
+                  >
+                    <Typography sx={{ color: "#fbbf24", fontWeight: 700, mb: 0.5 }}>CT volume</Typography>
+                    <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: "0.9rem" }}>
+                      .npz only — click or drag
+                    </Typography>
+                    {fusionCtFile && (
+                      <Typography sx={{ color: "#ff5c5c", mt: 1.5, fontWeight: 600, fontSize: "0.85rem", wordBreak: "break-all" }}>
+                        {fusionCtFile.name}
+                      </Typography>
+                    )}
+                    <input
+                      key={`ct-${fusionInputKey}`}
+                      id="flare-fusion-ct-upload"
+                      type="file"
+                      accept=".npz"
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0] ?? null;
+                        if (f && f.name.toLowerCase().endsWith(".npz")) {
+                          setFusionCtFile(f);
+                          setCtScanResult(null);
+                          setFusionScanResult(null);
+                          setError("");
+                        }
+                      }}
+                    />
+                  </Box>
+                  <Box
+                    component="label"
+                    htmlFor="flare-fusion-mri-upload"
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                    onDrop={onDropFusionMri}
+                    sx={{
+                      display: "block",
+                      cursor: "pointer",
+                      border: "1px dashed rgba(155,177,255,0.4)",
+                      borderRadius: 2,
+                      py: 3,
+                      px: 2,
+                      textAlign: "center",
+                      backgroundColor: "rgba(255,255,255,0.03)",
+                      "&:hover": { backgroundColor: "rgba(255,255,255,0.05)" },
+                    }}
+                  >
+                    <Typography sx={{ color: "#9bb1ff", fontWeight: 700, mb: 0.5 }}>MRI scan</Typography>
+                    <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: "0.9rem" }}>
+                      JPG / PNG / NIfTI / NPZ
+                    </Typography>
+                    {fusionMriFile && (
+                      <Typography sx={{ color: "#ff5c5c", mt: 1.5, fontWeight: 600, fontSize: "0.85rem", wordBreak: "break-all" }}>
+                        {fusionMriFile.name}
+                      </Typography>
+                    )}
+                    <input
+                      key={`mri-${fusionInputKey}`}
+                      id="flare-fusion-mri-upload"
+                      type="file"
+                      accept=".jpg,.jpeg,.png,.nii,.nii.gz,.npz"
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0] ?? null;
+                        if (f && /\.(png|jpe?g|nii(\.gz)?|npz)$/i.test(f.name)) {
+                          setFusionMriFile(f);
+                          setCtScanResult(null);
+                          setFusionScanResult(null);
+                          setError("");
+                        }
+                      }}
+                    />
+                  </Box>
+                </Box>
+              ) : (
+                <Box
+                  component="label"
+                  htmlFor={
+                    cancerType === "brain" && brainPipeline === "mri" && brainUploadMode === "folder"
+                      ? "flare-folder-upload"
+                      : "flare-scan-upload"
+                  }
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onDrop={onDrop}
+                  sx={{
+                    display: "block",
+                    cursor: "pointer",
+                    border: "1px dashed rgba(255,255,255,0.15)",
+                    borderRadius: 2,
+                    py: 4,
+                    px: 2,
+                    textAlign: "center",
+                    backgroundColor: "rgba(255,255,255,0.03)",
+                    transition: "background-color 0.2s",
+                    "&:hover": { backgroundColor: "rgba(255,255,255,0.05)" },
+                  }}
+                >
+                  <Typography sx={{ color: "rgba(255,255,255,0.75)" }}>
+                    {cancerType === "brain" && brainPipeline === "mri" && brainUploadMode === "folder"
+                      ? "Click to choose a folder or drag files here"
+                      : cancerType === "brain" && brainPipeline === "ct"
+                        ? "Click to upload or drag a CT .npz volume"
+                        : "Click to upload or drag and drop"}
                   </Typography>
-                )}
-                {!(cancerType === "brain" && brainUploadMode === "folder") && file && (
-                  <Typography sx={{ color: "#ff5c5c", mt: 1.5, fontWeight: 600, fontSize: "0.9rem" }}>
-                    {file.name}
+                  <Typography sx={{ color: "rgba(255,255,255,0.45)", fontSize: "0.85rem", mt: 0.5 }}>
+                    {cancerType === "brain" && brainPipeline === "mri" && brainUploadMode === "folder"
+                      ? "BraTS-style: *-t1n.nii.gz, *-t1c.nii.gz, *-t2w.nii.gz, *-t2f.nii.gz ( *-seg.nii.gz ignored )"
+                      : cancerType === "brain" && brainPipeline === "ct"
+                        ? "Preprocessed CT stack as NumPy .npz (server runs /api/ct/predict)"
+                        : cancerType === "brain"
+                          ? "JPG/PNG, NIfTI (.nii / .nii.gz), or BraTS .npz — volume → one slice on server where applicable"
+                          : "JPG/PNG or NIfTI (.nii / .nii.gz) or .npz"}
                   </Typography>
-                )}
-                {cancerType === "brain" && brainUploadMode === "folder" ? (
-                  <input
-                    key={folderInputKey}
-                    id="flare-folder-upload"
-                    type="file"
-                    // webkitdirectory omits accept in many browsers — rely on client-side detection
-                    {...({ webkitdirectory: "", directory: "" } as InputHTMLAttributes<HTMLInputElement>)}
-                    multiple
-                    style={{ display: "none" }}
-                    onChange={(e) => onFolderChosen(e.target.files)}
-                  />
-                ) : (
-                  <input
-                    id="flare-scan-upload"
-                    type="file"
-                    accept=".jpg,.jpeg,.png,.nii,.nii.gz"
-                    style={{ display: "none" }}
-                    onChange={(e) => onFileChosen(e.target.files?.[0] ?? null)}
-                  />
-                )}
-              </Box>
+                  {cancerType === "brain" && brainPipeline === "mri" && brainUploadMode === "folder" && folderFiles.length > 0 && (
+                    <Typography sx={{ color: "#ff5c5c", mt: 1.5, fontWeight: 600, fontSize: "0.9rem" }}>
+                      {folderFiles.length} file{folderFiles.length !== 1 ? "s" : ""} in folder
+                    </Typography>
+                  )}
+                  {!(
+                    cancerType === "brain" &&
+                    brainPipeline === "mri" &&
+                    brainUploadMode === "folder"
+                  ) &&
+                    file && (
+                      <Typography sx={{ color: "#ff5c5c", mt: 1.5, fontWeight: 600, fontSize: "0.9rem" }}>
+                        {file.name}
+                      </Typography>
+                    )}
+                  {cancerType === "brain" && brainPipeline === "mri" && brainUploadMode === "folder" ? (
+                    <input
+                      key={folderInputKey}
+                      id="flare-folder-upload"
+                      type="file"
+                      {...({ webkitdirectory: "", directory: "" } as InputHTMLAttributes<HTMLInputElement>)}
+                      multiple
+                      style={{ display: "none" }}
+                      onChange={(e) => onFolderChosen(e.target.files)}
+                    />
+                  ) : (
+                    <input
+                      id="flare-scan-upload"
+                      type="file"
+                      accept={
+                        cancerType === "brain" && brainPipeline === "ct"
+                          ? ".npz"
+                          : ".jpg,.jpeg,.png,.nii,.nii.gz,.npz"
+                      }
+                      style={{ display: "none" }}
+                      onChange={(e) => onFileChosen(e.target.files?.[0] ?? null)}
+                    />
+                  )}
+                </Box>
+              )}
 
-              {cancerType === "brain" && brainUploadMode === "folder" && folderFiles.length > 0 && (
+              {cancerType === "brain" && brainPipeline === "mri" && brainUploadMode === "folder" && folderFiles.length > 0 && (
                 <Box sx={{ mt: 2 }}>
                   <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", mb: 1.5 }}>
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", fontWeight: 600 }}>Detected modality</Typography>
@@ -536,7 +817,7 @@ export default function CancerDetection() {
                 </Box>
               )}
 
-              {cancerType === "brain" && brainUploadMode === "single" && file && isNiftiFile(file) && (
+              {cancerType === "brain" && brainPipeline === "mri" && brainUploadMode === "single" && file && isNiftiFile(file) && (
                 <Box sx={{ mt: 2 }}>
                   <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1 }}>Uploaded Scan</Typography>
                   <Box
@@ -557,6 +838,20 @@ export default function CancerDetection() {
                     </Typography>
                     <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: "0.85rem", mt: 0.5 }}>
                       BRISC classification + segmentation pipeline
+                    </Typography>
+                  </Box>
+                </Box>
+              )}
+
+              {cancerType === "brain" && brainPipeline === "ct" && file && isNpzFile(file) && (
+                <Box sx={{ mt: 2 }}>
+                  <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1 }}>Uploaded CT volume</Typography>
+                  <Box sx={{ ...cardSx, maxWidth: 400, p: 2, textAlign: "left" }}>
+                    <Typography sx={{ color: "#fbbf24", fontWeight: 700, mb: 1 }}>CT NPZ</Typography>
+                    <Typography sx={{ fontSize: "0.9rem", wordBreak: "break-all", mb: 0.5 }}>{file.name}</Typography>
+                    <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: "0.85rem" }}>
+                      {(file.size / 1024 / 1024).toFixed(1)} MB — inference via{" "}
+                      <code style={{ color: "rgba(251,191,36,0.95)" }}>POST /api/ct/predict</code>
                     </Typography>
                   </Box>
                 </Box>
@@ -970,6 +1265,212 @@ export default function CancerDetection() {
                     </Typography>
                   </CardContent>
                 </Card>
+              </Box>
+            </Box>
+          </CardContent>
+        </Card>
+      )}
+
+      {ctScanResult && (
+        <Card sx={{ ...cardSx, mt: 3 }}>
+          <CardContent sx={{ p: 3 }}>
+            <Typography sx={{ fontWeight: 800, fontSize: "1.2rem", mb: 2, color: "#fff" }}>
+              Results — CT (/api/ct/predict)
+            </Typography>
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                gap: 3,
+                alignItems: "start",
+              }}
+            >
+              <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                {absolutizeStaticUrl(ctScanResult.cam_url as string | null | undefined) ? (
+                  <Box>
+                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1 }}>Grad-CAM</Typography>
+                    <Box
+                      component="img"
+                      src={absolutizeStaticUrl(ctScanResult.cam_url as string) ?? ""}
+                      alt="CT Grad-CAM"
+                      sx={{
+                        maxWidth: "100%",
+                        width: "100%",
+                        borderRadius: 2,
+                        border: "1px solid rgba(255,255,255,0.12)",
+                      }}
+                    />
+                  </Box>
+                ) : (
+                  <Box sx={placeholderBoxSx}>
+                    <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>No Grad-CAM in response</Typography>
+                  </Box>
+                )}
+              </Box>
+              <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <Box
+                  sx={{
+                    p: 2.5,
+                    borderRadius: 2,
+                    backgroundColor: predictionTheme(
+                      String(ctScanResult.result_class) === "Abnormal" ? "Malignant" : "Normal"
+                    ).bg,
+                    border: `1px solid ${predictionTheme(String(ctScanResult.result_class) === "Abnormal" ? "Malignant" : "Normal").border}`,
+                    textAlign: "center",
+                  }}
+                >
+                  <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: "0.85rem", mb: 0.5 }}>
+                    pred_label
+                  </Typography>
+                  <Typography
+                    sx={{
+                      fontSize: "1.75rem",
+                      fontWeight: 900,
+                      color: predictionTheme(String(ctScanResult.result_class) === "Abnormal" ? "Malignant" : "Normal").text,
+                      textTransform: "capitalize",
+                    }}
+                  >
+                    {String(ctScanResult.pred_label ?? "")}
+                  </Typography>
+                </Box>
+                <Box>
+                  <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>Confidence</Typography>
+                  <Typography
+                    sx={{
+                      fontSize: "1.5rem",
+                      fontWeight: 800,
+                      color: predictionTheme(String(ctScanResult.result_class) === "Abnormal" ? "Malignant" : "Normal").text,
+                      mb: 1,
+                    }}
+                  >
+                    {(Number(ctScanResult.confidence ?? 0) * 100).toFixed(1)}%
+                  </Typography>
+                  <LinearProgress
+                    variant="determinate"
+                    value={Math.min(100, Math.max(0, Number(ctScanResult.confidence ?? 0) * 100))}
+                    sx={{
+                      height: 10,
+                      borderRadius: 1,
+                      backgroundColor: "rgba(255,255,255,0.08)",
+                      "& .MuiLinearProgress-bar": {
+                        backgroundColor: predictionTheme(String(ctScanResult.result_class) === "Abnormal" ? "Malignant" : "Normal").bar,
+                        borderRadius: 1,
+                      },
+                    }}
+                  />
+                </Box>
+                <Typography sx={{ color: "rgba(255,255,255,0.55)", fontSize: "0.85rem" }}>
+                  p_normal: {Number(ctScanResult.p_normal ?? 0).toFixed(4)} · p_abnormal:{" "}
+                  {Number(ctScanResult.p_abnormal ?? 0).toFixed(4)}
+                </Typography>
+              </Box>
+            </Box>
+          </CardContent>
+        </Card>
+      )}
+
+      {fusionScanResult && (
+        <Card sx={{ ...cardSx, mt: 3 }}>
+          <CardContent sx={{ p: 3 }}>
+            <Typography sx={{ fontWeight: 800, fontSize: "1.2rem", mb: 2, color: "#fff" }}>
+              Results — Fusion (/api/fusion/predict)
+            </Typography>
+            <Chip
+              label={fusionModeLabel(String(fusionScanResult.fusion_mode ?? ""))}
+              sx={{
+                mb: 2,
+                fontWeight: 700,
+                backgroundColor: "rgba(155,177,255,0.2)",
+                color: "#e2e8f0",
+                border: "1px solid rgba(255,255,255,0.12)",
+              }}
+            />
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <Box
+                sx={{
+                  p: 2.5,
+                  borderRadius: 2,
+                  backgroundColor: predictionTheme(
+                    String(fusionScanResult.pred_label) === "Abnormal" ? "Malignant" : "Normal"
+                  ).bg,
+                  border: `1px solid ${predictionTheme(String(fusionScanResult.pred_label) === "Abnormal" ? "Malignant" : "Normal").border}`,
+                  textAlign: "center",
+                }}
+              >
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: "0.85rem", mb: 0.5 }}>
+                  pred_label
+                </Typography>
+                <Typography
+                  sx={{
+                    fontSize: "2rem",
+                    fontWeight: 900,
+                    color: predictionTheme(String(fusionScanResult.pred_label) === "Abnormal" ? "Malignant" : "Normal").text,
+                  }}
+                >
+                  {String(fusionScanResult.pred_label ?? "")}
+                </Typography>
+              </Box>
+              <Box>
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>Fusion score (confidence)</Typography>
+                <Typography
+                  sx={{
+                    fontSize: "1.75rem",
+                    fontWeight: 800,
+                    color: predictionTheme(String(fusionScanResult.pred_label) === "Abnormal" ? "Malignant" : "Normal").text,
+                    mb: 1,
+                  }}
+                >
+                  {(Number(fusionScanResult.fusion_score ?? 0) * 100).toFixed(1)}%
+                </Typography>
+                <LinearProgress
+                  variant="determinate"
+                  value={Math.min(100, Math.max(0, Number(fusionScanResult.fusion_score ?? 0) * 100))}
+                  sx={{
+                    height: 12,
+                    borderRadius: 1,
+                    backgroundColor: "rgba(255,255,255,0.08)",
+                    "& .MuiLinearProgress-bar": {
+                      backgroundColor: predictionTheme(String(fusionScanResult.pred_label) === "Abnormal" ? "Malignant" : "Normal").bar,
+                      borderRadius: 1,
+                    },
+                  }}
+                />
+              </Box>
+              <Box>
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>
+                  CT probability (abnormal score)
+                </Typography>
+                <LinearProgress
+                  variant="determinate"
+                  value={Math.min(100, Math.max(0, Number(fusionScanResult.ct_prob ?? 0) * 100))}
+                  sx={{
+                    height: 8,
+                    borderRadius: 1,
+                    backgroundColor: "rgba(255,255,255,0.08)",
+                    "& .MuiLinearProgress-bar": { backgroundColor: "#fbbf24", borderRadius: 1 },
+                  }}
+                />
+                <Typography sx={{ color: "rgba(255,255,255,0.5)", fontSize: "0.8rem", mt: 0.5 }}>
+                  {Number(fusionScanResult.ct_prob ?? 0).toFixed(4)}
+                </Typography>
+              </Box>
+              <Box>
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>
+                  MRI probability (abnormal score)
+                </Typography>
+                <LinearProgress
+                  variant="determinate"
+                  value={Math.min(100, Math.max(0, Number(fusionScanResult.mri_prob ?? 0) * 100))}
+                  sx={{
+                    height: 8,
+                    borderRadius: 1,
+                    backgroundColor: "rgba(255,255,255,0.08)",
+                    "& .MuiLinearProgress-bar": { backgroundColor: "#9bb1ff", borderRadius: 1 },
+                  }}
+                />
+                <Typography sx={{ color: "rgba(255,255,255,0.5)", fontSize: "0.8rem", mt: 0.5 }}>
+                  {Number(fusionScanResult.mri_prob ?? 0).toFixed(4)}
+                </Typography>
               </Box>
             </Box>
           </CardContent>

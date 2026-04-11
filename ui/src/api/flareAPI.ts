@@ -177,28 +177,47 @@ export async function predictMriBraTSFolder(params: {
   return parseMriPredictBody(body);
 }
 
-/*
- * ── CT patient folder (future) ─────────────────────────────────────────────
- * When the CT checkpoint and contract are ready, implement e.g.:
- *
- * export async function predictCtPatientFolder(params: {
- *   files: File[];
- *   hospitalId: string;
- *   firstName: string;
- *   lastName: string;
- *   dob: string;
- *   medicalId: string;
- * }): Promise<PredictResponse> {
- *   const form = new FormData();
- *   form.append("patient_id", params.medicalId);
- *   form.append("hospitalId", params.hospitalId);
- *   // ...append CT team–defined keys / modality tags
- *   const res = await fetch(`${API_BASE}/api/ct/predict`, { method: "POST", body: form });
- *   ...
- * }
- *
- * Flask stub lives in app.py next to the commented @app.route("/api/ct/predict").
- */
+export async function predictCtFile(
+  file: File,
+  patientId: string,
+  hospitalId: string,
+  firstName?: string,
+  lastName?: string,
+  dob?: string
+): Promise<Record<string, unknown>> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("patient_id", patientId);
+  form.append("hospitalId", hospitalId);
+  if (firstName) form.append("first_name", firstName);
+  if (lastName) form.append("last_name", lastName);
+  if (dob) form.append("dob", dob);
+  const res = await fetch(`${API_BASE}/api/ct/predict`, { method: "POST", body: form });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`CT predict failed (${res.status}): ${text}`);
+  }
+  return res.json() as Promise<Record<string, unknown>>;
+}
+
+export async function predictFusion(
+  ctFile: File | null,
+  mriFile: File | null,
+  patientId: string,
+  hospitalId: string
+): Promise<Record<string, unknown>> {
+  const form = new FormData();
+  if (ctFile) form.append("ct_file", ctFile);
+  if (mriFile) form.append("mri_file", mriFile);
+  form.append("patient_id", patientId);
+  form.append("hospitalId", hospitalId);
+  const res = await fetch(`${API_BASE}/api/fusion/predict`, { method: "POST", body: form });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Fusion predict failed (${res.status}): ${text}`);
+  }
+  return res.json() as Promise<Record<string, unknown>>;
+}
 
 export async function saveCase(payload: CreateCaseRequest) {
   const res = await fetch(`${API_BASE}/cases`, {

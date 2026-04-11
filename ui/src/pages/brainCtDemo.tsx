@@ -10,21 +10,31 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { getCtPatients, runCtPredict, getCtCamUrl } from '../api/ctApi'
+import { getCtPatients, runCtPredict, CT_API_BASE } from '../api/ctApi'
+
+function absolutizeCamUrl(path: string | null | undefined): string | null {
+  if (path == null || path === '') return null
+  if (path.startsWith('http://') || path.startsWith('https://')) return path
+  const base = CT_API_BASE.replace(/\/$/, '')
+  return path.startsWith('/') ? `${base}${path}` : `${base}/${path}`
+}
 
 export default function BrainCtDemo() {
   const [patients, setPatients] = useState<string[]>([])
   const [patientId, setPatientId] = useState('')
-  const [result, setResult] = useState<any>(null)
+  const [npzFile, setNpzFile] = useState<File | null>(null)
+  const [result, setResult] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadingPatients, setLoadingPatients] = useState(false)
   const [error, setError] = useState('')
 
-  const camUrl = useMemo(() => {
-    if (!patientId) return ''
-    // cache-bust so Grad-CAM refreshes when re-running on same patient
-    return `${getCtCamUrl(patientId)}?t=${Date.now()}`
-  }, [patientId, result])
+  const camDisplayUrl = useMemo(() => {
+    const raw = result?.cam_url
+    if (typeof raw !== 'string' || !raw) return ''
+    const u = absolutizeCamUrl(raw)
+    if (!u) return ''
+    return `${u}?t=${Date.now()}`
+  }, [result])
 
   useEffect(() => {
     let cancelled = false
@@ -36,20 +46,17 @@ export default function BrainCtDemo() {
 
         const data = await getCtPatients()
 
-        // Normalize shapes:
-        // - { patients: string[] }
-        // - string[]
         let ids: string[] = []
         if (Array.isArray(data)) {
           ids = data
-            .map((x: any) =>
-              typeof x === 'string' ? x : x?.patient_id ?? x?.id ?? '',
+            .map((x: unknown) =>
+              typeof x === 'string' ? x : (x as { patient_id?: string; id?: string })?.patient_id ?? (x as { id?: string })?.id ?? '',
             )
             .filter(Boolean)
         } else if (data && typeof data === 'object' && 'patients' in data) {
-          const maybe = (data as any).patients
+          const maybe = (data as { patients: unknown }).patients
           if (Array.isArray(maybe)) {
-            ids = maybe.filter((x) => typeof x === 'string')
+            ids = maybe.filter((x): x is string => typeof x === 'string')
           }
         }
 
@@ -57,9 +64,9 @@ export default function BrainCtDemo() {
           setPatients(ids)
           if (!patientId && ids[0]) setPatientId(ids[0])
         }
-      } catch (e: any) {
+      } catch (e: unknown) {
         if (!cancelled) {
-          setError(e?.message ?? 'Failed to load patients')
+          setError(e instanceof Error ? e.message : 'Failed to load patients')
         }
       } finally {
         if (!cancelled) setLoadingPatients(false)
@@ -74,17 +81,17 @@ export default function BrainCtDemo() {
   }, [])
 
   async function onRun() {
-    if (!patientId) return
+    if (!patientId.trim() || !npzFile) return
 
     setError('')
     setResult(null)
     setLoading(true)
 
     try {
-      const r = await runCtPredict(patientId)
-      setResult(r)
-    } catch (e: any) {
-      setError(e?.message ?? 'Prediction failed')
+      const r = await runCtPredict(npzFile, patientId, 'H001')
+      setResult(r as Record<string, unknown>)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Prediction failed')
     } finally {
       setLoading(false)
     }
@@ -98,8 +105,8 @@ export default function BrainCtDemo() {
         Brain CT Demo
       </Typography>
       <Typography sx={{ color: 'rgba(255,255,255,0.65)', mb: 3 }}>
-        Select a patient from the processed CT manifest, run analysis, and view
-        the prediction and Grad-CAM overlay.
+        Select or enter a patient ID, upload a preprocessed CT volume (.npz), run analysis, and view
+        the prediction and Grad-CAM from <code style={{ color: '#9bb1ff' }}>result.cam_url</code>.
       </Typography>
 
       {error && (
@@ -125,30 +132,62 @@ export default function BrainCtDemo() {
           mb: 4,
         }}
       >
-        <CardContent sx={{ p: 3, display: 'flex', flexWrap: 'wrap', gap: 2 }}>
-          <TextField
-            select
-            label="Patient"
-            value={patientId}
-            onChange={(e) => setPatientId(e.target.value)}
-            disabled={loading || loadingPatients || !patients.length}
-            sx={{
-              minWidth: 260,
-              '& .MuiInputBase-root': { color: '#fff', borderRadius: 2 },
-              '& label': { color: 'rgba(255,255,255,0.65)' },
-              '& fieldset': { borderColor: 'rgba(255,255,255,0.12)' },
-            }}
-          >
-            {patients.map((id) => (
-              <MenuItem key={id} value={id}>
-                {id}
-              </MenuItem>
-            ))}
-          </TextField>
+        <CardContent sx={{ p: 3, display: 'flex', flexWrap: 'wrap', gap: 2, alignItems: 'flex-start' }}>
+          {patients.length > 0 ? (
+            <TextField
+              select
+              label="Patient"
+              value={patientId}
+              onChange={(e) => setPatientId(e.target.value)}
+              disabled={loading || loadingPatients}
+              sx={{
+                minWidth: 260,
+                '& .MuiInputBase-root': { color: '#fff', borderRadius: 2 },
+                '& label': { color: 'rgba(255,255,255,0.65)' },
+                '& fieldset': { borderColor: 'rgba(255,255,255,0.12)' },
+              }}
+            >
+              {patients.map((id) => (
+                <MenuItem key={id} value={id}>
+                  {id}
+                </MenuItem>
+              ))}
+            </TextField>
+          ) : (
+            <TextField
+              label="Patient ID"
+              value={patientId}
+              onChange={(e) => setPatientId(e.target.value)}
+              disabled={loading || loadingPatients}
+              sx={{
+                minWidth: 260,
+                '& .MuiInputBase-root': { color: '#fff', borderRadius: 2 },
+                '& label': { color: 'rgba(255,255,255,0.65)' },
+                '& fieldset': { borderColor: 'rgba(255,255,255,0.12)' },
+              }}
+            />
+          )}
+
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            <Button variant="outlined" component="label" disabled={loading} sx={{ color: '#fbbf24', borderColor: 'rgba(251,191,36,0.5)', textTransform: 'none' }}>
+              Choose .npz
+              <input
+                type="file"
+                accept=".npz"
+                hidden
+                onChange={(e) => setNpzFile(e.target.files?.[0] ?? null)}
+              />
+            </Button>
+            {npzFile && (
+              <Typography sx={{ color: 'rgba(255,255,255,0.75)', fontSize: '0.85rem', maxWidth: 320, wordBreak: 'break-all' }}>
+                {npzFile.name}
+              </Typography>
+            )}
+          </Box>
 
           <Button
             variant="contained"
-            disabled={!patientId || loading || loadingPatients}
+            disabled={!patientId.trim() || !npzFile || loading || loadingPatients}
             onClick={onRun}
             sx={{
               backgroundColor: '#ff5c5c',
@@ -156,6 +195,7 @@ export default function BrainCtDemo() {
               borderRadius: 2,
               px: 4,
               py: 1.2,
+              alignSelf: 'center',
               '&:hover': { backgroundColor: '#ff3b3b' },
             }}
           >
@@ -170,7 +210,7 @@ export default function BrainCtDemo() {
 
           {!loadingPatients && !patients.length && !error && (
             <Typography sx={{ color: 'rgba(255,255,255,0.7)' }}>
-              No patients found in manifest.
+              No patients found in manifest — enter a patient ID above.
             </Typography>
           )}
         </CardContent>
@@ -217,7 +257,7 @@ export default function BrainCtDemo() {
             >
               {result
                 ? JSON.stringify(result, null, 2)
-                : 'No result yet. Run analysis to see CT + fused outputs.'}
+                : 'No result yet. Upload an NPZ and run analysis.'}
             </Box>
           </CardContent>
         </Card>
@@ -240,10 +280,10 @@ export default function BrainCtDemo() {
               sx={{ mb: 2, borderColor: 'rgba(255,255,255,0.08)' }}
             />
 
-            {patientId ? (
+            {camDisplayUrl ? (
               <Box
                 component="img"
-                src={camUrl}
+                src={camDisplayUrl}
                 alt="Grad-CAM overlay"
                 sx={{
                   width: '100%',
@@ -253,7 +293,7 @@ export default function BrainCtDemo() {
               />
             ) : (
               <Typography sx={{ color: 'rgba(255,255,255,0.7)' }}>
-                Select a patient and run analysis to view the Grad-CAM overlay.
+                After a successful run, the Grad-CAM image appears here when <code style={{ color: '#9bb1ff' }}>cam_url</code> is returned.
               </Typography>
             )}
           </CardContent>
@@ -262,4 +302,3 @@ export default function BrainCtDemo() {
     </Box>
   )
 }
-

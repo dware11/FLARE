@@ -1,4 +1,4 @@
-const CT_API_BASE =
+export const CT_API_BASE =
   import.meta.env.VITE_CT_API_BASE ?? 'http://localhost:5000';
 
 console.log('CT API BASE:', CT_API_BASE);
@@ -15,28 +15,38 @@ export async function getCtPatients(): Promise<CtPatientsResponse | string[]> {
   return res.json();
 }
 
-export interface CtPredictRequest {
-  patient_id: string;
-}
-
 export interface CtPredictResponse {
-  patient_id: string;
-  ct: unknown;
-  fused: unknown;
+  patient_id?: string;
+  modality?: string;
+  pred_label?: string;
+  result_class?: string;
+  confidence?: number;
+  p_normal?: number;
+  p_abnormal?: number;
+  cam_url?: string | null;
+  hospitalId?: string;
+  hospitalName?: string;
+  error?: string;
 }
 
 export async function runCtPredict(
+  file: File,
   patient_id: string,
+  hospitalId: string = 'H001',
 ): Promise<CtPredictResponse> {
-  const res = await fetch(`${CT_API_BASE}/api/predict`, {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('patient_id', patient_id);
+  form.append('hospitalId', hospitalId);
+
+  const res = await fetch(`${CT_API_BASE}/api/ct/predict`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ patient_id } satisfies CtPredictRequest),
+    body: form,
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`POST /api/predict failed (${res.status}) ${text}`);
+    throw new Error(`POST /api/ct/predict failed (${res.status}) ${text}`);
   }
 
   return res.json();
