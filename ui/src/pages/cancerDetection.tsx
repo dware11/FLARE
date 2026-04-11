@@ -73,9 +73,30 @@ function predictionTheme(p: ResultClass) {
 }
 
 const fieldSx = {
-  "& .MuiInputBase-root": { color: "#fff", borderRadius: 2 },
-  "& label": { color: "rgba(255,255,255,0.65)" },
-  "& fieldset": { borderColor: "rgba(255,255,255,0.12)" },
+  "& .MuiOutlinedInput-root": {
+    color: "#ffffff",
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderRadius: 2,
+    "& fieldset": { borderColor: "rgba(255,255,255,0.2)" },
+    "&:hover fieldset": { borderColor: "rgba(255,255,255,0.4)" },
+    "&.Mui-focused fieldset": { borderColor: "#ff5c5c" },
+  },
+  "& .MuiInputLabel-root": { color: "rgba(255,255,255,0.65)" },
+  "& .MuiInputLabel-root.Mui-focused": { color: "#ff5c5c" },
+  "& input": { color: "#ffffff" },
+  "& .MuiSelect-icon": { color: "rgba(255,255,255,0.65)" },
+};
+
+const dobFieldSx = {
+  ...fieldSx,
+  "& input": {
+    color: "#ffffff",
+    colorScheme: "dark",
+  },
+  "& input::-webkit-calendar-picker-indicator": {
+    filter: "invert(1) brightness(2)",
+    cursor: "pointer",
+  },
 };
 
 const cardSx = {
@@ -237,7 +258,12 @@ export default function CancerDetection() {
         ctScanResult?: Record<string, unknown> | null;
         fusionScanResult?: Record<string, unknown> | null;
         completedSeconds?: number | null;
+        timestamp?: number;
       };
+      if (p.timestamp && Date.now() - p.timestamp > 3_600_000) {
+        localStorage.removeItem(FLARE_LAST_RESULT_KEY);
+        return;
+      }
       patchStored({
         scanResult: p.scanResult ?? null,
         ctScanResult: p.ctScanResult ?? null,
@@ -364,7 +390,10 @@ export default function CancerDetection() {
     completedSeconds: number | null;
   }) {
     try {
-      localStorage.setItem(FLARE_LAST_RESULT_KEY, JSON.stringify(payload));
+      localStorage.setItem(
+        FLARE_LAST_RESULT_KEY,
+        JSON.stringify({ ...payload, timestamp: Date.now() })
+      );
     } catch {
       /* ignore quota / private mode */
     }
@@ -636,7 +665,10 @@ export default function CancerDetection() {
               value={dob}
               onChange={(e) => setDob(e.target.value)}
               InputLabelProps={{ shrink: true }}
-              sx={fieldSx}
+              inputProps={{
+                style: { color: "#ffffff", colorScheme: "dark" },
+              }}
+              sx={dobFieldSx}
             />
           </Box>
 
