@@ -261,7 +261,7 @@ BRATS_COLORS_BGR = {
 
 # DEVICE + MODEL CACHE — load once, reuse across requests
 # ==============================================================================
-_device: object | None = None
+_device: object = None
 _cls_model   = None
 _seg_model   = None
 _brats_model = None
