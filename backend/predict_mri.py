@@ -700,8 +700,11 @@ def predict_mri(file_path: str,
         if modality == "brain_brats":
             return _predict_brats(file_path, patient_id)
 
-        # brain_mri: NIfTI → single-slice PNG, then same _predict_brisc as always
+        # brain_mri: route by file extension
         fname_lower = file_path.lower()
+        if fname_lower.endswith(".npz"):
+            print("[predict_mri] NPZ detected in brain_mri — routing to BraTS pipeline")
+            return _predict_brats(file_path, patient_id)
         if fname_lower.endswith(".nii.gz") or fname_lower.endswith(".nii"):
             print("[predict_mri] NIfTI detected — extracting best axial slice")
             file_path = _extract_best_slice_from_nifti(file_path, patient_id)

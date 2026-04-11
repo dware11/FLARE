@@ -384,10 +384,7 @@ export default function CancerDetection() {
         return;
       }
       const f = e.dataTransfer.files?.[0];
-      const ctMode = cancerType === "brain" && brainPipeline === "ct";
-      const pattern = ctMode
-        ? /\.(npz)$/i
-        : /\.(png|jpe?g|nii(\.gz)?)$/i;
+      const pattern = /\.(png|jpe?g|nii(\.gz)?|npz)$/i;
       if (f && pattern.test(f.name)) onFileChosen(f);
     },
     [loading, cancerType, brainUploadMode, onFileChosen, onFolderChosen]
@@ -411,7 +408,7 @@ export default function CancerDetection() {
     e.stopPropagation();
     if (loading) return;
     const f = e.dataTransfer.files?.[0];
-    if (f && /\.(png|jpe?g|nii(\.gz)?)$/i.test(f.name)) {
+    if (f && /\.(png|jpe?g|nii(\.gz)?|npz)$/i.test(f.name)) {
       setFusionMriFile(f);
       setCtScanResult(null);
       setFusionScanResult(null);
@@ -876,7 +873,7 @@ export default function CancerDetection() {
                   >
                     <Typography sx={{ color: "#9bb1ff", fontWeight: 700, mb: 0.5 }}>MRI scan</Typography>
                     <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: "0.9rem" }}>
-                      JPG / PNG / NIfTI
+                      JPG / PNG / NIfTI / NPZ
                     </Typography>
                     {fusionMriFile && (
                       <Typography sx={{ color: "#ff5c5c", mt: 1.5, fontWeight: 600, fontSize: "0.85rem", wordBreak: "break-all" }}>
@@ -887,12 +884,12 @@ export default function CancerDetection() {
                       key={`mri-${fusionInputKey}`}
                       id="flare-fusion-mri-upload"
                       type="file"
-                      accept=".jpg,.jpeg,.png,.nii,.nii.gz"
+                      accept=".jpg,.jpeg,.png,.nii,.nii.gz,.npz"
                       disabled={loading}
                       style={{ display: "none" }}
                       onChange={(e) => {
                         const f = e.target.files?.[0] ?? null;
-                        if (f && /\.(png|jpe?g|nii(\.gz)?)$/i.test(f.name)) {
+                        if (f && /\.(png|jpe?g|nii(\.gz)?|npz)$/i.test(f.name)) {
                           setFusionMriFile(f);
                           setCtScanResult(null);
                           setFusionScanResult(null);
@@ -942,7 +939,7 @@ export default function CancerDetection() {
                       : cancerType === "brain" && brainPipeline === "ct"
                         ? "Preprocessed CT stack as NumPy .npz (server runs /api/ct/predict)"
                         : cancerType === "brain"
-                          ? "JPG/PNG or NIfTI (.nii / .nii.gz) — volume → one slice on server where applicable"
+                          ? "JPG/PNG, NIfTI (.nii / .nii.gz), or NPZ — routed to appropriate pipeline on server"
                           : "JPG/PNG or NIfTI (.nii / .nii.gz)"}
                   </Typography>
                   {cancerType === "brain" && brainPipeline === "mri" && brainUploadMode === "folder" && folderFiles.length > 0 && (
@@ -979,7 +976,7 @@ export default function CancerDetection() {
                       accept={
                         cancerType === "brain" && brainPipeline === "ct"
                           ? ".npz"
-                          : ".jpg,.jpeg,.png,.nii,.nii.gz"
+                          : ".jpg,.jpeg,.png,.nii,.nii.gz,.npz"
                       }
                       style={{ display: "none" }}
                       onChange={(e) => onFileChosen(e.target.files?.[0] ?? null)}
