@@ -32,6 +32,8 @@ export type MriFolderPredictView = {
   kind: "mri_api_v2";
   classification: MriPredictClassification;
   segmentation: MriPredictSegmentation;
+  /** Raw input slice URL from API when distinct from segmentation.original_url */
+  input_image_url?: string | null;
 };
 
 export type LegacyPredictView = {
@@ -127,6 +129,7 @@ export function parseMriPredictBody(body: Record<string, unknown>): CancerScanRe
     const originalUrl = fromSegOriginal ?? fromRootInput ?? null;
     return {
       kind: "mri_api_v2",
+      input_image_url: fromRootInput,
       classification: {
         label: String(c.label ?? "Normal"),
         confidence: Math.min(1, Math.max(0, Number(c.confidence ?? 0))),
@@ -259,6 +262,26 @@ export type GeoSummary = {
 export async function fetchGeoSummary(): Promise<GeoSummary> {
   const res = await fetch(`${API_BASE}/api/geotracker/summary`);
   if (!res.ok) throw new Error(`Geo summary failed: ${res.status}`);
+  return res.json();
+}
+
+export type OutbreakStatus = {
+  outbreak_level: string;
+  outbreak_color: string;
+  triggered: boolean;
+  total_approved_abnormal: number;
+  expected_baseline: number;
+  percent_of_baseline: number;
+  hospital_counts: Record<string, number>;
+  hotspot_hospitals: string[];
+  population: number;
+  threshold_elevated: number;
+  threshold_critical: number;
+};
+
+export async function fetchOutbreakStatus(): Promise<OutbreakStatus> {
+  const res = await fetch(`${API_BASE}/api/outbreak/status`);
+  if (!res.ok) throw new Error("Failed to fetch outbreak status");
   return res.json();
 }
 

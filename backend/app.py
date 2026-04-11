@@ -8,7 +8,7 @@ FLARE MOCK BACKEND (EDITABLE)
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
 from flask import Flask, jsonify, request
@@ -60,7 +60,7 @@ def _preload_models_once():
         from predict_mri import _load_cls_model
 
         _load_cls_model()
-        app.logger.info("MRI classifier preloaded")
+        app.logger.info("MRI model preloaded")
     except Exception as ex:
         app.logger.warning("MRI preload failed: %s", ex)
 
@@ -140,6 +140,83 @@ _ehr_records: dict[str, dict] = {}
 _flare_saved_cases: list[dict] = []
 # Same idea for /api/cases — we have to keep this aligned with what the frontend ships.
 _api_cases_store: list[dict] = []
+
+
+def _seed_demo_data() -> None:
+    demo_cases = [
+        ("DEMO_001", "H001", "brain_ct", 0.9528, True),
+        ("DEMO_002", "H001", "brain_mri", 0.8821, True),
+        ("DEMO_003", "H002", "brain_ct", 0.9102, True),
+        ("DEMO_004", "H002", "brain_mri", 0.7834, True),
+        ("DEMO_005", "H003", "brain_ct", 0.8956, True),
+        ("DEMO_006", "H003", "brain_ct", 0.9234, True),
+        ("DEMO_007", "H004", "brain_mri", 0.8102, True),
+        ("DEMO_008", "H004", "brain_ct", 0.7654, True),
+        ("DEMO_009", "H005", "brain_ct", 0.9341, True),
+        ("DEMO_010", "H005", "brain_mri", 0.8876, True),
+        ("DEMO_011", "H001", "brain_ct", 0.9102, True),
+        ("DEMO_012", "H002", "brain_ct", 0.8234, True),
+        ("DEMO_013", "H003", "brain_mri", 0.7923, True),
+        ("DEMO_014", "H001", "brain_ct", 0.9567, True),
+        ("DEMO_015", "H002", "brain_mri", 0.8341, True),
+    ]
+
+    hospital_names = {
+        "H001": "Houston Methodist Hospital",
+        "H002": "Memorial Hermann - Texas Medical Center",
+        "H003": "Baylor St. Luke's Medical Center",
+        "H004": "Ben Taub Hospital",
+        "H005": "Texas Children's Hospital",
+    }
+
+    base_time = datetime.now(timezone.utc) - timedelta(hours=48)
+
+    for i, (pid, hid, modality, conf, is_abn) in enumerate(demo_cases):
+        case_id = f"demo_case_{i + 1:03d}"
+        created = (base_time + timedelta(hours=i * 3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        _review_cases[case_id] = {
+            "caseId": case_id,
+            "patient_id": pid,
+            "hospitalId": hid,
+            "hospitalName": hospital_names[hid],
+            "modality": modality,
+            "is_abnormal": is_abn,
+            "prediction": "Abnormal" if is_abn else "Normal",
+            "confidence": conf,
+            "review_status": "approved",
+            "createdAt": created,
+            "approvedAt": created,
+            "rejectedAt": None,
+            "reviewerId": "demo_reviewer",
+            "reject_reason": None,
+            "result_class": "Abnormal" if is_abn else "Normal",
+        }
+
+        _ehr_records[case_id] = {
+            "caseId": case_id,
+            "patient_id": pid,
+            "firstName": "Demo",
+            "lastName": f"Patient {i + 1}",
+            "dob": "1975-06-15",
+            "hospitalId": hid,
+            "hospitalName": hospital_names[hid],
+            "modality": modality,
+            "prediction": "Abnormal",
+            "confidence": conf,
+            "is_abnormal": is_abn,
+            "result_class": "Malignant",
+            "review_status": "approved",
+            "createdAt": created,
+            "approvedAt": created,
+            "rejectedAt": None,
+            "reviewerId": "demo_reviewer",
+            "reject_reason": None,
+            "signature": "Demo Reviewer MD",
+        }
+
+
+_seed_demo_data()
 
 
 SUPPORTED_MODALITIES = ["brain_ct", "brain_mri", "brain_brats"]
@@ -933,6 +1010,70 @@ def geotracker_hospital_cases(hospital_id: str):
     cases.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
 
     return jsonify({"cases": cases[:5]}), 200
+
+
+@app.route("/api/outbreak/status", methods=["GET"])
+def outbreak_status():
+    total_approved = sum(
+        1
+        for c in _ehr_records.values()
+        if c.get("is_abnormal") and c.get("review_status") == "approved"
+    )
+
+    hospital_counts: dict[str, int] = {}
+    for hid in HOSPITAL_REGISTRY:
+        count = sum(
+            1
+            for c in _ehr_records.values()
+            if c.get("hospitalId") == hid
+            and c.get("is_abnormal")
+            and c.get("review_status") == "approved"
+        )
+        hospital_counts[hid] = count
+
+    population = 2_300_000
+    expected_rate = 0.005
+    expected_cases = population * expected_rate
+
+    outbreak_level = "Normal"
+    outbreak_color = "#94a3b8"
+    triggered = False
+
+    if total_approved >= 10:
+        outbreak_level = "Critical"
+        outbreak_color = "#e11d48"
+        triggered = True
+    elif total_approved >= 5:
+        outbreak_level = "Elevated"
+        outbreak_color = "#f97316"
+        triggered = True
+    elif total_approved >= 3:
+        outbreak_level = "Moderate"
+        outbreak_color = "#eab308"
+        triggered = False
+
+    hotspot_hospitals = [hid for hid, count in hospital_counts.items() if count >= 3]
+
+    return (
+        jsonify(
+            {
+                "outbreak_level": outbreak_level,
+                "outbreak_color": outbreak_color,
+                "triggered": triggered,
+                "total_approved_abnormal": total_approved,
+                "expected_baseline": expected_cases,
+                "percent_of_baseline": round((total_approved / expected_cases) * 100, 4)
+                if expected_cases
+                else 0.0,
+                "hospital_counts": hospital_counts,
+                "hotspot_hospitals": hotspot_hospitals,
+                "population": population,
+                "threshold_elevated": 5,
+                "threshold_critical": 10,
+            }
+        ),
+        200,
+    )
 
 
 @app.route("/api/geotracker/summary", methods=["GET"])

@@ -15,6 +15,7 @@ import {
   LinearProgress,
   ToggleButton,
   ToggleButtonGroup,
+  Snackbar,
 } from "@mui/material";
 import {
   predictScan,
@@ -138,7 +139,7 @@ function absolutizeStaticUrl(path: string | null | undefined): string | null {
 function fusionModeLabel(mode: string): string {
   switch (mode) {
     case "ct_mri":
-      return "CT + MRI";
+      return "CT + MRI Fusion";
     case "ct_only":
       return "CT Only";
     case "mri_only":
@@ -148,12 +149,26 @@ function fusionModeLabel(mode: string): string {
   }
 }
 
+const FLARE_LAST_RESULT_KEY = "flare_last_result";
+
+const pairImgSx = {
+  width: "100%",
+  maxWidth: 300,
+  borderRadius: 2,
+  objectFit: "cover" as const,
+  border: "1px solid rgba(255,255,255,0.12)",
+  display: "block",
+};
+
 export default function CancerDetection() {
   const { stored, patchStored, clearStored } = useCancerInference();
+  const hydratedRef = useRef(false);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const analyzeSecondsRef = useRef(0);
   const [analyzeSeconds, setAnalyzeSeconds] = useState(0);
   const [completedSeconds, setCompletedSeconds] = useState<number | null>(null);
+  const [inferSnackOpen, setInferSnackOpen] = useState(false);
+  const [inferSnackMsg, setInferSnackMsg] = useState("");
 
   const startAnalyzeTimer = useCallback(() => {
     analyzeSecondsRef.current = 0;
@@ -210,6 +225,29 @@ export default function CancerDetection() {
     setFusionScanResult(stored.fusionScanResult);
     setCompletedSeconds(stored.completedSeconds);
   }, [stored]);
+
+  useEffect(() => {
+    if (hydratedRef.current) return;
+    hydratedRef.current = true;
+    try {
+      const raw = localStorage.getItem(FLARE_LAST_RESULT_KEY);
+      if (!raw) return;
+      const p = JSON.parse(raw) as {
+        scanResult?: CancerScanResult | null;
+        ctScanResult?: Record<string, unknown> | null;
+        fusionScanResult?: Record<string, unknown> | null;
+        completedSeconds?: number | null;
+      };
+      patchStored({
+        scanResult: p.scanResult ?? null,
+        ctScanResult: p.ctScanResult ?? null,
+        fusionScanResult: p.fusionScanResult ?? null,
+        completedSeconds: p.completedSeconds ?? null,
+      });
+    } catch {
+      /* ignore corrupt localStorage */
+    }
+  }, [patchStored]);
 
   useEffect(() => {
     if (brainUploadMode === "folder") {
@@ -319,8 +357,26 @@ export default function CancerDetection() {
     }
   }, []);
 
+  function persistLastResult(payload: {
+    scanResult: CancerScanResult | null;
+    ctScanResult: Record<string, unknown> | null;
+    fusionScanResult: Record<string, unknown> | null;
+    completedSeconds: number | null;
+  }) {
+    try {
+      localStorage.setItem(FLARE_LAST_RESULT_KEY, JSON.stringify(payload));
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }
+
   async function onRun() {
     setError("");
+    try {
+      localStorage.removeItem(FLARE_LAST_RESULT_KEY);
+    } catch {
+      /* ignore */
+    }
     clearStored();
     setScanResult(null);
     setCtScanResult(null);
@@ -348,6 +404,14 @@ export default function CancerDetection() {
           ctScanResult: null,
           completedSeconds: elapsed,
         });
+        persistLastResult({
+          scanResult: null,
+          ctScanResult: null,
+          fusionScanResult: r,
+          completedSeconds: elapsed,
+        });
+        setInferSnackMsg(`Inference complete — model finished in ${elapsed}s`);
+        setInferSnackOpen(true);
       } catch (e: unknown) {
         stopAnalyzeTimer();
         setError(e instanceof Error ? e.message : "Something went wrong.");
@@ -374,6 +438,14 @@ export default function CancerDetection() {
           fusionScanResult: null,
           completedSeconds: elapsed,
         });
+        persistLastResult({
+          scanResult: null,
+          ctScanResult: r,
+          fusionScanResult: null,
+          completedSeconds: elapsed,
+        });
+        setInferSnackMsg(`Inference complete — model finished in ${elapsed}s`);
+        setInferSnackOpen(true);
       } catch (e: unknown) {
         stopAnalyzeTimer();
         setError(e instanceof Error ? e.message : "Something went wrong.");
@@ -418,6 +490,14 @@ export default function CancerDetection() {
           fusionScanResult: null,
           completedSeconds: elapsed,
         });
+        persistLastResult({
+          scanResult: folderOutcome,
+          ctScanResult: null,
+          fusionScanResult: null,
+          completedSeconds: elapsed,
+        });
+        setInferSnackMsg(`Inference complete — model finished in ${elapsed}s`);
+        setInferSnackOpen(true);
       } else {
         const pred = await predictScan({
           cancerType,
@@ -438,6 +518,14 @@ export default function CancerDetection() {
           fusionScanResult: null,
           completedSeconds: elapsed,
         });
+        persistLastResult({
+          scanResult: legacy,
+          ctScanResult: null,
+          fusionScanResult: null,
+          completedSeconds: elapsed,
+        });
+        setInferSnackMsg(`Inference complete — model finished in ${elapsed}s`);
+        setInferSnackOpen(true);
       }
     } catch (e: unknown) {
       stopAnalyzeTimer();
@@ -548,7 +636,6 @@ export default function CancerDetection() {
               value={dob}
               onChange={(e) => setDob(e.target.value)}
               InputLabelProps={{ shrink: true }}
-              inputProps={{ max: "9999-12-31" }}
               sx={fieldSx}
             />
           </Box>
@@ -1022,55 +1109,65 @@ export default function CancerDetection() {
                 Completed in {completedSeconds}s
               </Typography>
             )}
+            {mriV2.classification.label.toLowerCase() === "normal" &&
+              (mriV2.segmentation.original_url || mriV2.input_image_url) && (
+                <Alert
+                  severity="success"
+                  sx={{
+                    mb: 2,
+                    backgroundColor: "rgba(34,197,94,0.15)",
+                    color: "#86efac",
+                    border: "1px solid rgba(34,197,94,0.35)",
+                    "& .MuiAlert-icon": { color: "#22c55e" },
+                  }}
+                >
+                  No tumor detected
+                </Alert>
+              )}
+
             <Box
               sx={{
-                display: "grid",
-                gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                display: "flex",
+                flexDirection: { xs: "column", sm: "row" },
                 gap: 2,
                 mb: 3,
+                flexWrap: "wrap",
               }}
             >
-              <Box>
-                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1, fontWeight: 600 }}>
-                  Original Scan
-                </Typography>
-                {mriV2.classification.label.toLowerCase() === "normal" && mriV2.segmentation.original_url && (
-                  <Alert
-                    severity="success"
-                    sx={{
-                      mb: 1,
-                      backgroundColor: "rgba(34,197,94,0.15)",
-                      color: "#86efac",
-                      border: "1px solid rgba(34,197,94,0.35)",
-                      "& .MuiAlert-icon": { color: "#22c55e" },
-                    }}
-                  >
-                    No tumor detected
-                  </Alert>
-                )}
-                {mriV2.segmentation.original_url ? (
-                  <Box component="img" src={mriV2.segmentation.original_url} alt="Original MRI" sx={resultImgSx} />
+              <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
+                {mriV2.input_image_url || mriV2.segmentation.original_url ? (
+                  <Box
+                    component="img"
+                    src={mriV2.input_image_url || mriV2.segmentation.original_url || ""}
+                    alt="Original MRI"
+                    sx={pairImgSx}
+                  />
                 ) : (
-                  <Box sx={{ ...placeholderBoxSx, minHeight: 220 }}>
+                  <Box sx={{ ...placeholderBoxSx, minHeight: 200, maxWidth: 300 }}>
                     <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>No original image URL</Typography>
                   </Box>
                 )}
-              </Box>
-              <Box>
-                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1, fontWeight: 600 }}>
-                  Segmentation Overlay
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+                  Original Scan
                 </Typography>
+              </Box>
+              <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
                 {mriV2.segmentation.overlay_url ? (
-                  <Box
-                    component="img"
-                    src={mriV2.segmentation.overlay_url}
-                    alt="Segmentation overlay"
-                    sx={resultImgSx}
-                  />
+                  <>
+                    <Box component="img" src={mriV2.segmentation.overlay_url} alt="Segmentation" sx={pairImgSx} />
+                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+                      Segmentation Overlay
+                    </Typography>
+                  </>
                 ) : (
-                  <Box sx={{ ...placeholderBoxSx, minHeight: 220 }}>
-                    <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>No overlay in response</Typography>
-                  </Box>
+                  <>
+                    <Box sx={{ ...placeholderBoxSx, minHeight: 200, maxWidth: 300 }}>
+                      <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>Segmentation processing...</Typography>
+                    </Box>
+                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+                      Segmentation Overlay
+                    </Typography>
+                  </>
                 )}
               </Box>
             </Box>
@@ -1189,41 +1286,44 @@ export default function CancerDetection() {
             )}
             <Box
               sx={{
-                display: "grid",
-                gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                display: "flex",
+                flexDirection: { xs: "column", sm: "row" },
                 gap: 2,
                 mb: 3,
+                flexWrap: "wrap",
               }}
             >
-              <Box>
-                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1, fontWeight: 600 }}>
-                  Original Scan
-                </Typography>
+              <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
                 {imagePreviewUrl ? (
-                  <Box component="img" src={imagePreviewUrl} alt="Original" sx={resultImgSx} />
+                  <Box component="img" src={imagePreviewUrl} alt="Original" sx={pairImgSx} />
                 ) : (
-                  <Box sx={{ ...placeholderBoxSx, minHeight: 220 }}>
+                  <Box sx={{ ...placeholderBoxSx, minHeight: 200, maxWidth: 300 }}>
                     <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>No scan loaded</Typography>
                   </Box>
                 )}
-              </Box>
-              <Box>
-                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1, fontWeight: 600 }}>
-                  Segmentation Overlay
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+                  Original Scan
                 </Typography>
+              </Box>
+              <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
                 {predLegacy.localization_url ? (
-                  <Box
-                    component="img"
-                    src={predLegacy.localization_url}
-                    alt="Segmentation"
-                    sx={resultImgSx}
-                  />
-                ) : (
-                  <Box sx={{ ...placeholderBoxSx, minHeight: 220 }}>
-                    <Typography sx={{ color: "rgba(255,255,255,0.55)" }}>
-                      Segmentation overlay not available for this result
+                  <>
+                    <Box component="img" src={predLegacy.localization_url} alt="Segmentation" sx={pairImgSx} />
+                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+                      Segmentation Overlay
                     </Typography>
-                  </Box>
+                  </>
+                ) : (
+                  <>
+                    <Box sx={{ ...placeholderBoxSx, minHeight: 200, maxWidth: 300 }}>
+                      <Typography sx={{ color: "rgba(255,255,255,0.55)" }}>
+                        Segmentation processing...
+                      </Typography>
+                    </Box>
+                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+                      Segmentation Overlay
+                    </Typography>
+                  </>
                 )}
               </Box>
             </Box>
@@ -1346,41 +1446,49 @@ export default function CancerDetection() {
             )}
             <Box
               sx={{
-                display: "grid",
-                gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                display: "flex",
+                flexDirection: { xs: "column", sm: "row" },
                 gap: 2,
                 mb: 3,
+                flexWrap: "wrap",
               }}
             >
-              <Box>
-                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1, fontWeight: 600 }}>
-                  Original Scan
-                </Typography>
+              <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
                 {imagePreviewUrl ? (
-                  <Box component="img" src={imagePreviewUrl} alt="CT input" sx={resultImgSx} />
+                  <Box component="img" src={imagePreviewUrl} alt="CT input" sx={pairImgSx} />
                 ) : (
-                  <Box sx={{ ...placeholderBoxSx, minHeight: 220 }}>
+                  <Box sx={{ ...placeholderBoxSx, minHeight: 200, maxWidth: 300 }}>
                     <Typography sx={{ color: "rgba(255,255,255,0.55)", textAlign: "center" }}>
                       CT volume (.npz) — no raster preview in browser
                     </Typography>
                   </Box>
                 )}
-              </Box>
-              <Box>
-                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1, fontWeight: 600 }}>
-                  Grad-CAM
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+                  Original Scan
                 </Typography>
+              </Box>
+              <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
                 {absolutizeStaticUrl(ctScanResult.cam_url as string | null | undefined) ? (
-                  <Box
-                    component="img"
-                    src={absolutizeStaticUrl(ctScanResult.cam_url as string) ?? ""}
-                    alt="CT Grad-CAM"
-                    sx={resultImgSx}
-                  />
+                  <>
+                    <Box
+                      component="img"
+                      src={absolutizeStaticUrl(ctScanResult.cam_url as string) ?? ""}
+                      alt="GradCAM"
+                      sx={pairImgSx}
+                    />
+                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+                      GradCAM Attention Map
+                    </Typography>
+                  </>
                 ) : (
-                  <Box sx={{ ...placeholderBoxSx, minHeight: 220 }}>
-                    <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>No Grad-CAM in response</Typography>
-                  </Box>
+                  <>
+                    <Box sx={{ ...placeholderBoxSx, minHeight: 200, maxWidth: 300 }}>
+                      <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>GradCAM processing...</Typography>
+                    </Box>
+                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+                      GradCAM Attention Map
+                    </Typography>
+                  </>
                 )}
               </Box>
             </Box>
@@ -1449,21 +1557,9 @@ export default function CancerDetection() {
       {fusionScanResult && (
         <Card sx={{ ...cardSx, mt: 3 }}>
           <CardContent sx={{ p: 3 }}>
-            <Box sx={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 1.5, mb: 1 }}>
-              <Typography sx={{ fontWeight: 800, fontSize: "1.2rem", color: "#fff", flex: "1 1 auto" }}>
-                Results — Fusion (/api/fusion/predict)
-              </Typography>
-              <Chip
-                size="small"
-                label={fusionModeLabel(String(fusionScanResult.fusion_mode ?? ""))}
-                sx={{
-                  fontWeight: 700,
-                  backgroundColor: "rgba(155,177,255,0.2)",
-                  color: "#e2e8f0",
-                  border: "1px solid rgba(255,255,255,0.12)",
-                }}
-              />
-            </Box>
+            <Typography sx={{ fontWeight: 800, fontSize: "1.2rem", color: "#fff", mb: 1 }}>
+              Results — Fusion (/api/fusion/predict)
+            </Typography>
             {completedSeconds != null && (
               <Typography sx={{ color: "rgba(255,255,255,0.55)", fontSize: "0.9rem", mb: 2 }}>
                 Completed in {completedSeconds}s
@@ -1471,6 +1567,17 @@ export default function CancerDetection() {
             )}
             <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
               <Box sx={{ textAlign: "center", py: 1 }}>
+                <Chip
+                  size="small"
+                  label={fusionModeLabel(String(fusionScanResult.fusion_mode ?? ""))}
+                  sx={{
+                    mb: 1.5,
+                    fontWeight: 700,
+                    backgroundColor: "rgba(155,177,255,0.2)",
+                    color: "#e2e8f0",
+                    border: "1px solid rgba(255,255,255,0.12)",
+                  }}
+                />
                 <Typography sx={{ color: "rgba(255,255,255,0.6)", fontSize: "0.9rem", mb: 0.5, fontWeight: 600 }}>
                   Fusion score
                 </Typography>
@@ -1529,7 +1636,7 @@ export default function CancerDetection() {
 
               <Box>
                 <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5, fontWeight: 600 }}>
-                  CT Confidence
+                  CT Confidence: {(Number(fusionScanResult.ct_prob ?? 0) * 100).toFixed(0)}%
                 </Typography>
                 <LinearProgress
                   variant="determinate"
@@ -1542,12 +1649,12 @@ export default function CancerDetection() {
                   }}
                 />
                 <Typography sx={{ color: "rgba(255,255,255,0.5)", fontSize: "0.8rem", mt: 0.5 }}>
-                  {(Number(fusionScanResult.ct_prob ?? 0) * 100).toFixed(1)}% raw · {Number(fusionScanResult.ct_prob ?? 0).toFixed(4)}
+                  raw {Number(fusionScanResult.ct_prob ?? 0).toFixed(4)}
                 </Typography>
               </Box>
               <Box>
                 <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5, fontWeight: 600 }}>
-                  MRI Confidence
+                  MRI Confidence: {(Number(fusionScanResult.mri_prob ?? 0) * 100).toFixed(0)}%
                 </Typography>
                 <LinearProgress
                   variant="determinate"
@@ -1560,13 +1667,34 @@ export default function CancerDetection() {
                   }}
                 />
                 <Typography sx={{ color: "rgba(255,255,255,0.5)", fontSize: "0.8rem", mt: 0.5 }}>
-                  {(Number(fusionScanResult.mri_prob ?? 0) * 100).toFixed(1)}% raw · {Number(fusionScanResult.mri_prob ?? 0).toFixed(4)}
+                  raw {Number(fusionScanResult.mri_prob ?? 0).toFixed(4)}
                 </Typography>
               </Box>
             </Box>
           </CardContent>
         </Card>
       )}
+
+      <Snackbar
+        open={inferSnackOpen}
+        autoHideDuration={4000}
+        onClose={() => setInferSnackOpen(false)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+      >
+        <Alert
+          onClose={() => setInferSnackOpen(false)}
+          severity="success"
+          variant="filled"
+          sx={{
+            width: "100%",
+            backgroundColor: "rgba(34,197,94,0.92)",
+            color: "#0b0f19",
+            fontWeight: 600,
+          }}
+        >
+          {inferSnackMsg}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 }

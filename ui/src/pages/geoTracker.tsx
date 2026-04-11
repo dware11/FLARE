@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import {
   Box,
   Typography,
@@ -20,14 +20,18 @@ import {
   DialogContent,
   DialogActions,
   TextField,
+  Divider,
+  IconButton,
 } from "@mui/material";
+import CloseIcon from "@mui/icons-material/Close";
 import {
   fetchGeoSummary,
   fetchPendingReviews,
+  fetchOutbreakStatus,
   approveReview,
   rejectReview,
 } from "../api/flareAPI";
-import type { GeoSummary, ReviewCase, HospitalSummary } from "../api/flareAPI";
+import type { GeoSummary, ReviewCase, HospitalSummary, OutbreakStatus } from "../api/flareAPI";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import OutbreakAnalyticsSection from "../components/OutbreakAnalyticsSection";
@@ -51,6 +55,7 @@ function trendLabel(t: HospitalSummary["trend"]): string {
 export default function GeoTracker() {
   const [geo, setGeo] = useState<GeoSummary | null>(null);
   const [cases, setCases] = useState<ReviewCase[]>([]);
+  const [outbreak, setOutbreak] = useState<OutbreakStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [actingId, setActingId] = useState<string | null>(null);
@@ -59,6 +64,9 @@ export default function GeoTracker() {
   const [approveCaseId, setApproveCaseId] = useState<string | null>(null);
   const [reviewerName, setReviewerName] = useState("");
   const [digitalSignature, setDigitalSignature] = useState("");
+  const [signModalError, setSignModalError] = useState("");
+
+  const [outbreakBannerDismissed, setOutbreakBannerDismissed] = useState(false);
 
   const loadAll = useCallback(async () => {
     setError("");
@@ -69,6 +77,12 @@ export default function GeoTracker() {
       setCases(r.cases ?? []);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load Geo Tracker data.");
+      setGeo(null);
+    }
+    try {
+      setOutbreak(await fetchOutbreakStatus());
+    } catch {
+      setOutbreak(null);
     } finally {
       setLoading(false);
     }
@@ -82,6 +96,7 @@ export default function GeoTracker() {
     setApproveCaseId(caseId);
     setReviewerName("");
     setDigitalSignature("");
+    setSignModalError("");
     setSignOpen(true);
   }
 
@@ -90,9 +105,10 @@ export default function GeoTracker() {
     const name = reviewerName.trim();
     const sig = digitalSignature.trim();
     if (!name || !sig) {
-      setError("Enter reviewer name and digital signature to approve.");
+      setSignModalError("Reviewer name and digital signature are required.");
       return;
     }
+    setSignModalError("");
     setActingId(approveCaseId);
     setError("");
     try {
@@ -125,6 +141,8 @@ export default function GeoTracker() {
     "& fieldset": { borderColor: "rgba(255,255,255,0.12)" },
   };
 
+  const showOutbreakBanner = Boolean(outbreak?.triggered && !outbreakBannerDismissed);
+
   return (
     <Box
       sx={{
@@ -149,21 +167,24 @@ export default function GeoTracker() {
           },
         }}
       >
-        <DialogTitle sx={{ fontWeight: 800 }}>Sign off approval</DialogTitle>
+        <DialogTitle sx={{ fontWeight: 800 }}>Sign off on this case</DialogTitle>
         <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 1 }}>
-          <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: "0.9rem" }}>
-            Approved cases are counted on the map only after you sign.
-          </Typography>
+          {signModalError && (
+            <Alert severity="error" sx={{ backgroundColor: "rgba(239,68,68,0.15)", color: "#fff" }}>
+              {signModalError}
+            </Alert>
+          )}
           <TextField
             label="Reviewer Name"
+            required
             value={reviewerName}
             onChange={(e) => setReviewerName(e.target.value)}
             fullWidth
             sx={fieldSx}
           />
           <TextField
-            label="Digital Signature"
-            placeholder="Type your name to sign"
+            label="Digital Signature — type your full name to confirm"
+            required
             value={digitalSignature}
             onChange={(e) => setDigitalSignature(e.target.value)}
             fullWidth
@@ -176,30 +197,60 @@ export default function GeoTracker() {
           </Button>
           <Button
             variant="contained"
-            disabled={Boolean(actingId) || !reviewerName.trim() || !digitalSignature.trim()}
+            disabled={Boolean(actingId)}
             onClick={() => void confirmApprove()}
             sx={{ backgroundColor: "#ff5c5c", textTransform: "none", "&:hover": { backgroundColor: "#ff3b3b" } }}
           >
-            Confirm approval
+            Confirm Approval
           </Button>
         </DialogActions>
       </Dialog>
 
-      <Box sx={{ mb: 3 }}>
+      {showOutbreakBanner && outbreak && (
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 1,
+            backgroundColor: "#e11d48",
+            color: "#fff",
+            p: 2,
+            borderRadius: 2,
+            mb: 2,
+            mx: 0,
+          }}
+        >
+          <Typography sx={{ flex: 1, fontWeight: 600, fontSize: "0.95rem", lineHeight: 1.45 }}>
+            Warning — Outbreak alert: {outbreak.outbreak_level} activity detected across Houston hospitals.{" "}
+            {outbreak.total_approved_abnormal} confirmed abnormal case
+            {outbreak.total_approved_abnormal === 1 ? "" : "s"} exceed expected threshold.
+          </Typography>
+          <IconButton
+            size="small"
+            onClick={() => setOutbreakBannerDismissed(true)}
+            sx={{ color: "#fff", mt: -0.5 }}
+            aria-label="Dismiss outbreak alert"
+          >
+            <CloseIcon fontSize="small" />
+          </IconButton>
+        </Box>
+      )}
+
+      <Box sx={{ mb: 4, mx: 0 }}>
         <Typography sx={{ fontSize: "1.7rem", fontWeight: 800, letterSpacing: "0.02em" }}>Geo Tracker</Typography>
         <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 0.5 }}>
-          Hospital-level abnormal case load, pending review queue, and a prototype outbreak analytics layer (below)
+          Hospital-level abnormal case load, pending review queue, and prototype outbreak analytics (below).
         </Typography>
       </Box>
 
       {loading && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
+        <Box sx={{ display: "flex", justifyContent: "center", py: 6, mx: 0 }}>
           <CircularProgress sx={{ color: "#ff5c5c" }} />
         </Box>
       )}
 
       {!loading && error && (
-        <Alert severity="error" sx={{ mb: 2, backgroundColor: "rgba(239,68,68,0.12)", color: "#fff" }}>
+        <Alert severity="error" sx={{ mb: 4, mx: 0, backgroundColor: "rgba(239,68,68,0.12)", color: "#fff" }}>
           {error}
         </Alert>
       )}
@@ -208,10 +259,69 @@ export default function GeoTracker() {
         <>
           <Box
             sx={{
+              mb: 4,
+              mx: 0,
+              borderRadius: 3,
+              overflow: "hidden",
+              height: 400,
+              width: "100%",
+              border: "1px solid rgba(255,255,255,0.08)",
+            }}
+          >
+            <MapContainer center={[29.7604, -95.3698]} zoom={11} style={{ height: "100%", width: "100%" }}>
+              <TileLayer
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
+              {geo.hospitals.map((h) => {
+                const isHot = Boolean(outbreak?.hotspot_hospitals?.includes(h.hospitalId));
+                const col = h.severityColor;
+                return (
+                  <Fragment key={h.hospitalId}>
+                    {isHot && (
+                      <CircleMarker
+                        center={[h.latitude, h.longitude]}
+                        radius={28}
+                        pathOptions={{
+                          color: col,
+                          fillColor: col,
+                          fillOpacity: 0.3,
+                          weight: 0,
+                        }}
+                      />
+                    )}
+                    <CircleMarker
+                      center={[h.latitude, h.longitude]}
+                      radius={isHot ? 22 : 14}
+                      pathOptions={{
+                        color: col,
+                        fillColor: col,
+                        fillOpacity: isHot ? 1 : 0.85,
+                      }}
+                    >
+                      <Popup>
+                        <strong>{h.name}</strong>
+                        <br />
+                        Pending: {h.pendingCount}
+                        <br />
+                        Approved Abnormal: {h.approvedAbnormalCount}
+                        <br />
+                        Status: {severityLabel(h.severityColor)}
+                      </Popup>
+                    </CircleMarker>
+                  </Fragment>
+                );
+              })}
+            </MapContainer>
+          </Box>
+
+          <Box
+            sx={{
               display: "grid",
               gridTemplateColumns: { xs: "1fr", md: "repeat(2, 1fr)" },
-              gap: 2,
-              mb: 3,
+              gap: 3,
+              mb: 4,
+              mx: 0,
             }}
           >
             <Card
@@ -246,49 +356,11 @@ export default function GeoTracker() {
 
           <Box
             sx={{
-              mb: 4,
-              borderRadius: 3,
-              overflow: "hidden",
-              height: 400,
-              border: "1px solid rgba(255,255,255,0.08)",
-            }}
-          >
-            <MapContainer center={[29.7604, -95.3698]} zoom={11} style={{ height: "100%", width: "100%" }}>
-              <TileLayer
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              />
-              {geo.hospitals.map((h) => (
-                <CircleMarker
-                  key={h.hospitalId}
-                  center={[h.latitude, h.longitude]}
-                  radius={14}
-                  pathOptions={{
-                    color: h.severityColor,
-                    fillColor: h.severityColor,
-                    fillOpacity: 0.85,
-                  }}
-                >
-                  <Popup>
-                    <strong>{h.name}</strong>
-                    <br />
-                    Pending: {h.pendingCount}
-                    <br />
-                    Approved Abnormal: {h.approvedAbnormalCount}
-                    <br />
-                    Status: {severityLabel(h.severityColor)}
-                  </Popup>
-                </CircleMarker>
-              ))}
-            </MapContainer>
-          </Box>
-
-          <Box
-            sx={{
               display: "grid",
               gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", md: "repeat(3, 1fr)" },
-              gap: 2,
+              gap: 3,
               mb: 4,
+              mx: 0,
             }}
           >
             {geo.hospitals.map((h) => (
@@ -336,7 +408,7 @@ export default function GeoTracker() {
             ))}
           </Box>
 
-          <Typography sx={{ fontWeight: 800, mb: 1.5, color: "#fff" }}>Pending cases</Typography>
+          <Typography sx={{ fontWeight: 800, mb: 1.5, color: "#fff", mx: 0 }}>Pending cases</Typography>
           <TableContainer
             component={Paper}
             sx={{
@@ -344,7 +416,8 @@ export default function GeoTracker() {
               border: "1px solid rgba(255,255,255,0.08)",
               borderRadius: 3,
               overflow: "hidden",
-              mb: 2,
+              mb: 4,
+              mx: 0,
             }}
           >
             <Table>
@@ -414,7 +487,40 @@ export default function GeoTracker() {
             </Table>
           </TableContainer>
 
-          <OutbreakAnalyticsSection />
+          <Divider
+            sx={{
+              borderColor: "rgba(255,255,255,0.12)",
+              mb: 4,
+              mx: 0,
+              "&::before, &::after": { borderColor: "rgba(255,255,255,0.12)" },
+            }}
+            textAlign="center"
+          >
+            <Typography sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700, px: 1, fontSize: "0.9rem" }}>
+              Outbreak Analytics (Prototype)
+            </Typography>
+          </Divider>
+
+          <Card
+            sx={{
+              backgroundColor: "rgba(0,0,0,0.30)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              borderRadius: 3,
+              p: 3,
+              mt: 4,
+              mb: 4,
+              mx: 0,
+              boxShadow: "0 12px 30px rgba(0,0,0,0.35)",
+            }}
+          >
+            <Typography sx={{ fontWeight: 800, fontSize: "1.25rem", mb: 1, color: "#fff" }}>
+              Outbreak Analytics
+            </Typography>
+            <Typography sx={{ color: "rgba(255,255,255,0.6)", mb: 3, fontSize: "0.9rem" }}>
+              Exploratory trend data — prototype, not confirmed outbreak detection.
+            </Typography>
+            <OutbreakAnalyticsSection outbreak={outbreak} />
+          </Card>
         </>
       )}
     </Box>
