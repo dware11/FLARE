@@ -977,8 +977,8 @@ def api_fusion_predict():
         except Exception as ex:
             return jsonify({"error": f"MRI inference failed: {ex}"}), 500
 
-    CT_WEIGHT  = 0.6
-    MRI_WEIGHT = 0.4
+    CT_WEIGHT  = 0.4
+    MRI_WEIGHT = 0.6
 
     if ct_prob is not None and mri_prob is not None:
         fusion_score = (ct_prob * CT_WEIGHT) + (mri_prob * MRI_WEIGHT)
