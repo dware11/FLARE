@@ -547,6 +547,90 @@ def api_mri_predict():
     return jsonify(out), status
 
 
+def _ct_cam_static_dir() -> str:
+    """Grad-CAM PNGs under Flask static for /static/cam/*.png."""
+    d = os.path.join(os.path.dirname(__file__), "static", "cam")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+@app.route("/api/ct/predict", methods=["POST"])
+@limiter.limit("20 per minute")
+def api_ct_predict():
+    """CT prediction from uploaded NPZ file."""
+    patient_id = request.form.get("patient_id")
+    hospital_id = request.form.get("hospitalId") or "H001"
+    first_name = request.form.get("first_name")
+    last_name = request.form.get("last_name")
+    dob = request.form.get("dob")
+
+    if not patient_id:
+        return jsonify({"error": "Missing patient_id"}), 400
+    if not hospital_exists(hospital_id):
+        return jsonify({"error": "Invalid hospitalId"}), 400
+
+    ct_file = request.files.get("file")
+    if not ct_file:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    ok, msg = _validate_upload(ct_file)
+    if not ok:
+        return jsonify({"error": msg, "code": "INVALID_FILE"}), 400
+
+    fname = (ct_file.filename or "").lower()
+    if not fname.endswith(".npz"):
+        return jsonify({"error": "CT inference requires a .npz volume file"}), 400
+
+    try:
+        ct_path = _save_upload(ct_file, patient_id, prefix="ct")
+        from ml.brain.ct.infer import run_ct_from_npz
+
+        CT_CKPT = os.environ.get(
+            "FLARE_CT_CHECKPOINT",
+            "/scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt",
+        )
+        cam_dir = _ct_cam_static_dir()
+        ct_result = run_ct_from_npz(
+            ct_path,
+            checkpoint=CT_CKPT,
+            cam_dir=cam_dir,
+            threshold=0.488,
+        )
+        if not ct_result:
+            return jsonify({"error": "CT inference failed — check NPZ file"}), 500
+
+        is_abnormal = ct_result["label"] == "abnormal"
+        site = HOSPITAL_REGISTRY[hospital_id]
+
+        stem = Path(ct_path).stem
+        cam_disk = os.path.join(cam_dir, f"{stem}.png")
+        cam_url = (
+            _absolute_url_for_path(f"/static/cam/{stem}.png")
+            if ct_result.get("cam_path") and os.path.isfile(cam_disk)
+            else None
+        )
+
+        return (
+            jsonify(
+                {
+                    "patient_id": patient_id,
+                    "modality": "brain_ct",
+                    "pred_label": ct_result["label"],
+                    "result_class": "Abnormal" if is_abnormal else "Normal",
+                    "confidence": ct_result["confidence"],
+                    "p_normal": ct_result["p_normal"],
+                    "p_abnormal": ct_result["p_abnormal"],
+                    "cam_url": cam_url,
+                    "hospitalId": hospital_id,
+                    "hospitalName": site["name"],
+                }
+            ),
+            200,
+        )
+    except Exception as ex:
+        return jsonify({"error": f"CT inference failed: {ex}"}), 500
+
+
 @app.route("/predict", methods=["POST"])
 def legacy_flare_predict():
     """
@@ -950,12 +1034,17 @@ def api_fusion_predict():
     if ct_file is not None:
         try:
             ct_path = _save_upload(ct_file, patient_id, prefix="ct")
-            from ml.brain.ct.infer import run_ct_for_patient
-            CT_CKPT = "/scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt"
-            ct_result = run_ct_for_patient(
-                patient_id,
+            from ml.brain.ct.infer import run_ct_from_npz
+
+            CT_CKPT = os.environ.get(
+                "FLARE_CT_CHECKPOINT",
+                "/scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt",
+            )
+            cam_dir_fusion = _ct_cam_static_dir()
+            ct_result = run_ct_from_npz(
+                ct_path,
                 checkpoint=CT_CKPT,
-                cam_dir="backend/cam",
+                cam_dir=cam_dir_fusion,
                 threshold=0.488,
             )
             if ct_result:
