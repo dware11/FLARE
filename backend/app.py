@@ -37,6 +37,34 @@ limiter = Limiter(
     storage_uri="memory://",
 )
 
+
+@app.before_request
+def _preload_models_once():
+    if getattr(_preload_models_once, "_done", False):
+        return
+    _preload_models_once._done = True
+    try:
+        from ml.brain.ct.infer import _load_model
+
+        CT_CKPT = os.environ.get(
+            "FLARE_CT_CHECKPOINT",
+            "/scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt",
+        )
+        ckpt_path = Path(CT_CKPT)
+        if ckpt_path.exists():
+            _load_model(ckpt_path)
+            app.logger.info("CT model preloaded")
+    except Exception as ex:
+        app.logger.warning("CT preload failed: %s", ex)
+    try:
+        from predict_mri import _load_cls_model
+
+        _load_cls_model()
+        app.logger.info("MRI classifier preloaded")
+    except Exception as ex:
+        app.logger.warning("MRI preload failed: %s", ex)
+
+
 _DEV_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -62,32 +90,32 @@ HOSPITAL_REGISTRY: dict[str, dict] = {
     "H001": {
         "id": "H001",
         "name": "Houston Methodist Hospital",
-        "latitude": 29.7079,
-        "longitude": -95.3984,
+        "latitude": 29.7099,
+        "longitude": -95.4022,
     },
     "H002": {
         "id": "H002",
         "name": "Memorial Hermann - Texas Medical Center",
-        "latitude": 29.7041,
-        "longitude": -95.3995,
+        "latitude": 29.7079,
+        "longitude": -95.4022,
     },
     "H003": {
         "id": "H003",
         "name": "Baylor St. Luke's Medical Center",
-        "latitude": 29.7047,
-        "longitude": -95.3981,
+        "latitude": 29.7079,
+        "longitude": -95.3899,
     },
     "H004": {
         "id": "H004",
         "name": "Ben Taub Hospital",
-        "latitude": 29.7136,
-        "longitude": -95.3955,
+        "latitude": 29.7028,
+        "longitude": -95.4022,
     },
     "H005": {
         "id": "H005",
         "name": "Texas Children's Hospital",
-        "latitude": 29.7073,
-        "longitude": -95.4010,
+        "latitude": 29.7062,
+        "longitude": -95.3975,
     },
 }
 
@@ -782,8 +810,6 @@ def reviews_approve(case_id: str):
         return jsonify({"error": "Unknown caseId", "code": "NOT_FOUND"}), 404
 
     body = request.get_json(silent=True) or {}
-    reviewer_id = body.get("reviewerId", "anonymous-reviewer")
-    signature = body.get("signature")
 
     if case["review_status"] == "approved":
         return jsonify({"ok": True, "caseId": case_id, "status": "approved", "note": "already approved"}), 200
@@ -792,11 +818,25 @@ def reviews_approve(case_id: str):
     if case["review_status"] != "pending":
         return jsonify({"error": "Invalid review state", "code": "INVALID_STATE"}), 400
 
+    reviewer_name = (body.get("reviewerName") or body.get("reviewer_name") or "").strip()
+    signature_text = (body.get("signature") or body.get("digitalSignature") or "").strip()
+    if not reviewer_name or not signature_text:
+        return (
+            jsonify(
+                {
+                    "error": "Reviewer name and digital signature are required",
+                    "code": "MISSING_SIGNATURE",
+                }
+            ),
+            400,
+        )
+
+    reviewer_id = reviewer_name
     case["review_status"] = "approved"
     case["approvedAt"] = _utc_iso()
     case["reviewerId"] = reviewer_id
-    if signature is not None:
-        case["signature"] = signature
+    case["reviewerName"] = reviewer_name
+    case["signature"] = signature_text
 
     ehr = _ehr_records.get(case_id) 
     if ehr: 
@@ -805,8 +845,7 @@ def reviews_approve(case_id: str):
         ehr["rejectedAt"] = None 
         ehr["reviewerId"] = reviewer_id
         ehr["reject_reason"] = None 
-        if signature is not None:
-            ehr["signature"] = signature
+        ehr["signature"] = signature_text
     return jsonify({"ok": True, "caseId": case_id, "status": "approved"}), 200
 
 

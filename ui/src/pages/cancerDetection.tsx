@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { InputHTMLAttributes } from "react";
 import {
   Box,
@@ -31,6 +31,7 @@ import {
   analyzePatientFolder,
   mriBraTSFolderComplete,
 } from "../utils/scanFolderModality";
+import { useCancerInference } from "../context/CancerInferenceContext";
 
 const HOSPITALS = [
   { id: "H001", name: "Houston Methodist Hospital" },
@@ -97,6 +98,22 @@ const placeholderBoxSx = {
   textAlign: "center" as const,
 };
 
+const resultImgSx = {
+  width: "100%",
+  minHeight: 220,
+  maxHeight: 320,
+  objectFit: "cover" as const,
+  borderRadius: 2,
+  border: "1px solid rgba(255,255,255,0.12)",
+  display: "block",
+};
+
+function formatMmSs(totalSec: number): string {
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 /** NIfTI volumes are binary — no <img> preview; server extracts one slice for BRISC. */
 function isNiftiFile(f: File | null): boolean {
   if (!f) return false;
@@ -123,15 +140,45 @@ function fusionModeLabel(mode: string): string {
     case "ct_mri":
       return "CT + MRI";
     case "ct_only":
-      return "CT only";
+      return "CT Only";
     case "mri_only":
-      return "MRI only";
+      return "MRI Only";
     default:
       return mode;
   }
 }
 
 export default function CancerDetection() {
+  const { stored, patchStored, clearStored } = useCancerInference();
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const analyzeSecondsRef = useRef(0);
+  const [analyzeSeconds, setAnalyzeSeconds] = useState(0);
+  const [completedSeconds, setCompletedSeconds] = useState<number | null>(null);
+
+  const startAnalyzeTimer = useCallback(() => {
+    analyzeSecondsRef.current = 0;
+    setAnalyzeSeconds(0);
+    if (tickRef.current) clearInterval(tickRef.current);
+    tickRef.current = setInterval(() => {
+      analyzeSecondsRef.current += 1;
+      setAnalyzeSeconds(analyzeSecondsRef.current);
+    }, 1000);
+  }, []);
+
+  const stopAnalyzeTimer = useCallback((): number => {
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
+    return analyzeSecondsRef.current;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (tickRef.current) clearInterval(tickRef.current);
+    };
+  }, []);
+
   const [hospitalId, setHospitalId] = useState("H001");
   const [cancerType, setCancerType] = useState<CancerType | "">("");
   const [firstName, setFirstName] = useState("");
@@ -156,6 +203,13 @@ export default function CancerDetection() {
   const [ctScanResult, setCtScanResult] = useState<Record<string, unknown> | null>(null);
   const [fusionScanResult, setFusionScanResult] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    setScanResult(stored.scanResult);
+    setCtScanResult(stored.ctScanResult);
+    setFusionScanResult(stored.fusionScanResult);
+    setCompletedSeconds(stored.completedSeconds);
+  }, [stored]);
 
   useEffect(() => {
     if (brainUploadMode === "folder") {
@@ -267,9 +321,11 @@ export default function CancerDetection() {
 
   async function onRun() {
     setError("");
+    clearStored();
     setScanResult(null);
     setCtScanResult(null);
     setFusionScanResult(null);
+    setCompletedSeconds(null);
     if (!cancerType) return setError("Please select a cancer type.");
 
     if (cancerType === "brain" && brainPipeline === "fusion") {
@@ -280,10 +336,20 @@ export default function CancerDetection() {
         return setError("CT file must be a .npz volume.");
       }
       setLoading(true);
+      startAnalyzeTimer();
       try {
         const r = await predictFusion(fusionCtFile, fusionMriFile, medicalId, hospitalId);
         setFusionScanResult(r);
+        const elapsed = stopAnalyzeTimer();
+        setCompletedSeconds(elapsed);
+        patchStored({
+          fusionScanResult: r,
+          scanResult: null,
+          ctScanResult: null,
+          completedSeconds: elapsed,
+        });
       } catch (e: unknown) {
+        stopAnalyzeTimer();
         setError(e instanceof Error ? e.message : "Something went wrong.");
       } finally {
         setLoading(false);
@@ -296,10 +362,20 @@ export default function CancerDetection() {
         return setError("Brain CT requires a .npz file.");
       }
       setLoading(true);
+      startAnalyzeTimer();
       try {
         const r = await predictCtFile(file, medicalId, hospitalId, firstName, lastName, dob);
         setCtScanResult(r);
+        const elapsed = stopAnalyzeTimer();
+        setCompletedSeconds(elapsed);
+        patchStored({
+          ctScanResult: r,
+          scanResult: null,
+          fusionScanResult: null,
+          completedSeconds: elapsed,
+        });
       } catch (e: unknown) {
+        stopAnalyzeTimer();
         setError(e instanceof Error ? e.message : "Something went wrong.");
       } finally {
         setLoading(false);
@@ -316,6 +392,7 @@ export default function CancerDetection() {
     }
 
     setLoading(true);
+    startAnalyzeTimer();
     try {
       if (cancerType === "brain" && brainUploadMode === "folder") {
         const m = folderAnalysis.mriSequences;
@@ -333,6 +410,14 @@ export default function CancerDetection() {
           medicalId,
         });
         setScanResult(folderOutcome);
+        const elapsed = stopAnalyzeTimer();
+        setCompletedSeconds(elapsed);
+        patchStored({
+          scanResult: folderOutcome,
+          ctScanResult: null,
+          fusionScanResult: null,
+          completedSeconds: elapsed,
+        });
       } else {
         const pred = await predictScan({
           cancerType,
@@ -343,9 +428,19 @@ export default function CancerDetection() {
           dob,
           medicalId,
         });
-        setScanResult({ kind: "legacy", pred });
+        const legacy: CancerScanResult = { kind: "legacy", pred };
+        setScanResult(legacy);
+        const elapsed = stopAnalyzeTimer();
+        setCompletedSeconds(elapsed);
+        patchStored({
+          scanResult: legacy,
+          ctScanResult: null,
+          fusionScanResult: null,
+          completedSeconds: elapsed,
+        });
       }
     } catch (e: unknown) {
+      stopAnalyzeTimer();
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
       setLoading(false);
@@ -453,6 +548,7 @@ export default function CancerDetection() {
               value={dob}
               onChange={(e) => setDob(e.target.value)}
               InputLabelProps={{ shrink: true }}
+              inputProps={{ max: "9999-12-31" }}
               sx={fieldSx}
             />
           </Box>
@@ -879,7 +975,7 @@ export default function CancerDetection() {
                 <Box sx={{ display: "flex", alignItems: "center", gap: 2, mt: 3, justifyContent: "center" }}>
                   <CircularProgress size={28} sx={{ color: "#ff5c5c" }} />
                   <Typography sx={{ color: "rgba(255,255,255,0.85)" }}>
-                    Running AI inference on Delta...
+                    Analyzing... {formatMmSs(analyzeSeconds)}
                   </Typography>
                 </Box>
               )}
@@ -918,174 +1014,163 @@ export default function CancerDetection() {
       {mriV2 && (
         <Card sx={{ ...cardSx, mt: 3 }}>
           <CardContent sx={{ p: 3 }}>
-            <Typography sx={{ fontWeight: 800, fontSize: "1.2rem", mb: 2, color: "#fff" }}>
+            <Typography sx={{ fontWeight: 800, fontSize: "1.2rem", mb: 1, color: "#fff" }}>
               Results — MRI (/api/mri/predict)
             </Typography>
+            {completedSeconds != null && (
+              <Typography sx={{ color: "rgba(255,255,255,0.55)", fontSize: "0.9rem", mb: 2 }}>
+                Completed in {completedSeconds}s
+              </Typography>
+            )}
             <Box
               sx={{
                 display: "grid",
                 gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-                gap: 3,
-                alignItems: "start",
+                gap: 2,
+                mb: 3,
               }}
             >
-              <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                <Typography sx={{ color: "#9bb1ff", fontWeight: 700, fontSize: "0.95rem" }}>
-                  Primary read (MRI + tumor blend)
+              <Box>
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1, fontWeight: 600 }}>
+                  Original Scan
+                </Typography>
+                {mriV2.classification.label.toLowerCase() === "normal" && mriV2.segmentation.original_url && (
+                  <Alert
+                    severity="success"
+                    sx={{
+                      mb: 1,
+                      backgroundColor: "rgba(34,197,94,0.15)",
+                      color: "#86efac",
+                      border: "1px solid rgba(34,197,94,0.35)",
+                      "& .MuiAlert-icon": { color: "#22c55e" },
+                    }}
+                  >
+                    No tumor detected
+                  </Alert>
+                )}
+                {mriV2.segmentation.original_url ? (
+                  <Box component="img" src={mriV2.segmentation.original_url} alt="Original MRI" sx={resultImgSx} />
+                ) : (
+                  <Box sx={{ ...placeholderBoxSx, minHeight: 220 }}>
+                    <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>No original image URL</Typography>
+                  </Box>
+                )}
+              </Box>
+              <Box>
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1, fontWeight: 600 }}>
+                  Segmentation Overlay
                 </Typography>
                 {mriV2.segmentation.overlay_url ? (
                   <Box
                     component="img"
                     src={mriV2.segmentation.overlay_url}
-                    alt="Fusion overlay"
-                    sx={{
-                      maxWidth: "100%",
-                      width: "100%",
-                      borderRadius: 2,
-                      border: "1px solid rgba(255,255,255,0.12)",
-                      display: "block",
-                    }}
+                    alt="Segmentation overlay"
+                    sx={resultImgSx}
                   />
-                ) : mriV2.segmentation.original_url ? (
-                  <Box sx={{ position: "relative" }}>
-                    {mriV2.classification.label.toLowerCase() === "normal" && (
-                      <Alert
-                        severity="success"
-                        sx={{
-                          mb: 1,
-                          backgroundColor: "rgba(34,197,94,0.15)",
-                          color: "#86efac",
-                          border: "1px solid rgba(34,197,94,0.35)",
-                          "& .MuiAlert-icon": { color: "#22c55e" },
-                        }}
-                      >
-                        No tumor detected
-                      </Alert>
-                    )}
-                    <Box
-                      component="img"
-                      src={mriV2.segmentation.original_url}
-                      alt="Original MRI"
-                      sx={{
-                        maxWidth: "100%",
-                        width: "100%",
-                        borderRadius: 2,
-                        border: "1px solid rgba(255,255,255,0.12)",
-                        display: "block",
-                      }}
-                    />
-                  </Box>
                 ) : (
-                  <Box sx={placeholderBoxSx}>
-                    <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>No image URL in response</Typography>
-                  </Box>
-                )}
-
-                {mriV2.segmentation.mask_url && (
-                  <Box sx={{ mt: 1 }}>
-                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.75, fontSize: "0.85rem" }}>
-                      Tumor Mask
-                    </Typography>
-                    <Box
-                      component="img"
-                      src={mriV2.segmentation.mask_url}
-                      alt="Tumor mask"
-                      sx={{
-                        maxWidth: 200,
-                        width: "100%",
-                        borderRadius: 1,
-                        border: "1px solid rgba(255,255,255,0.12)",
-                        display: "block",
-                      }}
-                    />
+                  <Box sx={{ ...placeholderBoxSx, minHeight: 220 }}>
+                    <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>No overlay in response</Typography>
                   </Box>
                 )}
               </Box>
+            </Box>
 
-              <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                {showGeoWarning && (
-                  <Alert
-                    severity="warning"
-                    sx={{
-                      backgroundColor: "rgba(234,179,8,0.12)",
-                      color: "#fff",
-                      border: "1px solid rgba(234,179,8,0.35)",
-                      "& .MuiAlert-icon": { color: "#eab308" },
-                    }}
-                  >
-                    Case submitted to Geo Tracker — pending radiologist review
-                  </Alert>
-                )}
-
+            {mriV2.segmentation.mask_url && (
+              <Box sx={{ mb: 2 }}>
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.75, fontSize: "0.85rem" }}>
+                  Tumor Mask
+                </Typography>
                 <Box
+                  component="img"
+                  src={mriV2.segmentation.mask_url}
+                  alt="Tumor mask"
+                  sx={{ maxWidth: 200, borderRadius: 1, border: "1px solid rgba(255,255,255,0.12)" }}
+                />
+              </Box>
+            )}
+
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 2, maxWidth: 560 }}>
+              {showGeoWarning && (
+                <Alert
+                  severity="warning"
                   sx={{
-                    p: 2.5,
-                    borderRadius: 2,
-                    backgroundColor: theme.bg,
-                    border: `1px solid ${theme.border}`,
-                    textAlign: "center",
+                    backgroundColor: "rgba(234,179,8,0.12)",
+                    color: "#fff",
+                    border: "1px solid rgba(234,179,8,0.35)",
+                    "& .MuiAlert-icon": { color: "#eab308" },
                   }}
                 >
-                  <Typography
-                    sx={{
-                      fontSize: "2rem",
-                      fontWeight: 900,
-                      color:
-                        mriV2.classification.label.toLowerCase() === "abnormal" ? "#f87171" : "#86efac",
-                    }}
-                  >
-                    {mriV2.classification.label}
-                  </Typography>
-                </Box>
+                  Case submitted to Geo Tracker — pending radiologist review
+                </Alert>
+              )}
 
-                <Box>
-                  <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>Confidence</Typography>
-                  <Typography sx={{ fontSize: "1.75rem", fontWeight: 800, color: theme.text, mb: 1 }}>
-                    {(mriV2.classification.confidence * 100).toFixed(1)}%
-                  </Typography>
-                  <LinearProgress
-                    variant="determinate"
-                    value={Math.min(100, Math.max(0, mriV2.classification.confidence * 100))}
-                    sx={{
-                      height: 10,
-                      borderRadius: 1,
-                      backgroundColor: "rgba(255,255,255,0.08)",
-                      "& .MuiLinearProgress-bar": {
-                        backgroundColor: theme.bar,
-                        borderRadius: 1,
-                      },
-                    }}
-                  />
-                </Box>
-
-                {(mriV2.segmentation.tumor_pixel_count != null || mriV2.classification.tumor_px != null) && (
-                  <Typography sx={{ color: "rgba(255,255,255,0.8)", fontSize: "0.95rem" }}>
-                    Affected area:{" "}
-                    <b style={{ color: "#fca5a5" }}>
-                      {(mriV2.segmentation.tumor_pixel_count ?? mriV2.classification.tumor_px)?.toLocaleString()} px
-                    </b>
-                  </Typography>
-                )}
-
-                <Card sx={{ ...cardSx, boxShadow: "none" }}>
-                  <CardContent sx={{ p: 2, "&:last-child": { pb: 2 } }}>
-                    <Typography sx={{ fontWeight: 700, mb: 1, color: "#9bb1ff", fontSize: "0.95rem" }}>
-                      Patient summary
-                    </Typography>
-                    <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: "0.88rem", lineHeight: 1.7 }}>
-                      <b style={{ color: "rgba(255,255,255,0.5)" }}>Name:</b> {firstName} {lastName}
-                      <br />
-                      <b style={{ color: "rgba(255,255,255,0.5)" }}>Medical ID:</b> {medicalId}
-                      <br />
-                      <b style={{ color: "rgba(255,255,255,0.5)" }}>Hospital:</b> {hospitalName(hospitalId)}
-                      <br />
-                      <b style={{ color: "rgba(255,255,255,0.5)" }}>DOB:</b> {dob}
-                      <br />
-                      <b style={{ color: "rgba(255,255,255,0.5)" }}>Scan date:</b> {scanDateToday}
-                    </Typography>
-                  </CardContent>
-                </Card>
+              <Box
+                sx={{
+                  p: 2.5,
+                  borderRadius: 2,
+                  backgroundColor: theme.bg,
+                  border: `1px solid ${theme.border}`,
+                  textAlign: "center",
+                }}
+              >
+                <Typography
+                  sx={{
+                    fontSize: "2rem",
+                    fontWeight: 900,
+                    color: mriV2.classification.label.toLowerCase() === "abnormal" ? "#f87171" : "#86efac",
+                  }}
+                >
+                  {mriV2.classification.label}
+                </Typography>
               </Box>
+
+              <Box>
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>Confidence</Typography>
+                <Typography sx={{ fontSize: "1.75rem", fontWeight: 800, color: theme.text, mb: 1 }}>
+                  {(mriV2.classification.confidence * 100).toFixed(1)}%
+                </Typography>
+                <LinearProgress
+                  variant="determinate"
+                  value={Math.min(100, Math.max(0, mriV2.classification.confidence * 100))}
+                  sx={{
+                    height: 10,
+                    borderRadius: 1,
+                    backgroundColor: "rgba(255,255,255,0.08)",
+                    "& .MuiLinearProgress-bar": {
+                      backgroundColor: theme.bar,
+                      borderRadius: 1,
+                    },
+                  }}
+                />
+              </Box>
+
+              {(mriV2.segmentation.tumor_pixel_count != null || mriV2.classification.tumor_px != null) && (
+                <Typography sx={{ color: "rgba(255,255,255,0.8)", fontSize: "0.95rem" }}>
+                  Affected area:{" "}
+                  <b style={{ color: "#fca5a5" }}>
+                    {(mriV2.segmentation.tumor_pixel_count ?? mriV2.classification.tumor_px)?.toLocaleString()} px
+                  </b>
+                </Typography>
+              )}
+
+              <Card sx={{ ...cardSx, boxShadow: "none" }}>
+                <CardContent sx={{ p: 2, "&:last-child": { pb: 2 } }}>
+                  <Typography sx={{ fontWeight: 700, mb: 1, color: "#9bb1ff", fontSize: "0.95rem" }}>
+                    Patient summary
+                  </Typography>
+                  <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: "0.88rem", lineHeight: 1.7 }}>
+                    <b style={{ color: "rgba(255,255,255,0.5)" }}>Name:</b> {firstName} {lastName}
+                    <br />
+                    <b style={{ color: "rgba(255,255,255,0.5)" }}>Medical ID:</b> {medicalId}
+                    <br />
+                    <b style={{ color: "rgba(255,255,255,0.5)" }}>Hospital:</b> {hospitalName(hospitalId)}
+                    <br />
+                    <b style={{ color: "rgba(255,255,255,0.5)" }}>DOB:</b> {dob}
+                    <br />
+                    <b style={{ color: "rgba(255,255,255,0.5)" }}>Scan date:</b> {scanDateToday}
+                  </Typography>
+                </CardContent>
+              </Card>
             </Box>
           </CardContent>
         </Card>
@@ -1094,78 +1179,56 @@ export default function CancerDetection() {
       {predLegacy && (
         <Card sx={{ ...cardSx, mt: 3 }}>
           <CardContent sx={{ p: 3 }}>
-            <Typography sx={{ fontWeight: 800, fontSize: "1.2rem", mb: 2, color: "#fff" }}>
+            <Typography sx={{ fontWeight: 800, fontSize: "1.2rem", mb: 1, color: "#fff" }}>
               Results
             </Typography>
+            {completedSeconds != null && (
+              <Typography sx={{ color: "rgba(255,255,255,0.55)", fontSize: "0.9rem", mb: 2 }}>
+                Completed in {completedSeconds}s
+              </Typography>
+            )}
             <Box
               sx={{
                 display: "grid",
                 gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-                gap: 3,
-                alignItems: "start",
+                gap: 2,
+                mb: 3,
               }}
             >
-              <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                <Box>
-                  <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1 }}>Original Scan</Typography>
-                  {imagePreviewUrl ? (
-                    <Box
-                      component="img"
-                      src={imagePreviewUrl}
-                      alt="Original"
-                      sx={{
-                        maxWidth: 400,
-                        width: "100%",
-                        borderRadius: 2,
-                        border: "1px solid rgba(255,255,255,0.12)",
-                        display: "block",
-                      }}
-                    />
-                  ) : (
-                    <Box sx={placeholderBoxSx}>
-                      <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>No scan loaded</Typography>
-                    </Box>
-                  )}
-                </Box>
-
-                <Box>
-                  <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1 }}>Segmentation Overlay</Typography>
-                  {predLegacy.localization_url ? (
-                    <Box
-                      component="img"
-                      src={predLegacy.localization_url}
-                      alt="Segmentation"
-                      sx={{
-                        maxWidth: 400,
-                        width: "100%",
-                        borderRadius: 2,
-                        border: "1px solid rgba(255,255,255,0.12)",
-                        display: "block",
-                      }}
-                    />
-                  ) : (
-                    <Box sx={placeholderBoxSx}>
-                      <Typography sx={{ color: "rgba(255,255,255,0.55)" }}>
-                        Segmentation overlay not available for this result
-                      </Typography>
-                    </Box>
-                  )}
-                </Box>
-
-                <Box>
-                  <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1 }}>Grad-CAM</Typography>
-                  <Box sx={placeholderBoxSx}>
+              <Box>
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1, fontWeight: 600 }}>
+                  Original Scan
+                </Typography>
+                {imagePreviewUrl ? (
+                  <Box component="img" src={imagePreviewUrl} alt="Original" sx={resultImgSx} />
+                ) : (
+                  <Box sx={{ ...placeholderBoxSx, minHeight: 220 }}>
+                    <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>No scan loaded</Typography>
+                  </Box>
+                )}
+              </Box>
+              <Box>
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1, fontWeight: 600 }}>
+                  Segmentation Overlay
+                </Typography>
+                {predLegacy.localization_url ? (
+                  <Box
+                    component="img"
+                    src={predLegacy.localization_url}
+                    alt="Segmentation"
+                    sx={resultImgSx}
+                  />
+                ) : (
+                  <Box sx={{ ...placeholderBoxSx, minHeight: 220 }}>
                     <Typography sx={{ color: "rgba(255,255,255,0.55)" }}>
-                      Grad-CAM visualization — coming soon
-                    </Typography>
-                    <Typography sx={{ color: "rgba(255,255,255,0.4)", fontSize: "0.8rem", mt: 1 }}>
-                      Will highlight regions most influential to the AI decision
+                      Segmentation overlay not available for this result
                     </Typography>
                   </Box>
-                </Box>
+                )}
               </Box>
+            </Box>
 
-              <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 2, maxWidth: 560 }}>
                 {showGeoWarning && (
                   <Alert
                     severity="warning"
@@ -1265,7 +1328,6 @@ export default function CancerDetection() {
                     </Typography>
                   </CardContent>
                 </Card>
-              </Box>
             </Box>
           </CardContent>
         </Card>
@@ -1274,96 +1336,111 @@ export default function CancerDetection() {
       {ctScanResult && (
         <Card sx={{ ...cardSx, mt: 3 }}>
           <CardContent sx={{ p: 3 }}>
-            <Typography sx={{ fontWeight: 800, fontSize: "1.2rem", mb: 2, color: "#fff" }}>
+            <Typography sx={{ fontWeight: 800, fontSize: "1.2rem", mb: 1, color: "#fff" }}>
               Results — CT (/api/ct/predict)
             </Typography>
+            {completedSeconds != null && (
+              <Typography sx={{ color: "rgba(255,255,255,0.55)", fontSize: "0.9rem", mb: 2 }}>
+                Completed in {completedSeconds}s
+              </Typography>
+            )}
             <Box
               sx={{
                 display: "grid",
                 gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-                gap: 3,
-                alignItems: "start",
+                gap: 2,
+                mb: 3,
               }}
             >
-              <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                {absolutizeStaticUrl(ctScanResult.cam_url as string | null | undefined) ? (
-                  <Box>
-                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1 }}>Grad-CAM</Typography>
-                    <Box
-                      component="img"
-                      src={absolutizeStaticUrl(ctScanResult.cam_url as string) ?? ""}
-                      alt="CT Grad-CAM"
-                      sx={{
-                        maxWidth: "100%",
-                        width: "100%",
-                        borderRadius: 2,
-                        border: "1px solid rgba(255,255,255,0.12)",
-                      }}
-                    />
-                  </Box>
+              <Box>
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1, fontWeight: 600 }}>
+                  Original Scan
+                </Typography>
+                {imagePreviewUrl ? (
+                  <Box component="img" src={imagePreviewUrl} alt="CT input" sx={resultImgSx} />
                 ) : (
-                  <Box sx={placeholderBoxSx}>
+                  <Box sx={{ ...placeholderBoxSx, minHeight: 220 }}>
+                    <Typography sx={{ color: "rgba(255,255,255,0.55)", textAlign: "center" }}>
+                      CT volume (.npz) — no raster preview in browser
+                    </Typography>
+                  </Box>
+                )}
+              </Box>
+              <Box>
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1, fontWeight: 600 }}>
+                  Grad-CAM
+                </Typography>
+                {absolutizeStaticUrl(ctScanResult.cam_url as string | null | undefined) ? (
+                  <Box
+                    component="img"
+                    src={absolutizeStaticUrl(ctScanResult.cam_url as string) ?? ""}
+                    alt="CT Grad-CAM"
+                    sx={resultImgSx}
+                  />
+                ) : (
+                  <Box sx={{ ...placeholderBoxSx, minHeight: 220 }}>
                     <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>No Grad-CAM in response</Typography>
                   </Box>
                 )}
               </Box>
-              <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                <Box
+            </Box>
+
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 2, maxWidth: 560 }}>
+              <Box
+                sx={{
+                  p: 2.5,
+                  borderRadius: 2,
+                  backgroundColor: predictionTheme(
+                    String(ctScanResult.result_class) === "Abnormal" ? "Malignant" : "Normal"
+                  ).bg,
+                  border: `1px solid ${predictionTheme(String(ctScanResult.result_class) === "Abnormal" ? "Malignant" : "Normal").border}`,
+                  textAlign: "center",
+                }}
+              >
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: "0.85rem", mb: 0.5 }}>
+                  Prediction
+                </Typography>
+                <Typography
                   sx={{
-                    p: 2.5,
-                    borderRadius: 2,
-                    backgroundColor: predictionTheme(
-                      String(ctScanResult.result_class) === "Abnormal" ? "Malignant" : "Normal"
-                    ).bg,
-                    border: `1px solid ${predictionTheme(String(ctScanResult.result_class) === "Abnormal" ? "Malignant" : "Normal").border}`,
-                    textAlign: "center",
+                    fontSize: "1.75rem",
+                    fontWeight: 900,
+                    color: predictionTheme(String(ctScanResult.result_class) === "Abnormal" ? "Malignant" : "Normal").text,
+                    textTransform: "capitalize",
                   }}
                 >
-                  <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: "0.85rem", mb: 0.5 }}>
-                    pred_label
-                  </Typography>
-                  <Typography
-                    sx={{
-                      fontSize: "1.75rem",
-                      fontWeight: 900,
-                      color: predictionTheme(String(ctScanResult.result_class) === "Abnormal" ? "Malignant" : "Normal").text,
-                      textTransform: "capitalize",
-                    }}
-                  >
-                    {String(ctScanResult.pred_label ?? "")}
-                  </Typography>
-                </Box>
-                <Box>
-                  <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>Confidence</Typography>
-                  <Typography
-                    sx={{
-                      fontSize: "1.5rem",
-                      fontWeight: 800,
-                      color: predictionTheme(String(ctScanResult.result_class) === "Abnormal" ? "Malignant" : "Normal").text,
-                      mb: 1,
-                    }}
-                  >
-                    {(Number(ctScanResult.confidence ?? 0) * 100).toFixed(1)}%
-                  </Typography>
-                  <LinearProgress
-                    variant="determinate"
-                    value={Math.min(100, Math.max(0, Number(ctScanResult.confidence ?? 0) * 100))}
-                    sx={{
-                      height: 10,
-                      borderRadius: 1,
-                      backgroundColor: "rgba(255,255,255,0.08)",
-                      "& .MuiLinearProgress-bar": {
-                        backgroundColor: predictionTheme(String(ctScanResult.result_class) === "Abnormal" ? "Malignant" : "Normal").bar,
-                        borderRadius: 1,
-                      },
-                    }}
-                  />
-                </Box>
-                <Typography sx={{ color: "rgba(255,255,255,0.55)", fontSize: "0.85rem" }}>
-                  p_normal: {Number(ctScanResult.p_normal ?? 0).toFixed(4)} · p_abnormal:{" "}
-                  {Number(ctScanResult.p_abnormal ?? 0).toFixed(4)}
+                  {String(ctScanResult.pred_label ?? "")}
                 </Typography>
               </Box>
+              <Box>
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>Confidence</Typography>
+                <Typography
+                  sx={{
+                    fontSize: "1.5rem",
+                    fontWeight: 800,
+                    color: predictionTheme(String(ctScanResult.result_class) === "Abnormal" ? "Malignant" : "Normal").text,
+                    mb: 1,
+                  }}
+                >
+                  {(Number(ctScanResult.confidence ?? 0) * 100).toFixed(1)}%
+                </Typography>
+                <LinearProgress
+                  variant="determinate"
+                  value={Math.min(100, Math.max(0, Number(ctScanResult.confidence ?? 0) * 100))}
+                  sx={{
+                    height: 10,
+                    borderRadius: 1,
+                    backgroundColor: "rgba(255,255,255,0.08)",
+                    "& .MuiLinearProgress-bar": {
+                      backgroundColor: predictionTheme(String(ctScanResult.result_class) === "Abnormal" ? "Malignant" : "Normal").bar,
+                      borderRadius: 1,
+                    },
+                  }}
+                />
+              </Box>
+              <Typography sx={{ color: "rgba(255,255,255,0.55)", fontSize: "0.85rem" }}>
+                p_normal: {Number(ctScanResult.p_normal ?? 0).toFixed(4)} · p_abnormal:{" "}
+                {Number(ctScanResult.p_abnormal ?? 0).toFixed(4)}
+              </Typography>
             </Box>
           </CardContent>
         </Card>
@@ -1372,20 +1449,59 @@ export default function CancerDetection() {
       {fusionScanResult && (
         <Card sx={{ ...cardSx, mt: 3 }}>
           <CardContent sx={{ p: 3 }}>
-            <Typography sx={{ fontWeight: 800, fontSize: "1.2rem", mb: 2, color: "#fff" }}>
-              Results — Fusion (/api/fusion/predict)
-            </Typography>
-            <Chip
-              label={fusionModeLabel(String(fusionScanResult.fusion_mode ?? ""))}
-              sx={{
-                mb: 2,
-                fontWeight: 700,
-                backgroundColor: "rgba(155,177,255,0.2)",
-                color: "#e2e8f0",
-                border: "1px solid rgba(255,255,255,0.12)",
-              }}
-            />
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <Box sx={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 1.5, mb: 1 }}>
+              <Typography sx={{ fontWeight: 800, fontSize: "1.2rem", color: "#fff", flex: "1 1 auto" }}>
+                Results — Fusion (/api/fusion/predict)
+              </Typography>
+              <Chip
+                size="small"
+                label={fusionModeLabel(String(fusionScanResult.fusion_mode ?? ""))}
+                sx={{
+                  fontWeight: 700,
+                  backgroundColor: "rgba(155,177,255,0.2)",
+                  color: "#e2e8f0",
+                  border: "1px solid rgba(255,255,255,0.12)",
+                }}
+              />
+            </Box>
+            {completedSeconds != null && (
+              <Typography sx={{ color: "rgba(255,255,255,0.55)", fontSize: "0.9rem", mb: 2 }}>
+                Completed in {completedSeconds}s
+              </Typography>
+            )}
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
+              <Box sx={{ textAlign: "center", py: 1 }}>
+                <Typography sx={{ color: "rgba(255,255,255,0.6)", fontSize: "0.9rem", mb: 0.5, fontWeight: 600 }}>
+                  Fusion score
+                </Typography>
+                <Typography
+                  sx={{
+                    fontSize: { xs: "2.75rem", sm: "3.25rem" },
+                    fontWeight: 900,
+                    lineHeight: 1.1,
+                    color: predictionTheme(String(fusionScanResult.pred_label) === "Abnormal" ? "Malignant" : "Normal").text,
+                  }}
+                >
+                  {(Number(fusionScanResult.fusion_score ?? 0) * 100).toFixed(1)}%
+                </Typography>
+                <LinearProgress
+                  variant="determinate"
+                  value={Math.min(100, Math.max(0, Number(fusionScanResult.fusion_score ?? 0) * 100))}
+                  sx={{
+                    mt: 1.5,
+                    maxWidth: 480,
+                    mx: "auto",
+                    height: 12,
+                    borderRadius: 1,
+                    backgroundColor: "rgba(255,255,255,0.08)",
+                    "& .MuiLinearProgress-bar": {
+                      backgroundColor: predictionTheme(String(fusionScanResult.pred_label) === "Abnormal" ? "Malignant" : "Normal").bar,
+                      borderRadius: 1,
+                    },
+                  }}
+                />
+              </Box>
+
               <Box
                 sx={{
                   p: 2.5,
@@ -1398,7 +1514,7 @@ export default function CancerDetection() {
                 }}
               >
                 <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: "0.85rem", mb: 0.5 }}>
-                  pred_label
+                  Prediction
                 </Typography>
                 <Typography
                   sx={{
@@ -1410,66 +1526,41 @@ export default function CancerDetection() {
                   {String(fusionScanResult.pred_label ?? "")}
                 </Typography>
               </Box>
+
               <Box>
-                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>Fusion score (confidence)</Typography>
-                <Typography
-                  sx={{
-                    fontSize: "1.75rem",
-                    fontWeight: 800,
-                    color: predictionTheme(String(fusionScanResult.pred_label) === "Abnormal" ? "Malignant" : "Normal").text,
-                    mb: 1,
-                  }}
-                >
-                  {(Number(fusionScanResult.fusion_score ?? 0) * 100).toFixed(1)}%
-                </Typography>
-                <LinearProgress
-                  variant="determinate"
-                  value={Math.min(100, Math.max(0, Number(fusionScanResult.fusion_score ?? 0) * 100))}
-                  sx={{
-                    height: 12,
-                    borderRadius: 1,
-                    backgroundColor: "rgba(255,255,255,0.08)",
-                    "& .MuiLinearProgress-bar": {
-                      backgroundColor: predictionTheme(String(fusionScanResult.pred_label) === "Abnormal" ? "Malignant" : "Normal").bar,
-                      borderRadius: 1,
-                    },
-                  }}
-                />
-              </Box>
-              <Box>
-                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>
-                  CT probability (abnormal score)
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5, fontWeight: 600 }}>
+                  CT Confidence
                 </Typography>
                 <LinearProgress
                   variant="determinate"
                   value={Math.min(100, Math.max(0, Number(fusionScanResult.ct_prob ?? 0) * 100))}
                   sx={{
-                    height: 8,
+                    height: 10,
                     borderRadius: 1,
                     backgroundColor: "rgba(255,255,255,0.08)",
                     "& .MuiLinearProgress-bar": { backgroundColor: "#fbbf24", borderRadius: 1 },
                   }}
                 />
                 <Typography sx={{ color: "rgba(255,255,255,0.5)", fontSize: "0.8rem", mt: 0.5 }}>
-                  {Number(fusionScanResult.ct_prob ?? 0).toFixed(4)}
+                  {(Number(fusionScanResult.ct_prob ?? 0) * 100).toFixed(1)}% raw · {Number(fusionScanResult.ct_prob ?? 0).toFixed(4)}
                 </Typography>
               </Box>
               <Box>
-                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>
-                  MRI probability (abnormal score)
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5, fontWeight: 600 }}>
+                  MRI Confidence
                 </Typography>
                 <LinearProgress
                   variant="determinate"
                   value={Math.min(100, Math.max(0, Number(fusionScanResult.mri_prob ?? 0) * 100))}
                   sx={{
-                    height: 8,
+                    height: 10,
                     borderRadius: 1,
                     backgroundColor: "rgba(255,255,255,0.08)",
                     "& .MuiLinearProgress-bar": { backgroundColor: "#9bb1ff", borderRadius: 1 },
                   }}
                 />
                 <Typography sx={{ color: "rgba(255,255,255,0.5)", fontSize: "0.8rem", mt: 0.5 }}>
-                  {Number(fusionScanResult.mri_prob ?? 0).toFixed(4)}
+                  {(Number(fusionScanResult.mri_prob ?? 0) * 100).toFixed(1)}% raw · {Number(fusionScanResult.mri_prob ?? 0).toFixed(4)}
                 </Typography>
               </Box>
             </Box>

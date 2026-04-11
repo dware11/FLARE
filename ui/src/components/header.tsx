@@ -107,10 +107,6 @@ export default function Header() {
                 AI Cancer Detection
               </MenuItem>
 
-              <MenuItem onClick={() => go('/outbreak-tracker')}>
-                Outbreak Tracker
-              </MenuItem>
-
               <MenuItem onClick={() => go('/geo-tracker')}>
                 Geo Tracker
               </MenuItem>

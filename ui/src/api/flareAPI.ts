@@ -122,6 +122,9 @@ export function parseMriPredictBody(body: Record<string, unknown>): CancerScanRe
     const rawSeg = body.segmentation;
     const s =
       rawSeg && typeof rawSeg === "object" && rawSeg !== null ? (rawSeg as Record<string, unknown>) : {};
+    const fromSegOriginal = segUrl(s.original_url);
+    const fromRootInput = segUrl(body.input_image_url);
+    const originalUrl = fromSegOriginal ?? fromRootInput ?? null;
     return {
       kind: "mri_api_v2",
       classification: {
@@ -130,7 +133,7 @@ export function parseMriPredictBody(body: Record<string, unknown>): CancerScanRe
         tumor_px: typeof c.tumor_px === "number" ? c.tumor_px : undefined,
       },
       segmentation: {
-        original_url: segUrl(s.original_url),
+        original_url: originalUrl,
         mask_url: segUrl(s.mask_url),
         overlay_url: segUrl(s.overlay_url),
         tumor_pixel_count: (() => {
@@ -278,11 +281,20 @@ export async function fetchPendingReviews(): Promise<{ cases: ReviewCase[] }> {
   return res.json();
 }
 
-export async function approveReview(caseId: string): Promise<void> {
+export async function approveReview(
+  caseId: string,
+  opts: { reviewerName: string; signature: string }
+): Promise<void> {
+  const reviewerName = opts.reviewerName.trim();
+  const signature = opts.signature.trim();
   const res = await fetch(`${API_BASE}/api/reviews/${caseId}/approve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ reviewerId: "demo-reviewer" }),
+    body: JSON.stringify({
+      reviewerName,
+      signature,
+      reviewerId: reviewerName,
+    }),
   });
   if (!res.ok) throw new Error(`Approve failed: ${res.status}`);
 }

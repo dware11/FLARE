@@ -15,6 +15,11 @@ import {
   Chip,
   CircularProgress,
   Alert,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  TextField,
 } from "@mui/material";
 import {
   fetchGeoSummary,
@@ -25,6 +30,7 @@ import {
 import type { GeoSummary, ReviewCase, HospitalSummary } from "../api/flareAPI";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
+import OutbreakAnalyticsSection from "../components/OutbreakAnalyticsSection";
 
 function severityLabel(hex: string): string {
   const m: Record<string, string> = {
@@ -49,6 +55,11 @@ export default function GeoTracker() {
   const [error, setError] = useState("");
   const [actingId, setActingId] = useState<string | null>(null);
 
+  const [signOpen, setSignOpen] = useState(false);
+  const [approveCaseId, setApproveCaseId] = useState<string | null>(null);
+  const [reviewerName, setReviewerName] = useState("");
+  const [digitalSignature, setDigitalSignature] = useState("");
+
   const loadAll = useCallback(async () => {
     setError("");
     setLoading(true);
@@ -67,10 +78,27 @@ export default function GeoTracker() {
     void loadAll();
   }, [loadAll]);
 
-  async function onApprove(caseId: string) {
-    setActingId(caseId);
+  function openApproveModal(caseId: string) {
+    setApproveCaseId(caseId);
+    setReviewerName("");
+    setDigitalSignature("");
+    setSignOpen(true);
+  }
+
+  async function confirmApprove() {
+    if (!approveCaseId) return;
+    const name = reviewerName.trim();
+    const sig = digitalSignature.trim();
+    if (!name || !sig) {
+      setError("Enter reviewer name and digital signature to approve.");
+      return;
+    }
+    setActingId(approveCaseId);
+    setError("");
     try {
-      await approveReview(caseId);
+      await approveReview(approveCaseId, { reviewerName: name, signature: sig });
+      setSignOpen(false);
+      setApproveCaseId(null);
       await loadAll();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Approve failed.");
@@ -91,6 +119,12 @@ export default function GeoTracker() {
     }
   }
 
+  const fieldSx = {
+    "& .MuiInputBase-root": { color: "#fff", borderRadius: 2 },
+    "& label": { color: "rgba(255,255,255,0.65)" },
+    "& fieldset": { borderColor: "rgba(255,255,255,0.12)" },
+  };
+
   return (
     <Box
       sx={{
@@ -102,12 +136,59 @@ export default function GeoTracker() {
         background: "radial-gradient(circle at bottom right, #1b2335 0%, #0b0f19 60%)",
       }}
     >
+      <Dialog
+        open={signOpen}
+        onClose={() => !actingId && setSignOpen(false)}
+        PaperProps={{
+          sx: {
+            backgroundColor: "#0f1117",
+            color: "#fff",
+            border: "1px solid rgba(255,255,255,0.1)",
+            borderRadius: 2,
+            minWidth: 360,
+          },
+        }}
+      >
+        <DialogTitle sx={{ fontWeight: 800 }}>Sign off approval</DialogTitle>
+        <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 1 }}>
+          <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: "0.9rem" }}>
+            Approved cases are counted on the map only after you sign.
+          </Typography>
+          <TextField
+            label="Reviewer Name"
+            value={reviewerName}
+            onChange={(e) => setReviewerName(e.target.value)}
+            fullWidth
+            sx={fieldSx}
+          />
+          <TextField
+            label="Digital Signature"
+            placeholder="Type your name to sign"
+            value={digitalSignature}
+            onChange={(e) => setDigitalSignature(e.target.value)}
+            fullWidth
+            sx={fieldSx}
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setSignOpen(false)} disabled={Boolean(actingId)} sx={{ color: "rgba(255,255,255,0.7)" }}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            disabled={Boolean(actingId) || !reviewerName.trim() || !digitalSignature.trim()}
+            onClick={() => void confirmApprove()}
+            sx={{ backgroundColor: "#ff5c5c", textTransform: "none", "&:hover": { backgroundColor: "#ff3b3b" } }}
+          >
+            Confirm approval
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <Box sx={{ mb: 3 }}>
-        <Typography sx={{ fontSize: "1.7rem", fontWeight: 800, letterSpacing: "0.02em" }}>
-          Geo Tracker
-        </Typography>
+        <Typography sx={{ fontSize: "1.7rem", fontWeight: 800, letterSpacing: "0.02em" }}>Geo Tracker</Typography>
         <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 0.5 }}>
-          Hospital-level abnormal case load and pending review queue
+          Hospital-level abnormal case load, pending review queue, and a prototype outbreak analytics layer (below)
         </Typography>
       </Box>
 
@@ -143,9 +224,7 @@ export default function GeoTracker() {
             >
               <CardContent>
                 <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>Total Pending</Typography>
-                <Typography sx={{ fontSize: "2rem", fontWeight: 800, color: "#fff" }}>
-                  {geo.totals.pending}
-                </Typography>
+                <Typography sx={{ fontSize: "2rem", fontWeight: 800, color: "#fff" }}>{geo.totals.pending}</Typography>
               </CardContent>
             </Card>
             <Card
@@ -157,9 +236,7 @@ export default function GeoTracker() {
               }}
             >
               <CardContent>
-                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>
-                  Total Approved Abnormal
-                </Typography>
+                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>Total Approved Abnormal</Typography>
                 <Typography sx={{ fontSize: "2rem", fontWeight: 800, color: "#fff" }}>
                   {geo.totals.approvedAbnormal}
                 </Typography>
@@ -167,7 +244,6 @@ export default function GeoTracker() {
             </Card>
           </Box>
 
-          {/* MAP */}
           <Box
             sx={{
               mb: 4,
@@ -268,6 +344,7 @@ export default function GeoTracker() {
               border: "1px solid rgba(255,255,255,0.08)",
               borderRadius: 3,
               overflow: "hidden",
+              mb: 2,
             }}
           >
             <Table>
@@ -304,7 +381,7 @@ export default function GeoTracker() {
                       <Button
                         size="small"
                         disabled={actingId === c.caseId}
-                        onClick={() => void onApprove(c.caseId)}
+                        onClick={() => openApproveModal(c.caseId)}
                         sx={{
                           mr: 1,
                           textTransform: "none",
@@ -336,6 +413,8 @@ export default function GeoTracker() {
               </TableBody>
             </Table>
           </TableContainer>
+
+          <OutbreakAnalyticsSection />
         </>
       )}
     </Box>
