@@ -20,30 +20,43 @@ import {
   DialogContent,
   DialogActions,
   TextField,
-  Divider,
-  IconButton,
 } from "@mui/material";
-import CloseIcon from "@mui/icons-material/Close";
 import {
   fetchGeoSummary,
   fetchPendingReviews,
-  fetchOutbreakStatus,
   approveReview,
   rejectReview,
 } from "../api/flareAPI";
-import type { GeoSummary, ReviewCase, HospitalSummary, OutbreakStatus } from "../api/flareAPI";
+import type { GeoSummary, ReviewCase, HospitalSummary } from "../api/flareAPI";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
-import OutbreakAnalyticsSection from "../components/OutbreakAnalyticsSection";
 
-function severityLabel(hex: string): string {
-  const m: Record<string, string> = {
-    "#e11d48": "High",
-    "#f97316": "Medium",
-    "#eab308": "Pending",
-    "#94a3b8": "Clear",
-  };
-  return m[hex.toLowerCase()] ?? "—";
+const cardSx = {
+  backgroundColor: "rgba(0,0,0,0.30)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  borderRadius: 3,
+  boxShadow: "0 12px 30px rgba(0,0,0,0.35)",
+  color: "#fff",
+};
+
+function markerColor(h: HospitalSummary): string {
+  if (h.approvedAbnormalCount >= 5) return "#ef4444";
+  if (h.approvedAbnormalCount >= 2) return "#f97316";
+  return "#22c55e";
+}
+
+function severityLabel(h: HospitalSummary): string {
+  if (h.approvedAbnormalCount >= 5) return "High";
+  if (h.approvedAbnormalCount >= 2) return "Medium";
+  return "Low";
+}
+
+function severityChipColor(h: HospitalSummary) {
+  if (h.approvedAbnormalCount >= 5)
+    return { bg: "rgba(239,68,68,0.18)", border: "rgba(239,68,68,0.45)", text: "#fca5a5" };
+  if (h.approvedAbnormalCount >= 2)
+    return { bg: "rgba(249,115,22,0.18)", border: "rgba(249,115,22,0.45)", text: "#fdba74" };
+  return { bg: "rgba(34,197,94,0.18)", border: "rgba(34,197,94,0.45)", text: "#86efac" };
 }
 
 function trendLabel(t: HospitalSummary["trend"]): string {
@@ -55,7 +68,6 @@ function trendLabel(t: HospitalSummary["trend"]): string {
 export default function GeoTracker() {
   const [geo, setGeo] = useState<GeoSummary | null>(null);
   const [cases, setCases] = useState<ReviewCase[]>([]);
-  const [outbreak, setOutbreak] = useState<OutbreakStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [actingId, setActingId] = useState<string | null>(null);
@@ -65,8 +77,6 @@ export default function GeoTracker() {
   const [reviewerName, setReviewerName] = useState("");
   const [digitalSignature, setDigitalSignature] = useState("");
   const [signModalError, setSignModalError] = useState("");
-
-  const [outbreakBannerDismissed, setOutbreakBannerDismissed] = useState(false);
 
   const loadAll = useCallback(async () => {
     setError("");
@@ -78,11 +88,6 @@ export default function GeoTracker() {
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load Geo Tracker data.");
       setGeo(null);
-    }
-    try {
-      setOutbreak(await fetchOutbreakStatus());
-    } catch {
-      setOutbreak(null);
     } finally {
       setLoading(false);
     }
@@ -141,8 +146,6 @@ export default function GeoTracker() {
     "& fieldset": { borderColor: "rgba(255,255,255,0.12)" },
   };
 
-  const showOutbreakBanner = Boolean(outbreak?.triggered && !outbreakBannerDismissed);
-
   return (
     <Box
       sx={{
@@ -154,6 +157,7 @@ export default function GeoTracker() {
         background: "radial-gradient(circle at bottom right, #1b2335 0%, #0b0f19 60%)",
       }}
     >
+      {/* ── Approve signature dialog ── */}
       <Dialog
         open={signOpen}
         onClose={() => !actingId && setSignOpen(false)}
@@ -192,121 +196,107 @@ export default function GeoTracker() {
           />
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={() => setSignOpen(false)} disabled={Boolean(actingId)} sx={{ color: "rgba(255,255,255,0.7)" }}>
+          <Button
+            onClick={() => setSignOpen(false)}
+            disabled={Boolean(actingId)}
+            sx={{ color: "rgba(255,255,255,0.7)" }}
+          >
             Cancel
           </Button>
           <Button
             variant="contained"
             disabled={Boolean(actingId)}
             onClick={() => void confirmApprove()}
-            sx={{ backgroundColor: "#ff5c5c", textTransform: "none", "&:hover": { backgroundColor: "#ff3b3b" } }}
+            sx={{
+              backgroundColor: "#ff5c5c",
+              textTransform: "none",
+              "&:hover": { backgroundColor: "#ff3b3b" },
+            }}
           >
             Confirm Approval
           </Button>
         </DialogActions>
       </Dialog>
 
-      {showOutbreakBanner && outbreak && (
-        <Box
-          sx={{
-            display: "flex",
-            alignItems: "flex-start",
-            gap: 1,
-            backgroundColor: "#e11d48",
-            color: "#fff",
-            p: 2,
-            borderRadius: 2,
-            mb: 2,
-            mx: 0,
-          }}
-        >
-          <Typography sx={{ flex: 1, fontWeight: 600, fontSize: "0.95rem", lineHeight: 1.45 }}>
-            Warning — Outbreak alert: {outbreak.outbreak_level} activity detected across Houston hospitals.{" "}
-            {outbreak.total_approved_abnormal} confirmed abnormal case
-            {outbreak.total_approved_abnormal === 1 ? "" : "s"} exceed expected threshold.
-          </Typography>
-          <IconButton
-            size="small"
-            onClick={() => setOutbreakBannerDismissed(true)}
-            sx={{ color: "#fff", mt: -0.5 }}
-            aria-label="Dismiss outbreak alert"
-          >
-            <CloseIcon fontSize="small" />
-          </IconButton>
-        </Box>
-      )}
-
-      <Box sx={{ mb: 4, mx: 0 }}>
-        <Typography sx={{ fontSize: "1.7rem", fontWeight: 800, letterSpacing: "0.02em" }}>Geo Tracker</Typography>
-        <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 0.5 }}>
-          Hospital-level abnormal case load, pending review queue, and prototype outbreak analytics (below).
+      {/* ── Header ── */}
+      <Box sx={{ mb: 5 }}>
+        <Typography sx={{ fontSize: "1.7rem", fontWeight: 800, letterSpacing: "0.02em" }}>
+          Geo Tracker
+        </Typography>
+        <Typography sx={{ color: "rgba(255,255,255,0.6)", mt: 0.5 }}>
+          Hospital-level case monitoring and radiologist review queue for the Houston metro area.
         </Typography>
       </Box>
 
       {loading && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 6, mx: 0 }}>
+        <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}>
           <CircularProgress sx={{ color: "#ff5c5c" }} />
         </Box>
       )}
 
       {!loading && error && (
-        <Alert severity="error" sx={{ mb: 4, mx: 0, backgroundColor: "rgba(239,68,68,0.12)", color: "#fff" }}>
+        <Alert severity="error" sx={{ mb: 4, backgroundColor: "rgba(239,68,68,0.12)", color: "#fff" }}>
           {error}
         </Alert>
       )}
 
       {!loading && geo && (
-        <>
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {/* ── Map ── */}
           <Box
             sx={{
-              mb: 4,
-              mx: 0,
               borderRadius: 3,
               overflow: "hidden",
-              height: 400,
+              height: 440,
               width: "100%",
               border: "1px solid rgba(255,255,255,0.08)",
             }}
           >
-            <MapContainer center={[29.7604, -95.3698]} zoom={11} style={{ height: "100%", width: "100%" }}>
+            <MapContainer
+              center={[29.7064, -95.3978]}
+              zoom={13}
+              style={{ height: "100%", width: "100%" }}
+            >
               <TileLayer
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               />
               {geo.hospitals.map((h) => {
-                const isHot = Boolean(outbreak?.hotspot_hospitals?.includes(h.hospitalId));
-                const col = h.severityColor;
+                const col = markerColor(h);
                 return (
                   <Fragment key={h.hospitalId}>
-                    {isHot && (
-                      <CircleMarker
-                        center={[h.latitude, h.longitude]}
-                        radius={28}
-                        pathOptions={{
-                          color: col,
-                          fillColor: col,
-                          fillOpacity: 0.3,
-                          weight: 0,
-                        }}
-                      />
-                    )}
                     <CircleMarker
                       center={[h.latitude, h.longitude]}
-                      radius={isHot ? 22 : 14}
+                      radius={18}
                       pathOptions={{
                         color: col,
                         fillColor: col,
-                        fillOpacity: isHot ? 1 : 0.85,
+                        fillOpacity: 0.25,
+                        weight: 0,
+                      }}
+                    />
+                    <CircleMarker
+                      center={[h.latitude, h.longitude]}
+                      radius={10}
+                      pathOptions={{
+                        color: "#fff",
+                        weight: 2,
+                        fillColor: col,
+                        fillOpacity: 0.95,
                       }}
                     >
                       <Popup>
-                        <strong>{h.name}</strong>
-                        <br />
-                        Pending: {h.pendingCount}
-                        <br />
-                        Approved Abnormal: {h.approvedAbnormalCount}
-                        <br />
-                        Status: {severityLabel(h.severityColor)}
+                        <div style={{ minWidth: 180 }}>
+                          <strong style={{ fontSize: "0.95rem" }}>{h.name}</strong>
+                          <hr style={{ border: "none", borderTop: "1px solid #ddd", margin: "6px 0" }} />
+                          <div style={{ fontSize: "0.85rem", lineHeight: 1.6 }}>
+                            Approved abnormal: <b>{h.approvedAbnormalCount}</b>
+                            <br />
+                            Pending review: <b>{h.pendingCount}</b>
+                            <br />
+                            Trend: <b>{trendLabel(h.trend)}</b>
+                          </div>
+                        </div>
                       </Popup>
                     </CircleMarker>
                   </Fragment>
@@ -315,213 +305,184 @@ export default function GeoTracker() {
             </MapContainer>
           </Box>
 
+          {/* ── Summary cards ── */}
           <Box
             sx={{
               display: "grid",
-              gridTemplateColumns: { xs: "1fr", md: "repeat(2, 1fr)" },
+              gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
               gap: 3,
-              mb: 4,
-              mx: 0,
             }}
           >
-            <Card
-              sx={{
-                backgroundColor: "rgba(0,0,0,0.30)",
-                border: "1px solid rgba(255,255,255,0.08)",
-                borderRadius: 3,
-                boxShadow: "0 12px 30px rgba(0,0,0,0.35)",
-              }}
-            >
-              <CardContent>
-                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>Total Pending</Typography>
-                <Typography sx={{ fontSize: "2rem", fontWeight: 800, color: "#fff" }}>{geo.totals.pending}</Typography>
+            <Card sx={cardSx}>
+              <CardContent sx={{ p: 3 }}>
+                <Typography sx={{ color: "rgba(255,255,255,0.6)", fontSize: "0.9rem", mb: 1 }}>
+                  Total Pending
+                </Typography>
+                <Typography sx={{ fontSize: "2.25rem", fontWeight: 900 }}>
+                  {geo.totals.pending}
+                </Typography>
               </CardContent>
             </Card>
-            <Card
-              sx={{
-                backgroundColor: "rgba(0,0,0,0.30)",
-                border: "1px solid rgba(255,255,255,0.08)",
-                borderRadius: 3,
-                boxShadow: "0 12px 30px rgba(0,0,0,0.35)",
-              }}
-            >
-              <CardContent>
-                <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5 }}>Total Approved Abnormal</Typography>
-                <Typography sx={{ fontSize: "2rem", fontWeight: 800, color: "#fff" }}>
+            <Card sx={cardSx}>
+              <CardContent sx={{ p: 3 }}>
+                <Typography sx={{ color: "rgba(255,255,255,0.6)", fontSize: "0.9rem", mb: 1 }}>
+                  Total Approved Abnormal
+                </Typography>
+                <Typography sx={{ fontSize: "2.25rem", fontWeight: 900 }}>
                   {geo.totals.approvedAbnormal}
                 </Typography>
               </CardContent>
             </Card>
           </Box>
 
-          <Box
-            sx={{
-              display: "grid",
-              gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", md: "repeat(3, 1fr)" },
-              gap: 3,
-              mb: 4,
-              mx: 0,
-            }}
-          >
-            {geo.hospitals.map((h) => (
-              <Card
-                key={h.hospitalId}
-                sx={{
-                  height: "100%",
-                  backgroundColor: "rgba(0,0,0,0.30)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  borderRadius: 3,
-                  boxShadow: "0 12px 30px rgba(0,0,0,0.35)",
-                }}
-              >
-                <CardContent>
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
-                    <Box
-                      sx={{
-                        width: 10,
-                        height: 10,
-                        borderRadius: "50%",
-                        backgroundColor: h.severityColor,
-                      }}
-                    />
-                    <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: "0.8rem" }}>
-                      {severityLabel(h.severityColor)}
-                    </Typography>
-                  </Box>
-                  <Typography sx={{ fontWeight: 800, color: "#fff", mb: 1 }}>{h.name}</Typography>
-                  <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: "0.9rem" }}>
-                    Pending: {h.pendingCount} · Approved abnormal: {h.approvedAbnormalCount}
-                  </Typography>
-                  <Chip
-                    label={trendLabel(h.trend)}
-                    size="small"
-                    sx={{
-                      mt: 1.5,
-                      backgroundColor: "rgba(255,92,92,0.15)",
-                      border: "1px solid rgba(255,92,92,0.35)",
-                      color: "#ff5c5c",
-                      fontWeight: 700,
-                    }}
-                  />
-                </CardContent>
-              </Card>
-            ))}
+          {/* ── Hospital cards ── */}
+          <Box>
+            <Typography sx={{ fontWeight: 800, mb: 2, fontSize: "1.15rem" }}>
+              Hospitals
+            </Typography>
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", md: "repeat(3, 1fr)" },
+                gap: 3,
+              }}
+            >
+              {geo.hospitals.map((h) => {
+                const chipC = severityChipColor(h);
+                return (
+                  <Card key={h.hospitalId} sx={{ ...cardSx, height: "100%" }}>
+                    <CardContent sx={{ p: 3 }}>
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 1.5 }}>
+                        <Box
+                          sx={{
+                            width: 12,
+                            height: 12,
+                            borderRadius: "50%",
+                            backgroundColor: markerColor(h),
+                            flexShrink: 0,
+                          }}
+                        />
+                        <Chip
+                          label={severityLabel(h)}
+                          size="small"
+                          sx={{
+                            fontWeight: 700,
+                            fontSize: "0.75rem",
+                            backgroundColor: chipC.bg,
+                            border: `1px solid ${chipC.border}`,
+                            color: chipC.text,
+                          }}
+                        />
+                      </Box>
+                      <Typography sx={{ fontWeight: 800, mb: 1.5, fontSize: "1rem" }}>
+                        {h.name}
+                      </Typography>
+                      <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: "0.9rem", lineHeight: 1.7 }}>
+                        Pending: {h.pendingCount}
+                        <br />
+                        Approved abnormal: {h.approvedAbnormalCount}
+                      </Typography>
+                      <Chip
+                        label={trendLabel(h.trend)}
+                        size="small"
+                        sx={{
+                          mt: 2,
+                          backgroundColor: "rgba(255,255,255,0.06)",
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          color: "rgba(255,255,255,0.7)",
+                          fontWeight: 600,
+                          fontSize: "0.75rem",
+                        }}
+                      />
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </Box>
           </Box>
 
-          <Typography sx={{ fontWeight: 800, mb: 1.5, color: "#fff", mx: 0 }}>Pending cases</Typography>
-          <TableContainer
-            component={Paper}
-            sx={{
-              backgroundColor: "rgba(0,0,0,0.30)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              borderRadius: 3,
-              overflow: "hidden",
-              mb: 4,
-              mx: 0,
-            }}
-          >
-            <Table>
-              <TableHead>
-                <TableRow sx={{ backgroundColor: "rgba(255,255,255,0.03)" }}>
-                  <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Patient ID</TableCell>
-                  <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Hospital</TableCell>
-                  <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Prediction</TableCell>
-                  <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Confidence</TableCell>
-                  <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Time</TableCell>
-                  <TableCell align="right" sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>
-                    Actions
-                  </TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {cases.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={6} sx={{ color: "rgba(255,255,255,0.65)", py: 5, textAlign: "center" }}>
-                      No pending cases.
+          {/* ── Pending cases table ── */}
+          <Box>
+            <Typography sx={{ fontWeight: 800, mb: 2, fontSize: "1.15rem" }}>
+              Pending Cases
+            </Typography>
+            <TableContainer
+              component={Paper}
+              sx={{
+                backgroundColor: "rgba(0,0,0,0.30)",
+                border: "1px solid rgba(255,255,255,0.08)",
+                borderRadius: 3,
+                overflow: "hidden",
+              }}
+            >
+              <Table>
+                <TableHead>
+                  <TableRow sx={{ backgroundColor: "rgba(255,255,255,0.03)" }}>
+                    <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Patient ID</TableCell>
+                    <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Hospital</TableCell>
+                    <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Prediction</TableCell>
+                    <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Confidence</TableCell>
+                    <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Time</TableCell>
+                    <TableCell align="right" sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>
+                      Actions
                     </TableCell>
                   </TableRow>
-                )}
-                {cases.map((c) => (
-                  <TableRow key={c.caseId} hover sx={{ "&:hover": { backgroundColor: "rgba(255,255,255,0.03)" } }}>
-                    <TableCell sx={{ color: "#fff" }}>{c.patient_id}</TableCell>
-                    <TableCell sx={{ color: "rgba(255,255,255,0.85)" }}>{c.hospitalName}</TableCell>
-                    <TableCell sx={{ color: "rgba(255,255,255,0.85)" }}>{c.result_class}</TableCell>
-                    <TableCell sx={{ color: "rgba(255,255,255,0.85)" }}>
-                      {(c.confidence * 100).toFixed(1)}%
-                    </TableCell>
-                    <TableCell sx={{ color: "rgba(255,255,255,0.85)" }}>{c.createdAt}</TableCell>
-                    <TableCell align="right">
-                      <Button
-                        size="small"
-                        disabled={actingId === c.caseId}
-                        onClick={() => openApproveModal(c.caseId)}
-                        sx={{
-                          mr: 1,
-                          textTransform: "none",
-                          color: "#86efac",
-                          borderColor: "rgba(34,197,94,0.5)",
-                          "&:hover": { borderColor: "#86efac" },
-                        }}
-                        variant="outlined"
-                      >
-                        Approve
-                      </Button>
-                      <Button
-                        size="small"
-                        disabled={actingId === c.caseId}
-                        onClick={() => void onReject(c.caseId)}
-                        sx={{
-                          textTransform: "none",
-                          color: "#fca5a5",
-                          borderColor: "rgba(239,68,68,0.5)",
-                          "&:hover": { borderColor: "#fca5a5" },
-                        }}
-                        variant="outlined"
-                      >
-                        Reject
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
-
-          <Divider
-            sx={{
-              borderColor: "rgba(255,255,255,0.12)",
-              mb: 4,
-              mx: 0,
-              "&::before, &::after": { borderColor: "rgba(255,255,255,0.12)" },
-            }}
-            textAlign="center"
-          >
-            <Typography sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700, px: 1, fontSize: "0.9rem" }}>
-              Outbreak Analytics (Prototype)
-            </Typography>
-          </Divider>
-
-          <Card
-            sx={{
-              backgroundColor: "rgba(0,0,0,0.30)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              borderRadius: 3,
-              p: 3,
-              mt: 4,
-              mb: 4,
-              mx: 0,
-              boxShadow: "0 12px 30px rgba(0,0,0,0.35)",
-            }}
-          >
-            <Typography sx={{ fontWeight: 800, fontSize: "1.25rem", mb: 1, color: "#fff" }}>
-              Outbreak Analytics
-            </Typography>
-            <Typography sx={{ color: "rgba(255,255,255,0.6)", mb: 3, fontSize: "0.9rem" }}>
-              Exploratory trend data — prototype, not confirmed outbreak detection.
-            </Typography>
-            <OutbreakAnalyticsSection outbreak={outbreak} />
-          </Card>
-        </>
+                </TableHead>
+                <TableBody>
+                  {cases.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={6} sx={{ color: "rgba(255,255,255,0.65)", py: 5, textAlign: "center" }}>
+                        No pending cases.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {cases.map((c) => (
+                    <TableRow key={c.caseId} hover sx={{ "&:hover": { backgroundColor: "rgba(255,255,255,0.03)" } }}>
+                      <TableCell sx={{ color: "#fff" }}>{c.patient_id}</TableCell>
+                      <TableCell sx={{ color: "rgba(255,255,255,0.85)" }}>{c.hospitalName}</TableCell>
+                      <TableCell sx={{ color: "rgba(255,255,255,0.85)" }}>{c.result_class}</TableCell>
+                      <TableCell sx={{ color: "rgba(255,255,255,0.85)" }}>
+                        {(c.confidence * 100).toFixed(1)}%
+                      </TableCell>
+                      <TableCell sx={{ color: "rgba(255,255,255,0.85)" }}>{c.createdAt}</TableCell>
+                      <TableCell align="right">
+                        <Button
+                          size="small"
+                          disabled={actingId === c.caseId}
+                          onClick={() => openApproveModal(c.caseId)}
+                          sx={{
+                            mr: 1,
+                            textTransform: "none",
+                            color: "#86efac",
+                            borderColor: "rgba(34,197,94,0.5)",
+                            "&:hover": { borderColor: "#86efac" },
+                          }}
+                          variant="outlined"
+                        >
+                          Approve
+                        </Button>
+                        <Button
+                          size="small"
+                          disabled={actingId === c.caseId}
+                          onClick={() => void onReject(c.caseId)}
+                          sx={{
+                            textTransform: "none",
+                            color: "#fca5a5",
+                            borderColor: "rgba(239,68,68,0.5)",
+                            "&:hover": { borderColor: "#fca5a5" },
+                          }}
+                          variant="outlined"
+                        >
+                          Reject
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Box>
+        </Box>
       )}
     </Box>
   );

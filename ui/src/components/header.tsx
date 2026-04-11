@@ -111,6 +111,10 @@ export default function Header() {
                 Geo Tracker
               </MenuItem>
 
+              <MenuItem onClick={() => go('/outbreak-tracker')}>
+                Outbreak Analytics
+              </MenuItem>
+
               <MenuItem onClick={() => go('/ehr-database')}>
                 EHR Database
               </MenuItem>

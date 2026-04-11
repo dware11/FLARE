@@ -90,32 +90,32 @@ HOSPITAL_REGISTRY: dict[str, dict] = {
     "H001": {
         "id": "H001",
         "name": "Houston Methodist Hospital",
-        "latitude": 29.7099,
-        "longitude": -95.4022,
+        "latitude": 29.7105,
+        "longitude": -95.3990,
     },
     "H002": {
         "id": "H002",
         "name": "Memorial Hermann - Texas Medical Center",
-        "latitude": 29.7079,
-        "longitude": -95.4022,
+        "latitude": 29.7063,
+        "longitude": -95.4015,
     },
     "H003": {
         "id": "H003",
         "name": "Baylor St. Luke's Medical Center",
-        "latitude": 29.7079,
-        "longitude": -95.3899,
+        "latitude": 29.7091,
+        "longitude": -95.3955,
     },
     "H004": {
         "id": "H004",
         "name": "Ben Taub Hospital",
-        "latitude": 29.7028,
-        "longitude": -95.4022,
+        "latitude": 29.7015,
+        "longitude": -95.3969,
     },
     "H005": {
         "id": "H005",
         "name": "Texas Children's Hospital",
-        "latitude": 29.7062,
-        "longitude": -95.3975,
+        "latitude": 29.7070,
+        "longitude": -95.3930,
     },
 }
 
