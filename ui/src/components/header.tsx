@@ -47,6 +47,10 @@ export default function Header() {
 
   const confirmLogout = () => {
     setLogoutOpen(false)
+    try {
+      sessionStorage.removeItem('flare_last_result')
+      sessionStorage.removeItem('flare_form_state')
+    } catch { /* ignore */ }
     logout({ logoutParams: { returnTo: window.location.origin } })
   }
 
