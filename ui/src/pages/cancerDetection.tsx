@@ -89,13 +89,9 @@ const fieldSx = {
 
 const dobFieldSx = {
   ...fieldSx,
-  "& input": {
+  "& input[type='date']": {
     color: "#ffffff",
     colorScheme: "dark",
-  },
-  "& input::-webkit-calendar-picker-indicator": {
-    filter: "invert(1) brightness(2)",
-    cursor: "pointer",
   },
 };
 
@@ -171,6 +167,7 @@ function fusionModeLabel(mode: string): string {
 }
 
 const FLARE_LAST_RESULT_KEY = "flare_last_result";
+const FLARE_FORM_KEY = "flare_form_state";
 
 const pairImgSx = {
   width: "100%",
@@ -215,18 +212,40 @@ export default function CancerDetection() {
     };
   }, []);
 
-  const [hospitalId, setHospitalId] = useState("H001");
-  const [cancerType, setCancerType] = useState<CancerType | "">("");
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
-  const [medicalId, setMedicalId] = useState("");
-  const [dob, setDob] = useState("");
+  useEffect(() => {
+    if (!loading) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [loading]);
+
+  const savedForm = useMemo(() => {
+    try {
+      const raw = sessionStorage.getItem(FLARE_FORM_KEY);
+      return raw ? (JSON.parse(raw) as Record<string, string>) : null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const [hospitalId, setHospitalId] = useState(savedForm?.hospitalId ?? "H001");
+  const [cancerType, setCancerType] = useState<CancerType | "">(
+    (savedForm?.cancerType as CancerType | "") ?? ""
+  );
+  const [firstName, setFirstName] = useState(savedForm?.firstName ?? "");
+  const [lastName, setLastName] = useState(savedForm?.lastName ?? "");
+  const [medicalId, setMedicalId] = useState(savedForm?.medicalId ?? "");
+  const [dob, setDob] = useState(savedForm?.dob ?? "");
 
   const [file, setFile] = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   /** Brain only: single slice/volume vs BraTS-style patient folder. */
   const [brainUploadMode, setBrainUploadMode] = useState<"single" | "folder">("single");
-  const [brainPipeline, setBrainPipeline] = useState<BrainPipeline>("mri");
+  const [brainPipeline, setBrainPipeline] = useState<BrainPipeline>(
+    (savedForm?.brainPipeline as BrainPipeline) ?? "mri"
+  );
   const [folderFiles, setFolderFiles] = useState<File[]>([]);
   const [folderInputKey, setFolderInputKey] = useState(0);
   const [fusionCtFile, setFusionCtFile] = useState<File | null>(null);
@@ -274,6 +293,15 @@ export default function CancerDetection() {
       /* ignore corrupt localStorage */
     }
   }, [patchStored]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        FLARE_FORM_KEY,
+        JSON.stringify({ hospitalId, cancerType, firstName, lastName, medicalId, dob, brainPipeline })
+      );
+    } catch { /* ignore */ }
+  }, [hospitalId, cancerType, firstName, lastName, medicalId, dob, brainPipeline]);
 
   useEffect(() => {
     if (brainUploadMode === "folder") {
@@ -665,9 +693,7 @@ export default function CancerDetection() {
               value={dob}
               onChange={(e) => setDob(e.target.value)}
               InputLabelProps={{ shrink: true }}
-              inputProps={{
-                style: { color: "#ffffff", colorScheme: "dark" },
-              }}
+              inputProps={{ max: new Date().toISOString().split("T")[0] }}
               sx={dobFieldSx}
             />
           </Box>
@@ -1099,22 +1125,64 @@ export default function CancerDetection() {
                 </Box>
               )}
 
-              <Button
-                variant="contained"
-                fullWidth
-                disabled={!canSubmit || loading}
-                onClick={onRun}
-                sx={{
-                  mt: 3,
-                  backgroundColor: "#ff5c5c",
-                  textTransform: "none",
-                  borderRadius: 2,
-                  py: 1.4,
-                  "&:hover": { backgroundColor: "#ff3b3b" },
-                }}
-              >
-                Run AI Scan
-              </Button>
+              <Box sx={{ display: "flex", gap: 2, mt: 3 }}>
+                <Button
+                  variant="contained"
+                  fullWidth
+                  disabled={!canSubmit || loading}
+                  onClick={onRun}
+                  sx={{
+                    backgroundColor: "#ff5c5c",
+                    textTransform: "none",
+                    borderRadius: 2,
+                    py: 1.4,
+                    "&:hover": { backgroundColor: "#ff3b3b" },
+                  }}
+                >
+                  Run AI Scan
+                </Button>
+                <Button
+                  variant="outlined"
+                  disabled={loading}
+                  onClick={() => {
+                    clearStored();
+                    setScanResult(null);
+                    setCtScanResult(null);
+                    setFusionScanResult(null);
+                    setCompletedSeconds(null);
+                    setError("");
+                    setHospitalId("H001");
+                    setCancerType("");
+                    setFirstName("");
+                    setLastName("");
+                    setMedicalId("");
+                    setDob("");
+                    setFile(null);
+                    setFolderFiles([]);
+                    setFolderInputKey((k) => k + 1);
+                    setBrainPipeline("mri");
+                    setBrainUploadMode("single");
+                    setFusionCtFile(null);
+                    setFusionMriFile(null);
+                    setFusionInputKey((k) => k + 1);
+                    try {
+                      localStorage.removeItem(FLARE_LAST_RESULT_KEY);
+                      sessionStorage.removeItem(FLARE_FORM_KEY);
+                    } catch { /* ignore */ }
+                  }}
+                  sx={{
+                    minWidth: 100,
+                    textTransform: "none",
+                    borderRadius: 2,
+                    py: 1.4,
+                    color: "rgba(255,255,255,0.7)",
+                    borderColor: "rgba(255,255,255,0.2)",
+                    "&:hover": { borderColor: "rgba(255,255,255,0.5)", color: "#fff" },
+                  }}
+                >
+                  Clear
+                </Button>
+              </Box>
             </Box>
           ) : (
             <Alert severity="info" sx={{ backgroundColor: "rgba(255,255,255,0.05)", color: "#fff" }}>
