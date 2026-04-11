@@ -43,6 +43,8 @@ def _preload_models_once():
     if getattr(_preload_models_once, "_done", False):
         return
     _preload_models_once._done = True
+
+    # CT model
     try:
         from ml.brain.ct.infer import _load_model
 
@@ -52,17 +54,67 @@ def _preload_models_once():
         )
         ckpt_path = Path(CT_CKPT)
         if ckpt_path.exists():
-            _load_model(ckpt_path)
+            ct_model = _load_model(ckpt_path)
             app.logger.info("CT model preloaded")
+            try:
+                import torch
+                device = next(ct_model.parameters()).device
+                ct_model(torch.zeros(1, 1, 64, 64, 64, device=device))
+                app.logger.info("CT model warmup complete")
+            except Exception as wex:
+                app.logger.warning("CT warmup skipped: %s", wex)
+        else:
+            app.logger.warning("CT checkpoint not found at %s", CT_CKPT)
     except Exception as ex:
         app.logger.warning("CT preload failed: %s", ex)
+
+    # MRI classification model
     try:
         from predict_mri import _load_cls_model
 
-        _load_cls_model()
-        app.logger.info("MRI model preloaded")
+        cls_model = _load_cls_model()
+        app.logger.info("MRI classification model preloaded")
+        try:
+            import torch
+            device = next(cls_model.parameters()).device
+            cls_model(torch.zeros(1, 3, 224, 224, device=device))
+            app.logger.info("MRI classification warmup complete")
+        except Exception as wex:
+            app.logger.warning("MRI classification warmup skipped: %s", wex)
     except Exception as ex:
-        app.logger.warning("MRI preload failed: %s", ex)
+        app.logger.warning("MRI classification preload failed: %s", ex)
+
+    # MRI segmentation model
+    try:
+        from predict_mri import _load_seg_model
+
+        seg_model = _load_seg_model()
+        app.logger.info("MRI segmentation model preloaded")
+        try:
+            import torch
+            device = next(seg_model.parameters()).device
+            seg_model(torch.zeros(1, 3, 256, 256, device=device))
+            app.logger.info("MRI segmentation warmup complete")
+        except Exception as wex:
+            app.logger.warning("MRI segmentation warmup skipped: %s", wex)
+    except Exception as ex:
+        app.logger.warning("MRI segmentation preload failed: %s", ex)
+
+    # BraTS 3D U-Net model
+    try:
+        from predict_mri import _load_brats_model
+
+        brats_model = _load_brats_model()
+        app.logger.info("BraTS model preloaded")
+        try:
+            import torch
+            device = next(brats_model.parameters()).device
+            brats_model(torch.zeros(1, 4, 128, 128, 128, device=device))
+            app.logger.info("BraTS model warmup complete")
+        except Exception as wex:
+            app.logger.warning("BraTS warmup skipped: %s", wex)
+    except Exception as ex:
+        app.logger.warning("BraTS preload failed: %s", ex)
 
 
 _DEV_ORIGINS = [
@@ -1237,12 +1289,24 @@ def api_fusion_predict():
             mri_path = _save_upload(mri_file, patient_id, prefix="mri")
             from predict_mri import predict_mri
             mri_result = predict_mri(mri_path, "brain_mri", patient_id)
-            if mri_result:
-                mri_conf = float(mri_result.get("confidence", 0.5))
-                mri_is_abnormal = mri_result.get("result_class", "").lower() in (
-                    "malignant", "abnormal", "tumor"
+            if mri_result and "error" not in mri_result:
+                raw_conf = mri_result.get("confidence")
+                if raw_conf is not None and isinstance(raw_conf, (int, float)):
+                    mri_conf = float(raw_conf)
+                    mri_is_abnormal = mri_result.get("result_class", "").lower() in (
+                        "malignant", "abnormal", "tumor"
+                    )
+                    mri_prob = mri_conf if mri_is_abnormal else (1.0 - mri_conf)
+                else:
+                    app.logger.warning(
+                        "Fusion: MRI returned no valid confidence — falling back to CT-only. "
+                        "mri_result=%s", mri_result
+                    )
+            else:
+                app.logger.warning(
+                    "Fusion: MRI inference returned error or empty — falling back to CT-only. "
+                    "mri_result=%s", mri_result
                 )
-                mri_prob = mri_conf if mri_is_abnormal else (1.0 - mri_conf)
         except Exception as ex:
             return jsonify({"error": f"MRI inference failed: {ex}"}), 500
 
@@ -1266,21 +1330,39 @@ def api_fusion_predict():
     pred_label   = "Abnormal" if is_abnormal else "Normal"
     result_class = "Malignant" if is_abnormal else "Benign"
 
+    ct_cam_url = None
+    mri_input_url = None
+    mri_overlay_url = None
+    if ct_result:
+        stem = ct_result.get("cam_path") or ""
+        if stem:
+            cam_disk = os.path.join(_ct_cam_static_dir(), os.path.basename(stem))
+            if os.path.isfile(cam_disk):
+                ct_cam_url = _absolute_url_for_path(f"/static/cam/{os.path.basename(stem)}")
+    if mri_result and isinstance(mri_result, dict):
+        mri_input_url = mri_result.get("input_image_url")
+        seg = mri_result.get("segmentation")
+        if isinstance(seg, dict):
+            mri_overlay_url = seg.get("overlay_url")
+
     return jsonify({
-        "patient_id":   patient_id,
-        "fusion_mode":  fusion_mode,
-        "fusion_score": round(fusion_score, 4),
-        "pred_label":   pred_label,
-        "result_class": result_class,
-        "confidence":   round(fusion_score, 4),
-        "is_abnormal":  is_abnormal,
-        "ct_prob":      round(ct_prob, 4) if ct_prob is not None else None,
-        "mri_prob":     round(mri_prob, 4) if mri_prob is not None else None,
-        "ct_weight":    CT_WEIGHT,
-        "mri_weight":   MRI_WEIGHT,
-        "threshold":    FUSION_THRESHOLD,
-        "ct_details":   ct_result,
-        "mri_details":  mri_result,
+        "patient_id":       patient_id,
+        "fusion_mode":      fusion_mode,
+        "fusion_score":     round(fusion_score, 4),
+        "pred_label":       pred_label,
+        "result_class":     result_class,
+        "confidence":       round(fusion_score, 4),
+        "is_abnormal":      is_abnormal,
+        "ct_prob":          round(ct_prob, 4) if ct_prob is not None else None,
+        "mri_prob":         round(mri_prob, 4) if mri_prob is not None else None,
+        "ct_weight":        CT_WEIGHT,
+        "mri_weight":       MRI_WEIGHT,
+        "threshold":        FUSION_THRESHOLD,
+        "ct_cam_url":       ct_cam_url,
+        "mri_input_url":    mri_input_url,
+        "mri_overlay_url":  mri_overlay_url,
+        "ct_details":       ct_result,
+        "mri_details":      mri_result,
     }), 200
 
 

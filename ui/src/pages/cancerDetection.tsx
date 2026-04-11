@@ -244,6 +244,7 @@ export default function CancerDetection() {
   const [fusionInputKey, setFusionInputKey] = useState(0);
 
   const [loading, setLoading] = useState(false);
+  const [activeRunMode, setActiveRunMode] = useState<BrainPipeline | null>(null);
   /** Legacy `/predict` shape vs newer `/api/mri/predict` classification + segmentation JSON. */
   const [scanResult, setScanResult] = useState<CancerScanResult | null>(null);
   const [ctScanResult, setCtScanResult] = useState<Record<string, unknown> | null>(null);
@@ -351,7 +352,10 @@ export default function CancerDetection() {
 
   const scanDateToday = useMemo(() => new Date().toISOString().split("T")[0], []);
 
+  const LOCKED_MSG = "Inference is currently running. Please wait or clear the current run.";
+
   const onFileChosen = useCallback((f: File | null) => {
+    if (loading) return;
     setFile(f);
     setFolderFiles([]);
     setFolderInputKey((k) => k + 1);
@@ -359,9 +363,10 @@ export default function CancerDetection() {
     setCtScanResult(null);
     setFusionScanResult(null);
     setError("");
-  }, []);
+  }, [loading]);
 
   const onFolderChosen = useCallback((list: FileList | File[] | null) => {
+    if (loading) return;
     const arr = list ? Array.from(list) : [];
     setFolderFiles(arr);
     setFile(null);
@@ -370,12 +375,13 @@ export default function CancerDetection() {
     setCtScanResult(null);
     setFusionScanResult(null);
     setError("");
-  }, []);
+  }, [loading]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      if (loading) return;
       if (cancerType === "brain" && brainUploadMode === "folder") {
         const all = Array.from(e.dataTransfer.files || []);
         if (all.length > 0) onFolderChosen(all);
@@ -384,12 +390,13 @@ export default function CancerDetection() {
       const f = e.dataTransfer.files?.[0];
       if (f && /\.(png|jpe?g|nii(\.gz)?|npz)$/i.test(f.name)) onFileChosen(f);
     },
-    [cancerType, brainUploadMode, onFileChosen, onFolderChosen]
+    [loading, cancerType, brainUploadMode, onFileChosen, onFolderChosen]
   );
 
   const onDropFusionCt = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (loading) return;
     const f = e.dataTransfer.files?.[0];
     if (f && f.name.toLowerCase().endsWith(".npz")) {
       setFusionCtFile(f);
@@ -397,11 +404,12 @@ export default function CancerDetection() {
       setFusionScanResult(null);
       setError("");
     }
-  }, []);
+  }, [loading]);
 
   const onDropFusionMri = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (loading) return;
     const f = e.dataTransfer.files?.[0];
     if (f && /\.(png|jpe?g|nii(\.gz)?|npz)$/i.test(f.name)) {
       setFusionMriFile(f);
@@ -409,7 +417,7 @@ export default function CancerDetection() {
       setFusionScanResult(null);
       setError("");
     }
-  }, []);
+  }, [loading]);
 
   function persistLastResult(payload: {
     scanResult: CancerScanResult | null;
@@ -440,6 +448,8 @@ export default function CancerDetection() {
     setFusionScanResult(null);
     setCompletedSeconds(null);
     if (!cancerType) return setError("Please select a cancer type.");
+
+    setActiveRunMode(brainPipeline);
 
     if (cancerType === "brain" && brainPipeline === "fusion") {
       if (!fusionCtFile || !fusionMriFile) {
@@ -592,6 +602,7 @@ export default function CancerDetection() {
     }
   }
 
+  const displayMode = activeRunMode ?? brainPipeline;
   const predLegacy = scanResult?.kind === "legacy" ? scanResult.pred : null;
   const mriV2 = scanResult?.kind === "mri_api_v2" ? scanResult : null;
 
@@ -633,7 +644,7 @@ export default function CancerDetection() {
               gap: 2,
             }}
           >
-            <TextField select label="Hospital" value={hospitalId} onChange={(e) => setHospitalId(e.target.value)} sx={fieldSx}>
+            <TextField select label="Hospital" disabled={loading} value={hospitalId} onChange={(e) => setHospitalId(e.target.value)} sx={fieldSx}>
               {HOSPITALS.map((h) => (
                 <MenuItem key={h.id} value={h.id}>
                   {h.name}
@@ -644,8 +655,10 @@ export default function CancerDetection() {
             <TextField
               select
               label="Cancer Type"
+              disabled={loading}
               value={cancerType}
               onChange={(e) => {
+                if (loading) { setError(LOCKED_MSG); return; }
                 setCancerType(e.target.value as CancerType);
                 setFile(null);
                 setFolderFiles([]);
@@ -684,12 +697,13 @@ export default function CancerDetection() {
               </MenuItem>
             </TextField>
 
-            <TextField label="First Name" value={firstName} onChange={(e) => setFirstName(e.target.value)} sx={fieldSx} />
-            <TextField label="Last Name" value={lastName} onChange={(e) => setLastName(e.target.value)} sx={fieldSx} />
-            <TextField label="Medical ID" value={medicalId} onChange={(e) => setMedicalId(e.target.value)} sx={fieldSx} />
+            <TextField label="First Name" disabled={loading} value={firstName} onChange={(e) => setFirstName(e.target.value)} sx={fieldSx} />
+            <TextField label="Last Name" disabled={loading} value={lastName} onChange={(e) => setLastName(e.target.value)} sx={fieldSx} />
+            <TextField label="Medical ID" disabled={loading} value={medicalId} onChange={(e) => setMedicalId(e.target.value)} sx={fieldSx} />
             <TextField
               label="Date of Birth"
               type="date"
+              disabled={loading}
               value={dob}
               onChange={(e) => setDob(e.target.value)}
               InputLabelProps={{ shrink: true }}
@@ -709,9 +723,11 @@ export default function CancerDetection() {
               {cancerType === "brain" && (
                 <ToggleButtonGroup
                   exclusive
+                  disabled={loading}
                   value={brainPipeline}
                   onChange={(_, v) => {
                     if (v == null) return;
+                    if (loading) { setError(LOCKED_MSG); return; }
                     setBrainPipeline(v);
                     setFile(null);
                     setFolderFiles([]);
@@ -749,9 +765,11 @@ export default function CancerDetection() {
               {cancerType === "brain" && brainPipeline === "mri" && (
                 <ToggleButtonGroup
                   exclusive
+                  disabled={loading}
                   value={brainUploadMode}
                   onChange={(_, v) => {
                     if (v == null) return;
+                    if (loading) { setError(LOCKED_MSG); return; }
                     setBrainUploadMode(v);
                     setFile(null);
                     setFolderFiles([]);
@@ -797,7 +815,8 @@ export default function CancerDetection() {
                     onDrop={onDropFusionCt}
                     sx={{
                       display: "block",
-                      cursor: "pointer",
+                      cursor: loading ? "not-allowed" : "pointer",
+                      pointerEvents: loading ? "none" : "auto",
                       border: "1px dashed rgba(251,191,36,0.35)",
                       borderRadius: 2,
                       py: 3,
@@ -821,6 +840,7 @@ export default function CancerDetection() {
                       id="flare-fusion-ct-upload"
                       type="file"
                       accept=".npz"
+                      disabled={loading}
                       style={{ display: "none" }}
                       onChange={(e) => {
                         const f = e.target.files?.[0] ?? null;
@@ -843,7 +863,8 @@ export default function CancerDetection() {
                     onDrop={onDropFusionMri}
                     sx={{
                       display: "block",
-                      cursor: "pointer",
+                      cursor: loading ? "not-allowed" : "pointer",
+                      pointerEvents: loading ? "none" : "auto",
                       border: "1px dashed rgba(155,177,255,0.4)",
                       borderRadius: 2,
                       py: 3,
@@ -867,6 +888,7 @@ export default function CancerDetection() {
                       id="flare-fusion-mri-upload"
                       type="file"
                       accept=".jpg,.jpeg,.png,.nii,.nii.gz,.npz"
+                      disabled={loading}
                       style={{ display: "none" }}
                       onChange={(e) => {
                         const f = e.target.files?.[0] ?? null;
@@ -895,7 +917,8 @@ export default function CancerDetection() {
                   onDrop={onDrop}
                   sx={{
                     display: "block",
-                    cursor: "pointer",
+                    cursor: loading ? "not-allowed" : "pointer",
+                    pointerEvents: loading ? "none" : "auto",
                     border: "1px dashed rgba(255,255,255,0.15)",
                     borderRadius: 2,
                     py: 4,
@@ -942,6 +965,7 @@ export default function CancerDetection() {
                       key={folderInputKey}
                       id="flare-folder-upload"
                       type="file"
+                      disabled={loading}
                       {...({ webkitdirectory: "", directory: "" } as InputHTMLAttributes<HTMLInputElement>)}
                       multiple
                       style={{ display: "none" }}
@@ -951,6 +975,7 @@ export default function CancerDetection() {
                     <input
                       id="flare-scan-upload"
                       type="file"
+                      disabled={loading}
                       accept={
                         cancerType === "brain" && brainPipeline === "ct"
                           ? ".npz"
@@ -1150,6 +1175,7 @@ export default function CancerDetection() {
                     setCtScanResult(null);
                     setFusionScanResult(null);
                     setCompletedSeconds(null);
+                    setActiveRunMode(null);
                     setError("");
                     setHospitalId("H001");
                     setCancerType("");
@@ -1665,6 +1691,61 @@ export default function CancerDetection() {
                 Completed in {completedSeconds}s
               </Typography>
             )}
+
+            {(absolutizeStaticUrl(fusionScanResult.ct_cam_url as string | null | undefined) ||
+              absolutizeStaticUrl(fusionScanResult.mri_input_url as string | null | undefined) ||
+              absolutizeStaticUrl(fusionScanResult.mri_overlay_url as string | null | undefined)) && (
+              <Box
+                sx={{
+                  display: "flex",
+                  flexDirection: { xs: "column", sm: "row" },
+                  gap: 2,
+                  mb: 3,
+                  flexWrap: "wrap",
+                }}
+              >
+                {absolutizeStaticUrl(fusionScanResult.ct_cam_url as string | null | undefined) && (
+                  <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
+                    <Box
+                      component="img"
+                      src={absolutizeStaticUrl(fusionScanResult.ct_cam_url as string) ?? ""}
+                      alt="CT GradCAM"
+                      sx={pairImgSx}
+                    />
+                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+                      CT GradCAM
+                    </Typography>
+                  </Box>
+                )}
+                {absolutizeStaticUrl(fusionScanResult.mri_input_url as string | null | undefined) && (
+                  <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
+                    <Box
+                      component="img"
+                      src={absolutizeStaticUrl(fusionScanResult.mri_input_url as string) ?? ""}
+                      alt="MRI Input"
+                      sx={pairImgSx}
+                    />
+                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+                      MRI Original
+                    </Typography>
+                  </Box>
+                )}
+                {absolutizeStaticUrl(fusionScanResult.mri_overlay_url as string | null | undefined) && (
+                  <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
+                    <Box
+                      component="img"
+                      src={absolutizeStaticUrl(fusionScanResult.mri_overlay_url as string) ?? ""}
+                      alt="MRI Segmentation"
+                      sx={pairImgSx}
+                    />
+                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+                      MRI Segmentation
+                    </Typography>
+                  </Box>
+                )}
+              </Box>
+            )}
+
             <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
               <Box sx={{ textAlign: "center", py: 1 }}>
                 <Chip
