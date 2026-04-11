@@ -212,15 +212,6 @@ export default function CancerDetection() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!loading) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-    };
-    window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
-  }, [loading]);
-
   const savedForm = useMemo(() => {
     try {
       const raw = sessionStorage.getItem(FLARE_FORM_KEY);
@@ -258,6 +249,15 @@ export default function CancerDetection() {
   const [ctScanResult, setCtScanResult] = useState<Record<string, unknown> | null>(null);
   const [fusionScanResult, setFusionScanResult] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!loading) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [loading]);
 
   useEffect(() => {
     setScanResult(stored.scanResult);
