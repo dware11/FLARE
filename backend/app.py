@@ -1361,7 +1361,24 @@ def api_fusion_predict():
 
     if ct_file is not None:
         try:
-            ct_path = _save_upload(ct_file, patient_id, prefix="ct")
+            ct_saved = _save_upload(ct_file, patient_id, prefix="ct")
+            ct_fname = (ct_file.filename or "").lower()
+            if ct_fname.endswith(".zip"):
+                app.logger.info(
+                    "Fusion: CT input is DICOM ZIP — preprocessing via _preprocess_dicom_zip_to_npz"
+                )
+                try:
+                    ct_path = _preprocess_dicom_zip_to_npz(ct_saved, patient_id)
+                except ValueError as ve:
+                    return jsonify({"error": str(ve)}), 400
+            elif ct_fname.endswith(".npz"):
+                app.logger.info("Fusion: CT input is NPZ — direct run_ct_from_npz")
+                ct_path = ct_saved
+            else:
+                return jsonify({
+                    "error": "Fusion CT file must be .npz volume or .zip DICOM study",
+                }), 400
+
             from ml.brain.ct.infer import run_ct_from_npz
 
             CT_CKPT = os.environ.get(

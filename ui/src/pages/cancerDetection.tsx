@@ -218,31 +218,18 @@ export default function CancerDetection() {
     };
   }, []);
 
-  const savedForm = useMemo(() => {
-    try {
-      const raw = sessionStorage.getItem(FLARE_FORM_KEY);
-      return raw ? (JSON.parse(raw) as Record<string, string>) : null;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const [hospitalId, setHospitalId] = useState(savedForm?.hospitalId ?? "H001");
-  const [cancerType, setCancerType] = useState<CancerType | "">(
-    (savedForm?.cancerType as CancerType | "") ?? ""
-  );
-  const [firstName, setFirstName] = useState(savedForm?.firstName ?? "");
-  const [lastName, setLastName] = useState(savedForm?.lastName ?? "");
-  const [medicalId, setMedicalId] = useState(savedForm?.medicalId ?? "");
-  const [dob, setDob] = useState(savedForm?.dob ?? "");
+  const [hospitalId, setHospitalId] = useState("H001");
+  const [cancerType, setCancerType] = useState<CancerType | "">("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [medicalId, setMedicalId] = useState("");
+  const [dob, setDob] = useState("");
 
   const [file, setFile] = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   /** Brain only: single slice/volume vs BraTS-style patient folder. */
   const [brainUploadMode, setBrainUploadMode] = useState<"single" | "folder">("single");
-  const [brainPipeline, setBrainPipeline] = useState<BrainPipeline>(
-    (savedForm?.brainPipeline as BrainPipeline) ?? "mri"
-  );
+  const [brainPipeline, setBrainPipeline] = useState<BrainPipeline>("mri");
   const [folderFiles, setFolderFiles] = useState<File[]>([]);
   const [folderInputKey, setFolderInputKey] = useState(0);
   const [fusionCtFile, setFusionCtFile] = useState<File | null>(null);
@@ -250,7 +237,6 @@ export default function CancerDetection() {
   const [fusionInputKey, setFusionInputKey] = useState(0);
 
   const [loading, setLoading] = useState(false);
-  const [activeRunMode, setActiveRunMode] = useState<BrainPipeline | null>(null);
   /** Legacy `/predict` shape vs newer `/api/mri/predict` classification + segmentation JSON. */
   const [scanResult, setScanResult] = useState<CancerScanResult | null>(null);
   const [ctScanResult, setCtScanResult] = useState<Record<string, unknown> | null>(null);
@@ -277,34 +263,13 @@ export default function CancerDetection() {
     if (hydratedRef.current) return;
     hydratedRef.current = true;
     try {
-      const raw = sessionStorage.getItem(FLARE_LAST_RESULT_KEY);
-      if (!raw) return;
-      const p = JSON.parse(raw) as {
-        scanResult?: CancerScanResult | null;
-        ctScanResult?: Record<string, unknown> | null;
-        fusionScanResult?: Record<string, unknown> | null;
-        completedSeconds?: number | null;
-      };
-      patchStored({
-        scanResult: p.scanResult ?? null,
-        ctScanResult: p.ctScanResult ?? null,
-        fusionScanResult: p.fusionScanResult ?? null,
-        completedSeconds: p.completedSeconds ?? null,
-      });
-    } catch {
-      /* ignore corrupt sessionStorage */
-    }
-    try { localStorage.removeItem(FLARE_LAST_RESULT_KEY); } catch { /* migrate */ }
-  }, [patchStored]);
-
-  useEffect(() => {
-    try {
-      sessionStorage.setItem(
-        FLARE_FORM_KEY,
-        JSON.stringify({ hospitalId, cancerType, firstName, lastName, medicalId, dob, brainPipeline })
-      );
+      sessionStorage.removeItem(FLARE_LAST_RESULT_KEY);
+      sessionStorage.removeItem(FLARE_FORM_KEY);
     } catch { /* ignore */ }
-  }, [hospitalId, cancerType, firstName, lastName, medicalId, dob, brainPipeline]);
+    try {
+      localStorage.removeItem(FLARE_LAST_RESULT_KEY);
+    } catch { /* ignore */ }
+  }, []);
 
   useEffect(() => {
     if (brainUploadMode === "folder") {
@@ -354,7 +319,7 @@ export default function CancerDetection() {
 
   const scanDateToday = useMemo(() => new Date().toISOString().split("T")[0], []);
 
-  const LOCKED_MSG = "Inference is currently running. Please wait or clear the current run.";
+  const LOCKED_MSG = "Inference is currently running. Please wait for completion.";
 
   const onFileChosen = useCallback((f: File | null) => {
     if (loading) return;
@@ -422,26 +387,11 @@ export default function CancerDetection() {
     }
   }, [loading]);
 
-  function persistLastResult(payload: {
-    scanResult: CancerScanResult | null;
-    ctScanResult: Record<string, unknown> | null;
-    fusionScanResult: Record<string, unknown> | null;
-    completedSeconds: number | null;
-  }) {
-    try {
-      sessionStorage.setItem(
-        FLARE_LAST_RESULT_KEY,
-        JSON.stringify(payload)
-      );
-    } catch {
-      /* ignore quota / private mode */
-    }
-  }
-
   async function onRun() {
     setError("");
     try {
       sessionStorage.removeItem(FLARE_LAST_RESULT_KEY);
+      sessionStorage.removeItem(FLARE_FORM_KEY);
     } catch {
       /* ignore */
     }
@@ -451,8 +401,6 @@ export default function CancerDetection() {
     setFusionScanResult(null);
     setCompletedSeconds(null);
     if (!cancerType) return setError("Please select a cancer type.");
-
-    setActiveRunMode(brainPipeline);
 
     if (cancerType === "brain" && brainPipeline === "fusion") {
       if (!fusionCtFile || !fusionMriFile) {
@@ -472,12 +420,6 @@ export default function CancerDetection() {
           fusionScanResult: r,
           scanResult: null,
           ctScanResult: null,
-          completedSeconds: elapsed,
-        });
-        persistLastResult({
-          scanResult: null,
-          ctScanResult: null,
-          fusionScanResult: r,
           completedSeconds: elapsed,
         });
         setInferSnackMsg(`Inference complete — model finished in ${elapsed}s`);
@@ -505,12 +447,6 @@ export default function CancerDetection() {
         patchStored({
           ctScanResult: r,
           scanResult: null,
-          fusionScanResult: null,
-          completedSeconds: elapsed,
-        });
-        persistLastResult({
-          scanResult: null,
-          ctScanResult: r,
           fusionScanResult: null,
           completedSeconds: elapsed,
         });
@@ -560,12 +496,6 @@ export default function CancerDetection() {
           fusionScanResult: null,
           completedSeconds: elapsed,
         });
-        persistLastResult({
-          scanResult: folderOutcome,
-          ctScanResult: null,
-          fusionScanResult: null,
-          completedSeconds: elapsed,
-        });
         setInferSnackMsg(`Inference complete — model finished in ${elapsed}s`);
         setInferSnackOpen(true);
       } else {
@@ -588,12 +518,6 @@ export default function CancerDetection() {
           fusionScanResult: null,
           completedSeconds: elapsed,
         });
-        persistLastResult({
-          scanResult: legacy,
-          ctScanResult: null,
-          fusionScanResult: null,
-          completedSeconds: elapsed,
-        });
         setInferSnackMsg(`Inference complete — model finished in ${elapsed}s`);
         setInferSnackOpen(true);
       }
@@ -605,7 +529,6 @@ export default function CancerDetection() {
     }
   }
 
-  const displayMode = activeRunMode ?? brainPipeline;
   const predLegacy = scanResult?.kind === "legacy" ? scanResult.pred : null;
   const mriV2 = scanResult?.kind === "mri_api_v2" ? scanResult : null;
 
@@ -748,6 +671,8 @@ export default function CancerDetection() {
                     display: "flex",
                     flexWrap: "wrap",
                     gap: 0.5,
+                    pointerEvents: loading ? "none" : "auto",
+                    opacity: loading ? 0.85 : 1,
                     "& .MuiToggleButton-root": {
                       color: "rgba(255,255,255,0.75)",
                       textTransform: "none",
@@ -784,6 +709,8 @@ export default function CancerDetection() {
                   }}
                   sx={{
                     mb: 2,
+                    pointerEvents: loading ? "none" : "auto",
+                    opacity: loading ? 0.85 : 1,
                     "& .MuiToggleButton-root": {
                       color: "rgba(255,255,255,0.75)",
                       textTransform: "none",
@@ -1181,7 +1108,6 @@ export default function CancerDetection() {
                     setCtScanResult(null);
                     setFusionScanResult(null);
                     setCompletedSeconds(null);
-                    setActiveRunMode(null);
                     setError("");
                     setHospitalId("H001");
                     setCancerType("");
