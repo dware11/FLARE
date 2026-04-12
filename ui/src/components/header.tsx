@@ -45,6 +45,15 @@ export default function Header() {
     setLogoutOpen(false)
   }
 
+  const refreshApp = () => {
+    handleMenuClose()
+    try {
+      sessionStorage.removeItem('flare_last_result')
+      sessionStorage.removeItem('flare_form_state')
+    } catch { /* ignore */ }
+    window.dispatchEvent(new CustomEvent('flare:refresh-app'))
+  }
+
   const confirmLogout = () => {
     setLogoutOpen(false)
     try {
@@ -121,6 +130,10 @@ export default function Header() {
 
               <MenuItem onClick={() => go('/ehr-database')}>
                 EHR Database
+              </MenuItem>
+
+              <MenuItem onClick={refreshApp}>
+                Refresh App
               </MenuItem>
 
               <Divider sx={{ borderColor: 'rgba(255,255,255,0.08)' }} />

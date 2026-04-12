@@ -33,6 +33,14 @@ export default function OutbreakTracker() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    const onRefreshApp = () => {
+      void load();
+    };
+    window.addEventListener("flare:refresh-app", onRefreshApp);
+    return () => window.removeEventListener("flare:refresh-app", onRefreshApp);
+  }, [load]);
+
   const totalAbnormal = outbreak?.total_approved_abnormal ?? 0;
   const detectionRate = outbreak
     ? `${outbreak.percent_of_baseline.toFixed(1)}% of expected baseline`

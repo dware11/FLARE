@@ -387,6 +387,45 @@ export default function CancerDetection() {
     }
   }, [loading]);
 
+  const resetPageState = useCallback(() => {
+    clearStored();
+    setScanResult(null);
+    setCtScanResult(null);
+    setFusionScanResult(null);
+    setCompletedSeconds(null);
+    setError("");
+    setHospitalId("H001");
+    setCancerType("");
+    setFirstName("");
+    setLastName("");
+    setMedicalId("");
+    setDob("");
+    setFile(null);
+    setFolderFiles([]);
+    setFolderInputKey((k) => k + 1);
+    setBrainPipeline("mri");
+    setBrainUploadMode("single");
+    setFusionCtFile(null);
+    setFusionMriFile(null);
+    setFusionInputKey((k) => k + 1);
+    try {
+      sessionStorage.removeItem(FLARE_LAST_RESULT_KEY);
+      sessionStorage.removeItem(FLARE_FORM_KEY);
+    } catch { /* ignore */ }
+  }, [clearStored]);
+
+  useEffect(() => {
+    const onRefreshApp = () => {
+      if (loading) {
+        setError(LOCKED_MSG);
+        return;
+      }
+      resetPageState();
+    };
+    window.addEventListener("flare:refresh-app", onRefreshApp);
+    return () => window.removeEventListener("flare:refresh-app", onRefreshApp);
+  }, [loading, resetPageState, LOCKED_MSG]);
+
   async function onRun() {
     setError("");
     try {
@@ -1102,32 +1141,7 @@ export default function CancerDetection() {
                 <Button
                   variant="outlined"
                   disabled={loading}
-                  onClick={() => {
-                    clearStored();
-                    setScanResult(null);
-                    setCtScanResult(null);
-                    setFusionScanResult(null);
-                    setCompletedSeconds(null);
-                    setError("");
-                    setHospitalId("H001");
-                    setCancerType("");
-                    setFirstName("");
-                    setLastName("");
-                    setMedicalId("");
-                    setDob("");
-                    setFile(null);
-                    setFolderFiles([]);
-                    setFolderInputKey((k) => k + 1);
-                    setBrainPipeline("mri");
-                    setBrainUploadMode("single");
-                    setFusionCtFile(null);
-                    setFusionMriFile(null);
-                    setFusionInputKey((k) => k + 1);
-                    try {
-                      sessionStorage.removeItem(FLARE_LAST_RESULT_KEY);
-                      sessionStorage.removeItem(FLARE_FORM_KEY);
-                    } catch { /* ignore */ }
-                  }}
+                  onClick={resetPageState}
                   sx={{
                     minWidth: 100,
                     textTransform: "none",

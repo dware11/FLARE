@@ -97,6 +97,14 @@ export default function GeoTracker() {
     void loadAll();
   }, [loadAll]);
 
+  useEffect(() => {
+    const onRefreshApp = () => {
+      void loadAll();
+    };
+    window.addEventListener("flare:refresh-app", onRefreshApp);
+    return () => window.removeEventListener("flare:refresh-app", onRefreshApp);
+  }, [loadAll]);
+
   function openApproveModal(caseId: string) {
     setApproveCaseId(caseId);
     setReviewerName("");
