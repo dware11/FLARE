@@ -1514,25 +1514,20 @@ export default function CancerDetection() {
               sx={{
                 display: "flex",
                 flexDirection: { xs: "column", sm: "row" },
+                justifyContent: imagePreviewUrl ? "flex-start" : "center",
                 gap: 2,
                 mb: 3,
                 flexWrap: "wrap",
               }}
             >
-              <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
-                {imagePreviewUrl ? (
+              {imagePreviewUrl && (
+                <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
                   <Box component="img" src={imagePreviewUrl} alt="CT input" sx={pairImgSx} />
-                ) : (
-                  <Box sx={{ ...placeholderBoxSx, minHeight: 200, maxWidth: 300 }}>
-                    <Typography sx={{ color: "rgba(255,255,255,0.55)", textAlign: "center" }}>
-                      CT volume — no raster preview in browser
-                    </Typography>
-                  </Box>
-                )}
-                <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
-                  Original Scan
-                </Typography>
-              </Box>
+                  <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+                    Original Scan
+                  </Typography>
+                </Box>
+              )}
               <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
                 {absolutizeStaticUrl(ctScanResult.cam_url as string | null | undefined) ? (
                   <>

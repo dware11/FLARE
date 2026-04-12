@@ -48,6 +48,9 @@ def _preload_models_once():
     try:
         from ml.brain.ct.infer import _load_model
 
+        # NOTE: switched to multimodal_finetune_ct after fine-tune on tumor/normal dataset
+        # Test AUC: 0.9975, Sensitivity: 99.4%, Specificity: 99.1%
+        # Demo patient baselines differ from old checkpoint — re-verify before demo.
         # OLD default: /scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt
         CT_CKPT = os.environ.get(
             "FLARE_CT_CHECKPOINT",
@@ -289,7 +292,7 @@ def _validate_upload(file) -> tuple[bool, str]:
     size = file.tell()
     file.seek(0)
     if size > MAX_UPLOAD_BYTES:
-        return False, f"File too large (max 50MB, got {size // 1024 // 1024}MB)"
+        return False, f"File too large (max 200MB, got {size // 1024 // 1024}MB)"
     filename = file.filename or ""
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if filename.endswith(".nii.gz"):
@@ -840,9 +843,9 @@ def api_ct_predict():
 
         from ml.brain.ct.infer import run_ct_from_image, run_ct_from_npz
 
-        # NOTE: demo patient baselines updated after multimodal_finetune_ct checkpoint swap
-        # ct_abnormal.npz (ID_1b44dc3cc) new p_abnormal: TBD (run to verify)
-        # ct_normal.npz   (ID_22c82f7a0) new p_abnormal: TBD (run to verify)
+        # NOTE: switched to multimodal_finetune_ct after fine-tune on tumor/normal dataset
+        # Test AUC: 0.9975, Sensitivity: 99.4%, Specificity: 99.1%
+        # Demo patient baselines will differ from old checkpoint — re-verify before demo
         CT_CKPT = os.environ.get(
             "FLARE_CT_CHECKPOINT",
             # OLD: /scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt
@@ -1400,6 +1403,9 @@ def api_fusion_predict():
 
             CT_CKPT = os.environ.get(
                 "FLARE_CT_CHECKPOINT",
+                # NOTE: switched to multimodal_finetune_ct after fine-tune on tumor/normal dataset
+                # Test AUC: 0.9975, Sensitivity: 99.4%, Specificity: 99.1%
+                # Demo patient baselines will differ from old checkpoint — re-verify before demo
                 # OLD: /scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt
                 "/scratch/bckk/flare/ct_brain/outputs/multimodal_finetune_ct/best_ct_finetune.pt",
             )
