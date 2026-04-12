@@ -89,6 +89,59 @@ def _imagenet_normalize_volume(x: torch.Tensor) -> torch.Tensor:
     std = torch.tensor([0.229, 0.224, 0.225], device=x.device, dtype=x.dtype).view(1, 3, 1, 1)
     return (x - mean) / std
 
+
+def _denormalize_volume(x_norm: torch.Tensor) -> torch.Tensor:
+    """Inverse ImageNet norm for GradCAM overlay display; x_norm (k, C, H, W)."""
+    mean = torch.tensor([0.485, 0.456, 0.406], device=x_norm.device, dtype=x_norm.dtype).view(1, 3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225], device=x_norm.device, dtype=x_norm.dtype).view(1, 3, 1, 1)
+    return (x_norm * std + mean).clamp(0.0, 1.0)
+
+
+def _run_ct_core(
+    model: torch.nn.Module,
+    agg: str,
+    eval_threshold: float,
+    x_batch: torch.Tensor,
+    x_raw_volume: torch.Tensor,
+    x_norm_volume: torch.Tensor,
+    thick: torch.Tensor,
+    cam_dir: Optional[Path],
+    cam_stem: str,
+) -> Dict:
+    """
+    x_batch: (1, k, C, H, W) ImageNet-normalized.
+    x_raw_volume: (k, C, H, W) ~[0,1] for overlay.
+    x_norm_volume: (k, C, H, W) normalized (same as x_batch[0]).
+    """
+    use_grad = cam_dir is not None
+    probs = _predict_one(model, x_batch, use_grad=use_grad, agg=agg, thickness=thick)
+    pred = 1 if float(probs[1]) >= eval_threshold else 0
+
+    cam_path = None
+    if use_grad and cam_dir:
+        gradcam = GradCAM(model, _gradcam_layer_name(model))
+        k = x_raw_volume.shape[0]
+        center_raw = x_raw_volume[k // 2 : k // 2 + 1]
+        if is_sequence_ct_model(model):
+            x_cam = x_norm_volume[k // 2 : k // 2 + 1].unsqueeze(0)
+        else:
+            x_cam = x_norm_volume[k // 2 : k // 2 + 1]
+        _, overlay = gradcam(x_cam, target_class=pred, input_for_overlay=center_raw)
+        if overlay is not None:
+            cam_dir_p = Path(cam_dir)
+            cam_dir_p.mkdir(parents=True, exist_ok=True)
+            cam_path_obj = cam_dir_p / f"{cam_stem}.png"
+            if _save_overlay_png(overlay, cam_path_obj):
+                cam_path = str(cam_path_obj)
+
+    return {
+        "label": LABELS[pred],
+        "confidence": float(probs[pred]),
+        "p_normal": float(probs[0]),
+        "p_abnormal": float(probs[1]),
+        "cam_path": cam_path,
+    }
+
 def _load_manifest(manifest: Path) -> list: 
     with open(manifest, encoding="utf-8") as f:  
         return json.load(f) 
@@ -184,7 +237,15 @@ def _load_model(checkpoint: Path):
         load_sequence_weights_compat(model, state)
     else:
         model = build_ct_model()
-        model.load_state_dict(state, strict=True)
+        try:
+            model.load_state_dict(state, strict=True)
+        except RuntimeError:
+            incomp = model.load_state_dict(state, strict=False)
+            print(
+                "WARNING: CT checkpoint loaded with strict=False; "
+                f"missing_keys={incomp.missing_keys} unexpected_keys={incomp.unexpected_keys}",
+                flush=True,
+            )
     model.eval()
     if torch.cuda.is_available():
         model = model.cuda()
@@ -541,7 +602,12 @@ def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus
 
 
 def run_ct_from_npz(npz_path, checkpoint=None, cam_dir=None, threshold=None):
-    """Run CT inference directly from an NPZ file path. Returns same dict shape as run_ct_for_patient."""
+    """Run CT inference directly from an NPZ file path. Returns same dict shape as run_ct_for_patient.
+
+    Supports:
+    - RSNA volumetric NPZ with key ``arr`` (k, C, H, W) raw → ImageNet norm applied here.
+    - Single-slice NPZ with key ``image`` (3, H, W) already ImageNet-normalized (see scripts/data/03_preprocess_ct.py).
+    """
     from src.config import OUTPUTS
 
     if checkpoint is None:
@@ -558,41 +624,98 @@ def run_ct_from_npz(npz_path, checkpoint=None, cam_dir=None, threshold=None):
     expected_k = int(k_slices_meta) if k_slices_meta is not None else None
     device = next(model.parameters()).device
 
-    arr = _load_patient_arr(arr_path, expected_k=expected_k)
-    x_raw = torch.from_numpy(arr).float().to(device)
-    x_all = _imagenet_normalize_volume(x_raw)
+    data = np.load(arr_path)
+    if "arr" in data.files:
+        arr = _load_patient_arr(arr_path, expected_k=expected_k)
+        x_raw = torch.from_numpy(arr).float().to(device)
+        x_all = _imagenet_normalize_volume(x_raw)
+        patient_id = arr_path.parent.name
+    elif "image" in data.files:
+        img = torch.from_numpy(np.asarray(data["image"], dtype=np.float32)).to(device)
+        if img.dim() != 3:
+            raise ValueError(f"NPZ 'image' must be (3,H,W), got {tuple(img.shape)}")
+        x_all = img.unsqueeze(0)
+        x_raw = _denormalize_volume(x_all)
+        patient_id = arr_path.stem
+    else:
+        raise ValueError(
+            "NPZ must contain 'arr' (RSNA volume) or 'image' (single-slice normalized); "
+            f"got keys: {list(data.files)}"
+        )
+
     x_batch = x_all.unsqueeze(0)
     thick = _thickness_from_npz(arr_path, device)
-    use_grad = cam_dir is not None
-    probs = _predict_one(model, x_batch, use_grad=use_grad, agg=agg, thickness=thick)
-    pred = 1 if float(probs[1]) >= eval_threshold else 0
+    out = _run_ct_core(
+        model,
+        agg,
+        eval_threshold,
+        x_batch,
+        x_raw,
+        x_all,
+        thick,
+        Path(cam_dir) if cam_dir is not None else None,
+        arr_path.stem,
+    )
+    out["patient_id"] = patient_id
+    return out
 
-    cam_path = None
-    if use_grad and cam_dir:
-        gradcam = GradCAM(model, _gradcam_layer_name(model))
-        k = x_raw.shape[0]
-        center_raw = x_raw[k // 2 : k // 2 + 1]
-        if is_sequence_ct_model(model):
-            x_cam = x_all[k // 2 : k // 2 + 1].unsqueeze(0)
-        else:
-            x_cam = x_all[k // 2 : k // 2 + 1]
-        _, overlay = gradcam(x_cam, target_class=pred, input_for_overlay=center_raw)
-        if overlay is not None:
-            cam_dir_p = Path(cam_dir)
-            cam_dir_p.mkdir(parents=True, exist_ok=True)
-            cam_path_obj = cam_dir_p / f"{arr_path.stem}.png"
-            if _save_overlay_png(overlay, cam_path_obj):
-                cam_path = str(cam_path_obj)
 
-    patient_id = arr_path.parent.name
-    return {
-        "patient_id": patient_id,
-        "label": LABELS[pred],
-        "confidence": float(probs[pred]),
-        "p_normal": float(probs[0]),
-        "p_abnormal": float(probs[1]),
-        "cam_path": cam_path,
-    }
+def run_ct_from_image(
+    image_path,
+    checkpoint=None,
+    device=None,
+    cam_dir=None,
+    threshold=None,
+):
+    """
+    Run CT inference on a single 2D JPEG or PNG (same preprocessing as scripts/data/03_preprocess_ct.py).
+    Returns the same dict shape as run_ct_from_npz.
+    """
+    from PIL import Image
+
+    from src.config import OUTPUTS
+
+    image_path = Path(image_path)
+    if not image_path.exists():
+        return None
+
+    ckpt_path = Path(checkpoint) if checkpoint is not None else OUTPUTS / "ct_baseline_best.pt"
+
+    model, _model_kind, agg, _k_slices_meta, ckpt_meta = _load_model(ckpt_path)
+    if device is not None:
+        dev = torch.device(device) if isinstance(device, str) else device
+        model = model.to(dev)
+    eval_threshold = resolve_abnormal_threshold(cli=threshold, default=0.5, ckpt=ckpt_meta)
+    model_device = next(model.parameters()).device
+
+    im = Image.open(image_path).convert("RGB")
+    im = im.resize((224, 224), Image.BILINEAR)
+    hwc = np.asarray(im, dtype=np.float32) / 255.0
+    chw = np.transpose(hwc, (2, 0, 1))
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
+    img_norm = (chw - mean) / std
+    x_all = torch.from_numpy(img_norm).float().to(model_device)
+    x_raw = torch.from_numpy(hwc).permute(2, 0, 1).float().to(model_device)
+    x_all = x_all.unsqueeze(0)
+    x_raw = x_raw.unsqueeze(0)
+    x_batch = x_all.unsqueeze(0)
+    thick = torch.zeros(1, 1, dtype=torch.float32, device=model_device)
+
+    stem = image_path.stem
+    out = _run_ct_core(
+        model,
+        agg,
+        eval_threshold,
+        x_batch,
+        x_raw,
+        x_all,
+        thick,
+        Path(cam_dir) if cam_dir is not None else None,
+        stem,
+    )
+    out["patient_id"] = stem
+    return out
 
 
 if __name__ == "__main__":

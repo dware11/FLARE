@@ -48,9 +48,10 @@ def _preload_models_once():
     try:
         from ml.brain.ct.infer import _load_model
 
+        # OLD default: /scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt
         CT_CKPT = os.environ.get(
             "FLARE_CT_CHECKPOINT",
-            "/scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt",
+            "/scratch/bckk/flare/ct_brain/outputs/multimodal_finetune_ct/best_ct_finetune.pt",
         )
         ckpt_path = Path(CT_CKPT)
         if ckpt_path.exists():
@@ -795,7 +796,7 @@ def _preprocess_dicom_zip_to_npz(zip_path: str, patient_id: str, k_slices: int =
 @app.route("/api/ct/predict", methods=["POST"])
 @limiter.limit("20 per minute")
 def api_ct_predict():
-    """CT prediction from uploaded NPZ or zipped DICOM study."""
+    """CT prediction from uploaded NPZ, JPEG/PNG, or zipped DICOM study."""
     patient_id = request.form.get("patient_id")
     hospital_id = request.form.get("hospitalId") or "H001"
     first_name = request.form.get("first_name")
@@ -816,12 +817,14 @@ def api_ct_predict():
         return jsonify({"error": msg, "code": "INVALID_FILE"}), 400
 
     fname = (ct_file.filename or "").lower()
-    is_zip = fname.endswith(".zip")
-    is_npz = fname.endswith(".npz")
+    ext = fname.rsplit(".", 1)[-1] if "." in fname else ""
+    is_zip = ext == "zip"
+    is_npz = ext == "npz"
+    is_image = ext in ("jpg", "jpeg", "png")
 
-    if not is_npz and not is_zip:
+    if not (is_npz or is_zip or is_image):
         return jsonify({
-            "error": "CT inference requires a .npz volume or .zip DICOM study"
+            "error": "CT inference requires a .npz volume, .zip DICOM study, or .jpg/.jpeg/.png image"
         }), 400
 
     try:
@@ -835,19 +838,31 @@ def api_ct_predict():
         else:
             ct_path = saved_path
 
-        from ml.brain.ct.infer import run_ct_from_npz
+        from ml.brain.ct.infer import run_ct_from_image, run_ct_from_npz
 
+        # NOTE: demo patient baselines updated after multimodal_finetune_ct checkpoint swap
+        # ct_abnormal.npz (ID_1b44dc3cc) new p_abnormal: TBD (run to verify)
+        # ct_normal.npz   (ID_22c82f7a0) new p_abnormal: TBD (run to verify)
         CT_CKPT = os.environ.get(
             "FLARE_CT_CHECKPOINT",
-            "/scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt",
+            # OLD: /scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt
+            "/scratch/bckk/flare/ct_brain/outputs/multimodal_finetune_ct/best_ct_finetune.pt",
         )
         cam_dir = _ct_cam_static_dir()
-        ct_result = run_ct_from_npz(
-            ct_path,
-            checkpoint=CT_CKPT,
-            cam_dir=cam_dir,
-            threshold=0.488,
-        )
+        if is_image:
+            ct_result = run_ct_from_image(
+                ct_path,
+                checkpoint=CT_CKPT,
+                cam_dir=cam_dir,
+                threshold=0.488,
+            )
+        else:
+            ct_result = run_ct_from_npz(
+                ct_path,
+                checkpoint=CT_CKPT,
+                cam_dir=cam_dir,
+                threshold=0.488,
+            )
         if not ct_result:
             return jsonify({"error": "CT inference failed — check uploaded file"}), 500
 
@@ -875,7 +890,9 @@ def api_ct_predict():
                     "cam_url": cam_url,
                     "hospitalId": hospital_id,
                     "hospitalName": site["name"],
-                    "input_format": "dicom_zip" if is_zip else "npz",
+                    "input_format": (
+                        "dicom_zip" if is_zip else ("npz" if is_npz else "image")
+                    ),
                 }
             ),
             200,
@@ -1383,7 +1400,8 @@ def api_fusion_predict():
 
             CT_CKPT = os.environ.get(
                 "FLARE_CT_CHECKPOINT",
-                "/scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt",
+                # OLD: /scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt
+                "/scratch/bckk/flare/ct_brain/outputs/multimodal_finetune_ct/best_ct_finetune.pt",
             )
             cam_dir_fusion = _ct_cam_static_dir()
             ct_result = run_ct_from_npz(
