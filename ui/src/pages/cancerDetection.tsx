@@ -1102,13 +1102,7 @@ export default function CancerDetection() {
                     component="img"
                     src={imagePreviewUrl}
                     alt="Uploaded scan preview"
-                    sx={{
-                      maxWidth: 400,
-                      width: "100%",
-                      borderRadius: 2,
-                      border: "1px solid rgba(255,255,255,0.12)",
-                      display: "block",
-                    }}
+                    sx={{ ...resultImgSx, maxWidth: 400 }}
                   />
                 </Box>
               )}
