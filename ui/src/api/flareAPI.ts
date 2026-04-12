@@ -1,4 +1,6 @@
-export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:5000";
+export const API_BASE =
+  import.meta.env.VITE_API_BASE_URL ?? "https://reassign-guiding-grass.ngrok-free.dev";
+const NGROK_HEADERS = { "ngrok-skip-browser-warning": "true" } as const;
 
 export type CancerType = "brain" | "breast";
 export type ResultClass = "Normal" | "Benign" | "Malignant";
@@ -73,7 +75,7 @@ export async function predictScan(params: {
   form.append("patient_id", params.medicalId);
   const res = await fetch(
     `${API_BASE}/predict?cancer_type=${encodeURIComponent(params.cancerType)}`,
-    { method: "POST", body: form }
+    { method: "POST", headers: NGROK_HEADERS, body: form }
   );
   if (!res.ok) {
     const msg = await res.text();
@@ -174,7 +176,11 @@ export async function predictMriBraTSFolder(params: {
   form.append("t2w", t2w);
   form.append("t2f", t2f);
 
-  const res = await fetch(`${API_BASE}/api/mri/predict`, { method: "POST", body: form });
+  const res = await fetch(`${API_BASE}/api/mri/predict`, {
+    method: "POST",
+    headers: NGROK_HEADERS,
+    body: form,
+  });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
     const err = (body.error as string) || `Predict failed (${res.status})`;
@@ -198,7 +204,11 @@ export async function predictCtFile(
   if (firstName) form.append("first_name", firstName);
   if (lastName) form.append("last_name", lastName);
   if (dob) form.append("dob", dob);
-  const res = await fetch(`${API_BASE}/api/ct/predict`, { method: "POST", body: form });
+  const res = await fetch(`${API_BASE}/api/ct/predict`, {
+    method: "POST",
+    headers: NGROK_HEADERS,
+    body: form,
+  });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`CT predict failed (${res.status}): ${text}`);
@@ -217,7 +227,11 @@ export async function predictFusion(
   if (mriFile) form.append("mri_file", mriFile);
   form.append("patient_id", patientId);
   form.append("hospitalId", hospitalId);
-  const res = await fetch(`${API_BASE}/api/fusion/predict`, { method: "POST", body: form });
+  const res = await fetch(`${API_BASE}/api/fusion/predict`, {
+    method: "POST",
+    headers: NGROK_HEADERS,
+    body: form,
+  });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`Fusion predict failed (${res.status}): ${text}`);
@@ -228,7 +242,7 @@ export async function predictFusion(
 export async function saveCase(payload: CreateCaseRequest) {
   const res = await fetch(`${API_BASE}/cases`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...NGROK_HEADERS, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`Save case failed (${res.status})`);
@@ -236,7 +250,7 @@ export async function saveCase(payload: CreateCaseRequest) {
 }
 
 export async function fetchCases() {
-  const res = await fetch(`${API_BASE}/cases`);
+  const res = await fetch(`${API_BASE}/cases`, { headers: NGROK_HEADERS });
   if (!res.ok) throw new Error(`Fetch cases failed: ${res.status}`);
   return res.json();
 }
@@ -260,7 +274,7 @@ export type GeoSummary = {
 };
 
 export async function fetchGeoSummary(): Promise<GeoSummary> {
-  const res = await fetch(`${API_BASE}/api/geotracker/summary`);
+  const res = await fetch(`${API_BASE}/api/geotracker/summary`, { headers: NGROK_HEADERS });
   if (!res.ok) throw new Error(`Geo summary failed: ${res.status}`);
   return res.json();
 }
@@ -280,7 +294,7 @@ export type OutbreakStatus = {
 };
 
 export async function fetchOutbreakStatus(): Promise<OutbreakStatus> {
-  const res = await fetch(`${API_BASE}/api/outbreak/status`);
+  const res = await fetch(`${API_BASE}/api/outbreak/status`, { headers: NGROK_HEADERS });
   if (!res.ok) throw new Error("Failed to fetch outbreak status");
   return res.json();
 }
@@ -299,7 +313,7 @@ export type ReviewCase = {
 };
 
 export async function fetchPendingReviews(): Promise<{ cases: ReviewCase[] }> {
-  const res = await fetch(`${API_BASE}/api/reviews/pending`);
+  const res = await fetch(`${API_BASE}/api/reviews/pending`, { headers: NGROK_HEADERS });
   if (!res.ok) throw new Error(`Fetch reviews failed: ${res.status}`);
   return res.json();
 }
@@ -312,7 +326,7 @@ export async function approveReview(
   const signature = opts.signature.trim();
   const res = await fetch(`${API_BASE}/api/reviews/${caseId}/approve`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...NGROK_HEADERS, "Content-Type": "application/json" },
     body: JSON.stringify({
       reviewerName,
       signature,
@@ -325,7 +339,7 @@ export async function approveReview(
 export async function rejectReview(caseId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/api/reviews/${caseId}/reject`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...NGROK_HEADERS, "Content-Type": "application/json" },
     body: JSON.stringify({ reviewerId: "demo-reviewer", reason: "rejected by reviewer" }),
   });
   if (!res.ok) throw new Error(`Reject failed: ${res.status}`);
@@ -354,7 +368,7 @@ export type EhrRecord = {
 };
 
 export async function fetchEhrRecords(): Promise<{ records: EhrRecord[] }> {
-  const res = await fetch(`${API_BASE}/api/ehr`);
+  const res = await fetch(`${API_BASE}/api/ehr`, { headers: NGROK_HEADERS });
   if (!res.ok) throw new Error(`Fetch EHR failed: ${res.status}`);
   return res.json();
 }

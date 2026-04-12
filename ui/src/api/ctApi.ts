@@ -1,5 +1,6 @@
 export const CT_API_BASE =
-  import.meta.env.VITE_CT_API_BASE ?? 'http://localhost:5000';
+  import.meta.env.VITE_CT_API_BASE ?? 'https://reassign-guiding-grass.ngrok-free.dev';
+const NGROK_HEADERS = { 'ngrok-skip-browser-warning': 'true' } as const;
 
 console.log('CT API BASE:', CT_API_BASE);
 
@@ -8,7 +9,7 @@ export interface CtPatientsResponse {
 }
 
 export async function getCtPatients(): Promise<CtPatientsResponse | string[]> {
-  const res = await fetch(`${CT_API_BASE}/api/patients`);
+  const res = await fetch(`${CT_API_BASE}/api/patients`, { headers: NGROK_HEADERS });
   if (!res.ok) {
     throw new Error(`GET /api/patients failed (${res.status})`);
   }
@@ -41,6 +42,7 @@ export async function runCtPredict(
 
   const res = await fetch(`${CT_API_BASE}/api/ct/predict`, {
     method: 'POST',
+    headers: NGROK_HEADERS,
     body: form,
   });
 

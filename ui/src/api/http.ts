@@ -10,6 +10,7 @@ export async function apiFetch<T>(
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      'ngrok-skip-browser-warning': 'true',
       Authorization: `Bearer ${token}`, //sends secure JWT token
       ...(options.headers || {})
     }

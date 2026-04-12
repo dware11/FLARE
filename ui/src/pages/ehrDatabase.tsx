@@ -53,7 +53,7 @@ type PatientRecord = {
   originalImageUrl?: string
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:5000'
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'https://reassign-guiding-grass.ngrok-free.dev'
 
 function toAbsoluteUrl(url: string | null | undefined): string | undefined {
   if (!url) return undefined

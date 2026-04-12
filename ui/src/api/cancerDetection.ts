@@ -1,7 +1,7 @@
 import type { CreateCaseRequest, CaseResult } from './types'
 
 const API_BASE =
-  import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:5000'
+  import.meta.env.VITE_API_BASE_URL ?? 'https://reassign-guiding-grass.ngrok-free.dev'
 
 export async function createCaseAndRunModel(
   token: string,
@@ -15,6 +15,7 @@ export async function createCaseAndRunModel(
   const res = await fetch(`${API_BASE}/api/cases`, {
     method: 'POST',
     headers: {
+      'ngrok-skip-browser-warning': 'true',
       Authorization: `Bearer ${token}`,
     },
     body: form,
