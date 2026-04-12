@@ -277,8 +277,8 @@ def _utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 # SECURITY: File upload validation — blocks malicious or oversized uploads (HIPAA consideration)
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50MB
-ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".npz", ".nii", ".gz", ".dcm"}
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200MB (DICOM zips can be large)
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".npz", ".nii", ".gz", ".dcm", ".zip"}
 
 
 def _validate_upload(file) -> tuple[bool, str]:
@@ -711,10 +711,91 @@ def _ct_cam_static_dir() -> str:
     return d
 
 
+CT_K_SLICES_DEFAULT = 21
+
+DICOM_EXTS = {".dcm", ".dicom"}
+
+
+def _preprocess_dicom_zip_to_npz(zip_path: str, patient_id: str, k_slices: int = CT_K_SLICES_DEFAULT) -> str:
+    """Extract a zipped DICOM study, preprocess to model-ready NPZ, return NPZ path.
+
+    Reuses the proven offline preprocessing from scripts/preprocess_ct.py:
+      get_sorted_dicom_paths  — sort DICOMs by InstanceNumber
+      save_ct_volume_npz_from_dicoms — center-k slice selection, HU windowing, NPZ output
+    """
+    import tempfile
+    import shutil
+    import zipfile
+
+    if not zipfile.is_zipfile(zip_path):
+        raise ValueError("Uploaded file is not a valid ZIP archive")
+
+    extract_dir = tempfile.mkdtemp(prefix="flare_dicom_")
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for member in zf.namelist():
+                basename = os.path.basename(member)
+                if not basename:
+                    continue
+                if basename.startswith(".") or basename.startswith("__"):
+                    continue
+                zf.extract(member, extract_dir)
+
+        dcm_files = []
+        for root, _dirs, files in os.walk(extract_dir):
+            for f in files:
+                ext = os.path.splitext(f)[1].lower()
+                if ext in DICOM_EXTS or (ext == "" and not f.startswith(".")):
+                    full = os.path.join(root, f)
+                    dcm_files.append(Path(full))
+
+        if not dcm_files:
+            raise ValueError(
+                "ZIP contains no DICOM files (.dcm/.dicom). "
+                "Ensure the ZIP contains a flat or nested folder of DICOM slices."
+            )
+
+        try:
+            import pydicom
+            pydicom.dcmread(str(dcm_files[0]), stop_before_pixels=True)
+        except Exception:
+            raise ValueError(
+                f"First file in ZIP ({dcm_files[0].name}) is not a valid DICOM. "
+                "Ensure the ZIP contains standard DICOM CT slices."
+            )
+
+        from scripts.preprocess_ct import get_sorted_dicom_paths, save_ct_volume_npz_from_dicoms
+
+        sorted_dcms = []
+        for dcm_f in dcm_files:
+            sorted_dcms.append(dcm_f)
+        tmp_dcm_dir = Path(extract_dir)
+        all_dcms_flat = sorted(dcm_files, key=lambda p: p.name)
+
+        try:
+            from scripts.preprocess_ct import get_instance_number
+            all_dcms_flat.sort(key=lambda p: (get_instance_number(p), p.name))
+        except Exception:
+            pass
+
+        upload_dir = os.path.join(os.path.dirname(__file__), "static", "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        npz_out = Path(upload_dir) / f"{patient_id}_ct_from_dicom.npz"
+
+        save_ct_volume_npz_from_dicoms(all_dcms_flat, npz_out, k_slices)
+        app.logger.info(
+            "DICOM ZIP preprocessed: %d slices → k=%d → %s",
+            len(all_dcms_flat), k_slices, npz_out.name,
+        )
+        return str(npz_out)
+    finally:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+
+
 @app.route("/api/ct/predict", methods=["POST"])
 @limiter.limit("20 per minute")
 def api_ct_predict():
-    """CT prediction from uploaded NPZ file."""
+    """CT prediction from uploaded NPZ or zipped DICOM study."""
     patient_id = request.form.get("patient_id")
     hospital_id = request.form.get("hospitalId") or "H001"
     first_name = request.form.get("first_name")
@@ -735,11 +816,25 @@ def api_ct_predict():
         return jsonify({"error": msg, "code": "INVALID_FILE"}), 400
 
     fname = (ct_file.filename or "").lower()
-    if not fname.endswith(".npz"):
-        return jsonify({"error": "CT inference requires a .npz volume file"}), 400
+    is_zip = fname.endswith(".zip")
+    is_npz = fname.endswith(".npz")
+
+    if not is_npz and not is_zip:
+        return jsonify({
+            "error": "CT inference requires a .npz volume or .zip DICOM study"
+        }), 400
 
     try:
-        ct_path = _save_upload(ct_file, patient_id, prefix="ct")
+        saved_path = _save_upload(ct_file, patient_id, prefix="ct")
+
+        if is_zip:
+            try:
+                ct_path = _preprocess_dicom_zip_to_npz(saved_path, patient_id)
+            except ValueError as ve:
+                return jsonify({"error": str(ve)}), 400
+        else:
+            ct_path = saved_path
+
         from ml.brain.ct.infer import run_ct_from_npz
 
         CT_CKPT = os.environ.get(
@@ -754,7 +849,7 @@ def api_ct_predict():
             threshold=0.488,
         )
         if not ct_result:
-            return jsonify({"error": "CT inference failed — check NPZ file"}), 500
+            return jsonify({"error": "CT inference failed — check uploaded file"}), 500
 
         is_abnormal = ct_result["label"] == "abnormal"
         site = HOSPITAL_REGISTRY[hospital_id]
@@ -780,6 +875,7 @@ def api_ct_predict():
                     "cam_url": cam_url,
                     "hospitalId": hospital_id,
                     "hospitalName": site["name"],
+                    "input_format": "dicom_zip" if is_zip else "npz",
                 }
             ),
             200,

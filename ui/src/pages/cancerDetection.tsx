@@ -144,6 +144,12 @@ function isNpzFile(f: File | null): boolean {
   return f.name.toLowerCase().endsWith(".npz");
 }
 
+function isCtUploadFile(f: File | null): boolean {
+  if (!f) return false;
+  const n = f.name.toLowerCase();
+  return n.endsWith(".npz") || n.endsWith(".zip");
+}
+
 type BrainPipeline = "mri" | "ct" | "fusion";
 
 function absolutizeStaticUrl(path: string | null | undefined): string | null {
@@ -326,7 +332,7 @@ export default function CancerDetection() {
   const canSubmit = useMemo(() => {
     if (!canUpload) return false;
     if (cancerType !== "brain") return Boolean(file);
-    if (brainPipeline === "ct") return Boolean(file && isNpzFile(file));
+    if (brainPipeline === "ct") return Boolean(file && isCtUploadFile(file));
     if (brainPipeline === "fusion") return Boolean(fusionCtFile && fusionMriFile);
     if (brainUploadMode === "single") return Boolean(file);
     if (folderFiles.length === 0) return false;
@@ -384,7 +390,7 @@ export default function CancerDetection() {
         return;
       }
       const f = e.dataTransfer.files?.[0];
-      const pattern = /\.(png|jpe?g|nii(\.gz)?|npz)$/i;
+      const pattern = /\.(png|jpe?g|nii(\.gz)?|npz|zip)$/i;
       if (f && pattern.test(f.name)) onFileChosen(f);
     },
     [loading, cancerType, brainUploadMode, onFileChosen, onFolderChosen]
@@ -395,7 +401,7 @@ export default function CancerDetection() {
     e.stopPropagation();
     if (loading) return;
     const f = e.dataTransfer.files?.[0];
-    if (f && f.name.toLowerCase().endsWith(".npz")) {
+    if (f && isCtUploadFile(f)) {
       setFusionCtFile(f);
       setCtScanResult(null);
       setFusionScanResult(null);
@@ -450,10 +456,10 @@ export default function CancerDetection() {
 
     if (cancerType === "brain" && brainPipeline === "fusion") {
       if (!fusionCtFile || !fusionMriFile) {
-        return setError("Upload both CT (.npz) and MRI scans.");
+        return setError("Upload both CT (.npz or .zip DICOM) and MRI scans.");
       }
-      if (!fusionCtFile.name.toLowerCase().endsWith(".npz")) {
-        return setError("CT file must be a .npz volume.");
+      if (!isCtUploadFile(fusionCtFile)) {
+        return setError("CT file must be a .npz volume or .zip DICOM study.");
       }
       setLoading(true);
       startAnalyzeTimer();
@@ -486,8 +492,8 @@ export default function CancerDetection() {
     }
 
     if (cancerType === "brain" && brainPipeline === "ct") {
-      if (!file || !file.name.toLowerCase().endsWith(".npz")) {
-        return setError("Brain CT requires a .npz file.");
+      if (!file || !isCtUploadFile(file)) {
+        return setError("Brain CT requires a .npz volume or .zip DICOM study.");
       }
       setLoading(true);
       startAnalyzeTimer();
@@ -825,7 +831,7 @@ export default function CancerDetection() {
                   >
                     <Typography sx={{ color: "#fbbf24", fontWeight: 700, mb: 0.5 }}>CT volume</Typography>
                     <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: "0.9rem" }}>
-                      .npz only — click or drag
+                      .npz or .zip (DICOM study) — click or drag
                     </Typography>
                     {fusionCtFile && (
                       <Typography sx={{ color: "#ff5c5c", mt: 1.5, fontWeight: 600, fontSize: "0.85rem", wordBreak: "break-all" }}>
@@ -836,12 +842,12 @@ export default function CancerDetection() {
                       key={`ct-${fusionInputKey}`}
                       id="flare-fusion-ct-upload"
                       type="file"
-                      accept=".npz"
+                      accept=".npz,.zip"
                       disabled={loading}
                       style={{ display: "none" }}
                       onChange={(e) => {
                         const f = e.target.files?.[0] ?? null;
-                        if (f && f.name.toLowerCase().endsWith(".npz")) {
+                        if (f && isCtUploadFile(f)) {
                           setFusionCtFile(f);
                           setCtScanResult(null);
                           setFusionScanResult(null);
@@ -930,14 +936,14 @@ export default function CancerDetection() {
                     {cancerType === "brain" && brainPipeline === "mri" && brainUploadMode === "folder"
                       ? "Click to choose a folder or drag files here"
                       : cancerType === "brain" && brainPipeline === "ct"
-                        ? "Click to upload or drag a CT .npz volume"
+                        ? "Click to upload a CT .npz volume or .zip DICOM study"
                         : "Click to upload or drag and drop"}
                   </Typography>
                   <Typography sx={{ color: "rgba(255,255,255,0.45)", fontSize: "0.85rem", mt: 0.5 }}>
                     {cancerType === "brain" && brainPipeline === "mri" && brainUploadMode === "folder"
                       ? "BraTS-style: *-t1n.nii.gz, *-t1c.nii.gz, *-t2w.nii.gz, *-t2f.nii.gz ( *-seg.nii.gz ignored )"
                       : cancerType === "brain" && brainPipeline === "ct"
-                        ? "Preprocessed CT stack as NumPy .npz (server runs /api/ct/predict)"
+                        ? ".npz (preprocessed) or .zip (raw DICOM study) — server preprocesses and runs /api/ct/predict"
                         : cancerType === "brain"
                           ? "JPG/PNG, NIfTI (.nii / .nii.gz), or NPZ — routed to appropriate pipeline on server"
                           : "JPG/PNG or NIfTI (.nii / .nii.gz)"}
@@ -975,7 +981,7 @@ export default function CancerDetection() {
                       disabled={loading}
                       accept={
                         cancerType === "brain" && brainPipeline === "ct"
-                          ? ".npz"
+                          ? ".npz,.zip"
                           : ".jpg,.jpeg,.png,.nii,.nii.gz,.npz"
                       }
                       style={{ display: "none" }}
@@ -1106,15 +1112,18 @@ export default function CancerDetection() {
                 </Box>
               )}
 
-              {cancerType === "brain" && brainPipeline === "ct" && file && isNpzFile(file) && (
+              {cancerType === "brain" && brainPipeline === "ct" && file && isCtUploadFile(file) && (
                 <Box sx={{ mt: 2 }}>
                   <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1 }}>Uploaded CT volume</Typography>
                   <Box sx={{ ...cardSx, maxWidth: 400, p: 2, textAlign: "left" }}>
-                    <Typography sx={{ color: "#fbbf24", fontWeight: 700, mb: 1 }}>CT NPZ</Typography>
+                    <Typography sx={{ color: "#fbbf24", fontWeight: 700, mb: 1 }}>
+                      {file.name.toLowerCase().endsWith(".zip") ? "CT DICOM Study (ZIP)" : "CT NPZ"}
+                    </Typography>
                     <Typography sx={{ fontSize: "0.9rem", wordBreak: "break-all", mb: 0.5 }}>{file.name}</Typography>
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: "0.85rem" }}>
                       {(file.size / 1024 / 1024).toFixed(1)} MB — inference via{" "}
                       <code style={{ color: "rgba(251,191,36,0.95)" }}>POST /api/ct/predict</code>
+                      {file.name.toLowerCase().endsWith(".zip") && " (DICOM → preprocess → model)"}
                     </Typography>
                   </Box>
                 </Box>
@@ -1582,7 +1591,7 @@ export default function CancerDetection() {
                 ) : (
                   <Box sx={{ ...placeholderBoxSx, minHeight: 200, maxWidth: 300 }}>
                     <Typography sx={{ color: "rgba(255,255,255,0.55)", textAlign: "center" }}>
-                      CT volume (.npz) — no raster preview in browser
+                      CT volume — no raster preview in browser
                     </Typography>
                   </Box>
                 )}
