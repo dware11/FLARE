@@ -272,6 +272,14 @@ def _seed_demo_data() -> None:
         }
 
 
+def _reset_demo_data() -> None:
+    _review_cases.clear()
+    _ehr_records.clear()
+    _flare_saved_cases.clear()
+    _api_cases_store.clear()
+    _seed_demo_data()
+
+
 _seed_demo_data()
 
 
@@ -1171,6 +1179,23 @@ def reviews_reject(case_id: str):
         if signature is not None:
             ehr["signature"] = signature
     return jsonify({"ok": True, "caseId": case_id, "status": "rejected"}), 200
+
+
+@app.route("/api/admin/reset", methods=["POST"])
+def admin_reset_demo_data():
+    # DEMO ONLY — remove before production deployment
+    _reset_demo_data()
+    return (
+        jsonify(
+            {
+                "status": "reset",
+                "message": "Demo data reset to 15 seeded cases",
+                "total_cases": 15,
+            }
+        ),
+        200,
+    )
+
 
 @app.route("/api/ehr", methods=["GET"]) 
 def ehr_list(): 

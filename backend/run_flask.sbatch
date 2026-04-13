@@ -24,4 +24,20 @@ echo "Node: $(hostname)" >> /scratch/bckk/flare/projects/FLARE/backend/flask_nod
 echo "Started: $(date)" >> /scratch/bckk/flare/projects/FLARE/backend/flask_node.txt
 
 cd /scratch/bckk/flare/projects/FLARE
+# Kill any existing ngrok instances to prevent conflicts
+pkill -f ngrok || true
+sleep 2
+
+# Start ngrok tunnel on port 5000
+/scratch/bckk/flare/ngrok http 5000 --log=stdout > /tmp/ngrok_flare.log 2>&1 &
+sleep 8
+
+# Save ngrok URL to file for frontend reference
+curl -s http://localhost:4040/api/tunnels | python3 -c \
+  "import sys,json; print(json.load(sys.stdin)['tunnels'][0]['public_url'])" \
+  > /scratch/bckk/flare/projects/FLARE/backend/ngrok_url.txt
+
+echo "ngrok URL: $(cat /scratch/bckk/flare/projects/FLARE/backend/ngrok_url.txt)"
+echo "Node: $(hostname)" >> /scratch/bckk/flare/projects/FLARE/backend/flask_node.txt
+echo "Started: $(date)" >> /scratch/bckk/flare/projects/FLARE/backend/flask_node.txt
 python backend/app.py --host 0.0.0.0
