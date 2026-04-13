@@ -122,6 +122,7 @@ def _preload_models_once():
 
 
 _DEV_ORIGINS = [
+    "https://flare-woad.vercel.app",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:5173",
@@ -132,7 +133,17 @@ _DEV_ORIGINS = [
     "http://127.0.0.1:8000",
 ]
 
-CORS(app, origins=_DEV_ORIGINS, supports_credentials=True)
+CORS(
+    app,
+    origins=_DEV_ORIGINS,
+    supports_credentials=True,
+    methods=["GET", "POST", "OPTIONS"],
+    allow_headers=[
+        "Content-Type",
+        "Authorization",
+        "ngrok-skip-browser-warning",
+    ],
+)
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "static", "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
