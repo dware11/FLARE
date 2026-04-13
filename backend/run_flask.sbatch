@@ -25,7 +25,7 @@ echo "Started: $(date)" >> /scratch/bckk/flare/projects/FLARE/backend/flask_node
 
 cd /scratch/bckk/flare/projects/FLARE
 # Kill any existing ngrok instances to prevent conflicts
-pkill -f ngrok || true
+pkill -f /scratch/bckk/flare/ngrok || true
 sleep 2
 
 # Start ngrok tunnel on port 5000
