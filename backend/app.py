@@ -871,6 +871,46 @@ def api_ct_predict():
 
         is_abnormal = ct_result["label"] == "abnormal"
         site = HOSPITAL_REGISTRY[hospital_id]
+        case_id = None
+        review_required = False
+
+        if is_abnormal:
+            case_id = str(uuid4())
+            review_required = True
+            conf = float(ct_result["confidence"])
+            created_at = _utc_iso()
+            _review_cases[case_id] = {
+                "caseId": case_id,
+                "hospitalId": hospital_id,
+                "hospitalName": site["name"],
+                "patient_id": patient_id,
+                "modality": "brain_ct",
+                "pred_label": "Abnormal",
+                "result_class": "Abnormal",
+                "confidence": conf,
+                "probabilities": {
+                    "normal": float(ct_result["p_normal"]),
+                    "abnormal": float(ct_result["p_abnormal"]),
+                },
+                "is_abnormal": True,
+                "severity": mock_severity(conf),
+                "review_status": "pending",
+                "createdAt": created_at,
+                "approvedAt": None,
+                "rejectedAt": None,
+                "reviewerId": None,
+                "reject_reason": None,
+                "signature": None,
+                "gradcam_url": None,
+                "input_image_url": None,
+                "segmentation": None,
+            }
+            _ehr_records[case_id] = {
+                **_review_cases[case_id],
+                "firstName": first_name,
+                "lastName": last_name,
+                "dob": dob,
+            }
 
         stem = Path(ct_path).stem
         cam_disk = os.path.join(cam_dir, f"{stem}.png")
@@ -893,6 +933,8 @@ def api_ct_predict():
                     "cam_url": cam_url,
                     "hospitalId": hospital_id,
                     "hospitalName": site["name"],
+                    "caseId": case_id,
+                    "review_required": review_required,
                     "input_format": (
                         "dicom_zip" if is_zip else ("npz" if is_npz else "image")
                     ),
@@ -1466,6 +1508,8 @@ def api_fusion_predict():
     is_abnormal  = fusion_score >= FUSION_THRESHOLD
     pred_label   = "Abnormal" if is_abnormal else "Normal"
     result_class = "Malignant" if is_abnormal else "Benign"
+    case_id = None
+    review_required = False
 
     ct_cam_url = None
     mri_input_url = None
@@ -1481,6 +1525,44 @@ def api_fusion_predict():
         seg = mri_result.get("segmentation")
         if isinstance(seg, dict):
             mri_overlay_url = seg.get("overlay_url")
+
+    if is_abnormal:
+        case_id = str(uuid4())
+        review_required = True
+        site = HOSPITAL_REGISTRY[hospital_id]
+        created_at = _utc_iso()
+        _review_cases[case_id] = {
+            "caseId": case_id,
+            "hospitalId": hospital_id,
+            "hospitalName": site["name"],
+            "patient_id": patient_id,
+            "modality": "brain_fusion",
+            "pred_label": pred_label,
+            "result_class": "Abnormal",
+            "confidence": float(fusion_score),
+            "probabilities": {
+                "normal": round(1.0 - float(fusion_score), 4),
+                "abnormal": round(float(fusion_score), 4),
+            },
+            "is_abnormal": True,
+            "severity": mock_severity(float(fusion_score)),
+            "review_status": "pending",
+            "createdAt": created_at,
+            "approvedAt": None,
+            "rejectedAt": None,
+            "reviewerId": None,
+            "reject_reason": None,
+            "signature": None,
+            "gradcam_url": ct_cam_url,
+            "input_image_url": mri_input_url,
+            "segmentation": {"overlay_url": mri_overlay_url} if mri_overlay_url else None,
+        }
+        _ehr_records[case_id] = {
+            **_review_cases[case_id],
+            "firstName": first_name,
+            "lastName": last_name,
+            "dob": dob,
+        }
 
     return jsonify({
         "patient_id":       patient_id,
@@ -1498,6 +1580,8 @@ def api_fusion_predict():
         "ct_cam_url":       ct_cam_url,
         "mri_input_url":    mri_input_url,
         "mri_overlay_url":  mri_overlay_url,
+        "caseId":           case_id,
+        "review_required":  review_required,
         "ct_details":       ct_result,
         "mri_details":      mri_result,
     }), 200
