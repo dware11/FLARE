@@ -1,0 +1,36 @@
+.git
+.gitignore
+.gitattributes
+
+# Python cache and virtual envs
+**/__pycache__/
+**/*.py[cod]
+.venv/
+venv/
+env/
+
+# Local tooling and editor state
+.cursor/
+.vscode/
+.idea/
+*.log
+
+# Frontend dependency/build noise
+frontend/node_modules/
+frontend/dist/
+frontend/.next/
+
+# Backend runtime outputs and sample payloads
+backend/static/uploads/
+backend/static/masks/
+backend/static/cam/
+backend/test_data/
+
+# Large training artifacts and checkpoints (mounted at runtime instead)
+models/
+ml/**/outputs/
+ml/**/checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
