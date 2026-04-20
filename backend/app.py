@@ -19,6 +19,7 @@ import os
 import uuid as _uuid
 from pathlib import Path
 from predict_mri import predict_mri
+from predict_ct import predict_ct
 
 # ============================================================================
 # App + CORS
@@ -734,87 +735,6 @@ def _ct_cam_static_dir() -> str:
     return d
 
 
-CT_K_SLICES_DEFAULT = 21
-
-DICOM_EXTS = {".dcm", ".dicom"}
-
-
-def _preprocess_dicom_zip_to_npz(zip_path: str, patient_id: str, k_slices: int = CT_K_SLICES_DEFAULT) -> str:
-    """Extract a zipped DICOM study, preprocess to model-ready NPZ, return NPZ path.
-
-    Reuses the proven offline preprocessing from scripts/preprocess_ct.py:
-      get_sorted_dicom_paths  — sort DICOMs by InstanceNumber
-      save_ct_volume_npz_from_dicoms — center-k slice selection, HU windowing, NPZ output
-    """
-    import tempfile
-    import shutil
-    import zipfile
-
-    if not zipfile.is_zipfile(zip_path):
-        raise ValueError("Uploaded file is not a valid ZIP archive")
-
-    extract_dir = tempfile.mkdtemp(prefix="flare_dicom_")
-    try:
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            for member in zf.namelist():
-                basename = os.path.basename(member)
-                if not basename:
-                    continue
-                if basename.startswith(".") or basename.startswith("__"):
-                    continue
-                zf.extract(member, extract_dir)
-
-        dcm_files = []
-        for root, _dirs, files in os.walk(extract_dir):
-            for f in files:
-                ext = os.path.splitext(f)[1].lower()
-                if ext in DICOM_EXTS or (ext == "" and not f.startswith(".")):
-                    full = os.path.join(root, f)
-                    dcm_files.append(Path(full))
-
-        if not dcm_files:
-            raise ValueError(
-                "ZIP contains no DICOM files (.dcm/.dicom). "
-                "Ensure the ZIP contains a flat or nested folder of DICOM slices."
-            )
-
-        try:
-            import pydicom
-            pydicom.dcmread(str(dcm_files[0]), stop_before_pixels=True)
-        except Exception:
-            raise ValueError(
-                f"First file in ZIP ({dcm_files[0].name}) is not a valid DICOM. "
-                "Ensure the ZIP contains standard DICOM CT slices."
-            )
-
-        from scripts.preprocess_ct import get_sorted_dicom_paths, save_ct_volume_npz_from_dicoms
-
-        sorted_dcms = []
-        for dcm_f in dcm_files:
-            sorted_dcms.append(dcm_f)
-        tmp_dcm_dir = Path(extract_dir)
-        all_dcms_flat = sorted(dcm_files, key=lambda p: p.name)
-
-        try:
-            from scripts.preprocess_ct import get_instance_number
-            all_dcms_flat.sort(key=lambda p: (get_instance_number(p), p.name))
-        except Exception:
-            pass
-
-        upload_dir = os.path.join(os.path.dirname(__file__), "static", "uploads")
-        os.makedirs(upload_dir, exist_ok=True)
-        npz_out = Path(upload_dir) / f"{patient_id}_ct_from_dicom.npz"
-
-        save_ct_volume_npz_from_dicoms(all_dcms_flat, npz_out, k_slices)
-        app.logger.info(
-            "DICOM ZIP preprocessed: %d slices → k=%d → %s",
-            len(all_dcms_flat), k_slices, npz_out.name,
-        )
-        return str(npz_out)
-    finally:
-        shutil.rmtree(extract_dir, ignore_errors=True)
-
-
 @app.route("/api/ct/predict", methods=["POST"])
 @limiter.limit("20 per minute")
 def api_ct_predict():
@@ -838,53 +758,20 @@ def api_ct_predict():
     if not ok:
         return jsonify({"error": msg, "code": "INVALID_FILE"}), 400
 
-    fname = (ct_file.filename or "").lower()
-    ext = fname.rsplit(".", 1)[-1] if "." in fname else ""
-    is_zip = ext == "zip"
-    is_npz = ext == "npz"
-    is_image = ext in ("jpg", "jpeg", "png")
-
-    if not (is_npz or is_zip or is_image):
-        return jsonify({
-            "error": "CT inference requires a .npz volume, .zip DICOM study, or .jpg/.jpeg/.png image"
-        }), 400
-
     try:
         saved_path = _save_upload(ct_file, patient_id, prefix="ct")
-
-        if is_zip:
-            try:
-                ct_path = _preprocess_dicom_zip_to_npz(saved_path, patient_id)
-            except ValueError as ve:
-                return jsonify({"error": str(ve)}), 400
-        else:
-            ct_path = saved_path
-
-        from ml.brain.ct.infer import run_ct_from_image, run_ct_from_npz
-
-        # NOTE: switched to multimodal_finetune_ct after fine-tune on tumor/normal dataset
-        # Test AUC: 0.9975, Sensitivity: 99.4%, Specificity: 99.1%
-        # Demo patient baselines will differ from old checkpoint — re-verify before demo
-        CT_CKPT = os.environ.get(
-            "FLARE_CT_CHECKPOINT",
-            # OLD: /scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt
-            "/scratch/bckk/flare/ct_brain/outputs/multimodal_finetune_ct/best_ct_finetune.pt",
-        )
         cam_dir = _ct_cam_static_dir()
-        if is_image:
-            ct_result = run_ct_from_image(
-                ct_path,
-                checkpoint=CT_CKPT,
-                cam_dir=cam_dir,
+        try:
+            ct_result = predict_ct(
+                saved_path,
+                patient_id=patient_id,
+                allow_image=True,
+                checkpoint=None,
                 threshold=0.488,
-            )
-        else:
-            ct_result = run_ct_from_npz(
-                ct_path,
-                checkpoint=CT_CKPT,
                 cam_dir=cam_dir,
-                threshold=0.488,
             )
+        except ValueError as ve:
+            return jsonify({"error": str(ve)}), 400
         if not ct_result:
             return jsonify({"error": "CT inference failed — check uploaded file"}), 500
 
@@ -931,7 +818,11 @@ def api_ct_predict():
                 "dob": dob,
             }
 
+        ct_path = ct_result.get("inference_path") or saved_path
         stem = Path(ct_path).stem
+        input_format = ct_result.get("input_format")
+        if input_format not in {"dicom_zip", "npz", "image"}:
+            input_format = "npz"
         cam_disk = os.path.join(cam_dir, f"{stem}.png")
         cam_url = (
             _absolute_url_for_path(f"/static/cam/{stem}.png")
@@ -954,9 +845,7 @@ def api_ct_predict():
                     "hospitalName": site["name"],
                     "caseId": case_id,
                     "review_required": review_required,
-                    "input_format": (
-                        "dicom_zip" if is_zip else ("npz" if is_npz else "image")
-                    ),
+                    "input_format": input_format,
                 }
             ),
             200,
@@ -1381,25 +1270,6 @@ def geotracker_summary():
     )
 
 
-# ---------------------------------------------------------------------------
-# CT brain demo + fusion — not wired yet. I need to hook ml/brain/ct/infer here when we're ready.
-# UI hook (patient folder, *-ct.nii.gz): ui/src/pages/cancerDetection.tsx + flareAPI predictCtPatientFolder stub.
-# The CT demo client in the repo expects roughly:
-#   GET  /api/patients   (stub above — I return { "patients": [] } for now)
-#   POST /api/predict    # can't use this URL for CT JSON — it clashes with our geotracker /api/predict;
-#                        we have to expose something like /api/ct/predict instead.
-#   GET  /api/cam/<name>
-# ---------------------------------------------------------------------------
-# @app.route("/api/ct/predict", methods=["POST"])
-# def api_ct_predict():
-#     """CT volume inference + fusion — implement when I wire the CT stack."""
-#     return jsonify({"error": "CT inference not configured"}), 501
-#
-# @app.route("/api/cam/<path:name>")
-# def api_ct_cam(name: str):
-#     """Grad-CAM / overlay PNG — add when CT demo needs it."""
-#     return jsonify({"error": "CT CAM not configured"}), 404
-
 # SECURITY: HTTP security headers — prevents caching of PHI on client devices (HIPAA consideration)
 @app.after_request
 def add_security_headers(response):
@@ -1428,7 +1298,7 @@ def _save_upload(file_storage, patient_id: str, prefix: str = "file") -> str:
 @app.route("/api/fusion/predict", methods=["POST"])
 @limiter.limit("20 per minute")
 def api_fusion_predict():
-    """Late fusion: CT + MRI weighted average (CT=0.6, MRI=0.4)."""
+    """Late fusion: CT + MRI weighted average (CT=0.4, MRI=0.6)."""
     patient_id  = request.form.get("patient_id")
     hospital_id = request.form.get("hospitalId") or "H001"
     first_name  = request.form.get("first_name")
@@ -1460,42 +1330,24 @@ def api_fusion_predict():
     if ct_file is not None:
         try:
             ct_saved = _save_upload(ct_file, patient_id, prefix="ct")
-            ct_fname = (ct_file.filename or "").lower()
-            if ct_fname.endswith(".zip"):
-                app.logger.info(
-                    "Fusion: CT input is DICOM ZIP — preprocessing via _preprocess_dicom_zip_to_npz"
-                )
-                try:
-                    ct_path = _preprocess_dicom_zip_to_npz(ct_saved, patient_id)
-                except ValueError as ve:
-                    return jsonify({"error": str(ve)}), 400
-            elif ct_fname.endswith(".npz"):
-                app.logger.info("Fusion: CT input is NPZ — direct run_ct_from_npz")
-                ct_path = ct_saved
-            else:
-                return jsonify({
-                    "error": "Fusion CT file must be .npz volume or .zip DICOM study",
-                }), 400
-
-            from ml.brain.ct.infer import run_ct_from_npz
-
-            CT_CKPT = os.environ.get(
-                "FLARE_CT_CHECKPOINT",
-                # NOTE: switched to multimodal_finetune_ct after fine-tune on tumor/normal dataset
-                # Test AUC: 0.9975, Sensitivity: 99.4%, Specificity: 99.1%
-                # Demo patient baselines will differ from old checkpoint — re-verify before demo
-                # OLD: /scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt
-                "/scratch/bckk/flare/ct_brain/outputs/multimodal_finetune_ct/best_ct_finetune.pt",
-            )
             cam_dir_fusion = _ct_cam_static_dir()
-            ct_result = run_ct_from_npz(
-                ct_path,
-                checkpoint=CT_CKPT,
-                cam_dir=cam_dir_fusion,
+            ct_result = predict_ct(
+                ct_saved,
+                patient_id=patient_id,
+                allow_image=True,
+                checkpoint=None,
                 threshold=0.488,
+                cam_dir=cam_dir_fusion,
             )
             if ct_result:
                 ct_prob = float(ct_result["p_abnormal"])
+            else:
+                app.logger.warning("Fusion: CT inference returned empty result")
+        except ValueError as ve:
+            msg = str(ve)
+            if "CT inference requires" in msg:
+                msg = "Fusion CT file must be .npz volume, .zip DICOM study, or .jpg/.jpeg/.png image"
+            return jsonify({"error": msg}), 400
         except Exception as ex:
             return jsonify({"error": f"CT inference failed: {ex}"}), 500
 
