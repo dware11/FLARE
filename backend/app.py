@@ -75,12 +75,12 @@ def _preload_models_once():
     except Exception as ex:
         app.logger.warning("CT preload failed: %s", ex)
 
-    # MRI classification model
+    # MRI classification model (UPDATED: 5-class)
     try:
         from predict_mri import _load_cls_model
 
         cls_model = _load_cls_model()
-        app.logger.info("MRI classification model preloaded")
+        app.logger.info("MRI classification model preloaded (5-class: glioma, meningioma, pituitary, no_tumor, normal)")
         try:
             import torch
             device = next(cls_model.parameters()).device
@@ -410,6 +410,7 @@ def _run_mri_full_pipeline(
     """
     Shared brain MRI/BraTS path for /api/mri/predict and POST /predict (one pipeline, two entrypoints).
     Returns (response_dict, http_status).
+    UPDATED: Handles 5-class model (glioma, meningioma, pituitary, no_tumor, normal)
     """
     ext = Path(file_storage.filename or "").suffix.lower()
     fname_lower = (file_storage.filename or "").lower()
@@ -657,6 +658,7 @@ def api_predict():
 def api_mri_predict():
     """
     Brain MRI / BraTS prediction (real pipeline).
+    UPDATED: 5-class model support
     Multipart/form-data:
         file        → JPG/PNG for brain_mri | NPZ for brain_brats
         patient_id  → string
@@ -1506,6 +1508,31 @@ def api_fusion_predict():
         "ct_details":       ct_result,
         "mri_details":      mri_result,
     }), 200
+
+
+# SECURITY: HTTP security headers — prevents caching of PHI on client devices (HIPAA consideration)
+@app.after_request
+def add_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
+def _save_upload(file_storage, patient_id: str, prefix: str = "file") -> str:
+    import os
+    from werkzeug.utils import secure_filename
+    upload_dir = os.path.join(os.path.dirname(__file__), "static", "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    ext = os.path.splitext(file_storage.filename or "")[-1] or ".bin"
+    fname = f"{patient_id}_{prefix}{ext}"
+    fpath = os.path.join(upload_dir, secure_filename(fname))
+    file_storage.seek(0)
+    file_storage.save(fpath)
+    return fpath
 
 
 if __name__ == "__main__":
