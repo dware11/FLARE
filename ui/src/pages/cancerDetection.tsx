@@ -150,6 +150,12 @@ function isCtUploadFile(f: File | null): boolean {
   return n.endsWith(".npz") || n.endsWith(".zip");
 }
 
+function isFusionCtUploadFile(f: File | null): boolean {
+  if (!f) return false;
+  const n = f.name.toLowerCase();
+  return n.endsWith(".npz") || n.endsWith(".zip") || n.endsWith(".png") || n.endsWith(".jpg") || n.endsWith(".jpeg");
+}
+
 type BrainPipeline = "mri" | "ct" | "fusion";
 
 function absolutizeStaticUrl(path: string | null | undefined): string | null {
@@ -366,7 +372,7 @@ export default function CancerDetection() {
     e.stopPropagation();
     if (loading) return;
     const f = e.dataTransfer.files?.[0];
-    if (f && isCtUploadFile(f)) {
+    if (f && isFusionCtUploadFile(f)) {
       setFusionCtFile(f);
       setCtScanResult(null);
       setFusionScanResult(null);
@@ -443,10 +449,10 @@ export default function CancerDetection() {
 
     if (cancerType === "brain" && brainPipeline === "fusion") {
       if (!fusionCtFile || !fusionMriFile) {
-        return setError("Upload both CT (.npz or .zip DICOM) and MRI scans.");
+        return setError("Upload both CT (.npz/.zip/.jpg/.jpeg/.png) and MRI scans.");
       }
-      if (!isCtUploadFile(fusionCtFile)) {
-        return setError("CT file must be a .npz volume or .zip DICOM study.");
+      if (!isFusionCtUploadFile(fusionCtFile)) {
+        return setError("CT file must be .npz, .zip, .jpg, .jpeg, or .png.");
       }
       setLoading(true);
       startAnalyzeTimer();
@@ -797,7 +803,7 @@ export default function CancerDetection() {
                   >
                     <Typography sx={{ color: "#fbbf24", fontWeight: 700, mb: 0.5 }}>CT volume</Typography>
                     <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: "0.9rem" }}>
-                      .npz or .zip (DICOM study) — click or drag
+                      .npz / .zip / .jpg / .jpeg / .png — click or drag
                     </Typography>
                     {fusionCtFile && (
                       <Typography sx={{ color: "#ff5c5c", mt: 1.5, fontWeight: 600, fontSize: "0.85rem", wordBreak: "break-all" }}>
@@ -808,12 +814,12 @@ export default function CancerDetection() {
                       key={`ct-${fusionInputKey}`}
                       id="flare-fusion-ct-upload"
                       type="file"
-                      accept=".npz,.zip"
+                      accept=".npz,.zip,.jpg,.jpeg,.png"
                       disabled={loading}
                       style={{ display: "none" }}
                       onChange={(e) => {
                         const f = e.target.files?.[0] ?? null;
-                        if (f && isCtUploadFile(f)) {
+                        if (f && isFusionCtUploadFile(f)) {
                           setFusionCtFile(f);
                           setCtScanResult(null);
                           setFusionScanResult(null);
