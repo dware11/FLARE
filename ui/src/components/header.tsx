@@ -17,6 +17,7 @@ import {
 } from '@mui/material'
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown'
 import CloseIcon from '@mui/icons-material/Close'
+import RefreshIcon from '@mui/icons-material/Refresh'
 
 export default function Header() {
   const navigate = useNavigate()
@@ -132,9 +133,16 @@ export default function Header() {
                 EHR Database
               </MenuItem>
 
-              <MenuItem onClick={refreshApp}>
-                Refresh App
-              </MenuItem>
+              <Box sx={{ display: 'flex', justifyContent: 'center', py: 0.5 }}>
+                <IconButton
+                  onClick={refreshApp}
+                  size="small"
+                  sx={{ color: '#fff' }}
+                  aria-label="Refresh app"
+                >
+                  <RefreshIcon fontSize="small" />
+                </IconButton>
+              </Box>
 
               <Divider sx={{ borderColor: 'rgba(255,255,255,0.08)' }} />
 
@@ -144,6 +152,10 @@ export default function Header() {
                 sx={{ color: '#ff5c5c' }}
               >
                 Log Out
+              </MenuItem>
+              <Divider sx={{ borderColor: 'rgba(255,255,255,0.08)' }} />
+              <MenuItem onClick={() => go('/privacy')}>
+                Privacy & Terms
               </MenuItem>
             </Menu>
           </Box>

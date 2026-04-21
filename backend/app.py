@@ -11,7 +11,7 @@ import argparse
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, g
 from flask_cors import CORS
 import json
 import random
@@ -20,6 +20,8 @@ import uuid as _uuid
 from pathlib import Path
 from predict_mri import predict_mri
 from predict_ct import predict_ct
+# audit_log.py tracks every API call and prediction for compliance
+from audit_log import audit_request, log_prediction
 
 # ============================================================================
 # App + CORS
@@ -146,6 +148,22 @@ CORS(
     ],
 )
 
+
+@app.after_request
+def add_security_headers(response):
+    # No-store: browser must not cache scan results (HIPAA requirement)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    # Prevents MIME-type sniffing attacks
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # Prevents clickjacking — page can't be loaded in an iframe
+    response.headers["X-Frame-Options"] = "DENY"
+    # Forces HTTPS for 1 year
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # Attach request ID to response so frontend can reference it
+    response.headers["X-Request-ID"] = getattr(g, "request_id", "unknown")
+    return response
+
+
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "static", "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 MRI_MODALITIES = {"brain_mri", "brain_brats"}
@@ -158,32 +176,32 @@ HOSPITAL_REGISTRY: dict[str, dict] = {
     "H001": {
         "id": "H001",
         "name": "Houston Methodist Hospital",
-        "latitude": 29.7105,
-        "longitude": -95.3990,
+        "latitude": 29.7095,
+        "longitude": -95.3986,
     },
     "H002": {
         "id": "H002",
         "name": "Memorial Hermann - Texas Medical Center",
-        "latitude": 29.7063,
-        "longitude": -95.4015,
+        "latitude": 29.7080,
+        "longitude": -95.4022,
     },
     "H003": {
         "id": "H003",
         "name": "Baylor St. Luke's Medical Center",
-        "latitude": 29.7091,
-        "longitude": -95.3955,
+        "latitude": 29.7105,
+        "longitude": -95.3965,
     },
     "H004": {
         "id": "H004",
         "name": "Ben Taub Hospital",
-        "latitude": 29.7015,
-        "longitude": -95.3969,
+        "latitude": 29.7040,
+        "longitude": -95.4013,
     },
     "H005": {
         "id": "H005",
         "name": "Texas Children's Hospital",
-        "latitude": 29.7070,
-        "longitude": -95.3930,
+        "latitude": 29.7060,
+        "longitude": -95.4013,
     },
 }
 
@@ -634,6 +652,7 @@ def api_predict():
     return jsonify(out), 200
 
 @app.route("/api/mri/predict", methods=["POST"])
+@audit_request("mri_predict")
 @limiter.limit("20 per minute")
 def api_mri_predict():
     """
@@ -716,6 +735,11 @@ def api_mri_predict():
     if not ok:
         return jsonify({"error": msg, "code": "INVALID_FILE"}), 400
 
+    mri_file_ext = Path(upload.filename or "").suffix.lower() or None
+    upload.seek(0, os.SEEK_END)
+    mri_file_size = upload.tell()
+    upload.seek(0)
+
     out, status = _run_mri_full_pipeline(
         file_storage=upload,
         patient_id=patient_id,
@@ -725,6 +749,12 @@ def api_mri_predict():
         last_name=last_name,
         dob=dob,
     )
+    if status < 400:
+        log_prediction(
+            "mri",
+            out,
+            file_info={"file_size_bytes": mri_file_size, "file_ext": mri_file_ext},
+        )
     return jsonify(out), status
 
 
@@ -736,6 +766,7 @@ def _ct_cam_static_dir() -> str:
 
 
 @app.route("/api/ct/predict", methods=["POST"])
+@audit_request("ct_predict")
 @limiter.limit("20 per minute")
 def api_ct_predict():
     """CT prediction from uploaded NPZ, JPEG/PNG, or zipped DICOM study."""
@@ -760,6 +791,8 @@ def api_ct_predict():
 
     try:
         saved_path = _save_upload(ct_file, patient_id, prefix="ct")
+        ct_file_ext = Path(ct_file.filename or "").suffix.lower() or None
+        ct_file_size = os.path.getsize(saved_path)
         cam_dir = _ct_cam_static_dir()
         try:
             ct_result = predict_ct(
@@ -774,6 +807,11 @@ def api_ct_predict():
             return jsonify({"error": str(ve)}), 400
         if not ct_result:
             return jsonify({"error": "CT inference failed — check uploaded file"}), 500
+        log_prediction(
+            "ct",
+            ct_result,
+            file_info={"file_size_bytes": ct_file_size, "file_ext": ct_file_ext},
+        )
 
         is_abnormal = ct_result["label"] == "abnormal"
         site = HOSPITAL_REGISTRY[hospital_id]
@@ -998,6 +1036,7 @@ def reviews_pending():
 
 
 @app.route("/api/reviews/<case_id>/approve", methods=["POST"])
+@audit_request("review_approve")
 def reviews_approve(case_id: str):
     """Idempotent: approving again does not double-count."""
     case = _review_cases.get(case_id)
@@ -1045,6 +1084,7 @@ def reviews_approve(case_id: str):
 
 
 @app.route("/api/reviews/<case_id>/reject", methods=["POST"])
+@audit_request("review_reject")
 def reviews_reject(case_id: str):
     case = _review_cases.get(case_id)
     if not case:
@@ -1270,18 +1310,6 @@ def geotracker_summary():
     )
 
 
-# SECURITY: HTTP security headers — prevents caching of PHI on client devices (HIPAA consideration)
-@app.after_request
-def add_security_headers(response):
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    if request.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
-        response.headers["Pragma"] = "no-cache"
-    return response
-
-
 def _save_upload(file_storage, patient_id: str, prefix: str = "file") -> str:
     import os
     from werkzeug.utils import secure_filename
@@ -1296,6 +1324,7 @@ def _save_upload(file_storage, patient_id: str, prefix: str = "file") -> str:
 
 
 @app.route("/api/fusion/predict", methods=["POST"])
+@audit_request("fusion_predict")
 @limiter.limit("20 per minute")
 def api_fusion_predict():
     """Late fusion: CT + MRI weighted average (CT=0.4, MRI=0.6)."""
@@ -1396,6 +1425,10 @@ def api_fusion_predict():
     is_abnormal  = fusion_score >= FUSION_THRESHOLD
     pred_label   = "Abnormal" if is_abnormal else "Normal"
     result_class = "Malignant" if is_abnormal else "Benign"
+    log_prediction(
+        "fusion",
+        {"prediction": pred_label, "confidence": float(fusion_score)},
+    )
     case_id = None
     review_required = False
 

@@ -56,3 +56,5 @@ ui/.cache/
 ml/brain/mri/classification_giloma/
 ml/brain/mri/archive/
 ml/brain/mri/archive/
+.vercel
+.env*.local
