@@ -5,23 +5,11 @@ import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import FlareLogo from '../assets/FLARElogo.png'
 
-function logAuthDebug(hypothesisId: string, message: string, data: Record<string, unknown>) {
-  // #region agent log
-  fetch('http://127.0.0.1:7763/ingest/2925affb-f6c8-4554-8741-e0c866a0fdb9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d02beb'},body:JSON.stringify({sessionId:'d02beb',runId:'baseline',hypothesisId,location:'ui/src/pages/login.tsx',message,data,timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
-}
-
 export default function Login() {
   const { loginWithRedirect, isAuthenticated } = useAuth0()
   const navigate = useNavigate()
 
   useEffect(() => {
-    logAuthDebug('H4', 'Login auth state change', {
-      isAuthenticated,
-      path: window.location.pathname,
-      origin: window.location.origin,
-      href: window.location.href,
-    })
     if (isAuthenticated) {
       navigate('/home')
     }
@@ -61,10 +49,6 @@ export default function Login() {
         
     <Button 
     onClick={() => {
-      logAuthDebug('H2', 'Login button pressed before redirect', {
-        origin: window.location.origin,
-        href: window.location.href,
-      })
       loginWithRedirect()
     }}
     sx={{
