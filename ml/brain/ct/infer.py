@@ -668,10 +668,13 @@ def run_ct_from_image(
     threshold=None,
 ):
     """
-    Run CT inference on a single 2D JPEG or PNG (same preprocessing as scripts/data/03_preprocess_ct.py).
+    Run CT inference on a single 2D JPEG or PNG.
+    PNG/JPG preprocessing mirrors backend/predict_mri.py::_preprocess_for_classification:
+        grayscale → 3-channel stack → Resize(224, 224) → ImageNet Normalize.
     Returns the same dict shape as run_ct_from_npz.
     """
-    from PIL import Image
+    import cv2
+    from torchvision import transforms
 
     from src.config import OUTPUTS
 
@@ -688,17 +691,21 @@ def run_ct_from_image(
     eval_threshold = resolve_abnormal_threshold(cli=threshold, default=0.5, ckpt=ckpt_meta)
     model_device = next(model.parameters()).device
 
-    im = Image.open(image_path).convert("RGB")
-    im = im.resize((224, 224), Image.BILINEAR)
-    hwc = np.asarray(im, dtype=np.float32) / 255.0
-    chw = np.transpose(hwc, (2, 0, 1))
-    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
-    std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
-    img_norm = (chw - mean) / std
-    x_all = torch.from_numpy(img_norm).float().to(model_device)
-    x_raw = torch.from_numpy(hwc).permute(2, 0, 1).float().to(model_device)
-    x_all = x_all.unsqueeze(0)
-    x_raw = x_raw.unsqueeze(0)
+    img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise ValueError(f"Cannot read CT image: {image_path}")
+    img = img.astype(np.float32)
+    if img.max() <= 1.0:
+        img = img * 255.0
+    img_3ch = np.stack([img, img, img], axis=0)
+    tensor = torch.tensor(img_3ch, dtype=torch.float32)
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+    ])
+    x_all = transform(tensor).unsqueeze(0).to(model_device)
+    x_raw = _denormalize_volume(x_all)
     x_batch = x_all.unsqueeze(0)
     thick = torch.zeros(1, 1, dtype=torch.float32, device=model_device)
 
