@@ -6,10 +6,9 @@ import App from './App'//imports main app
 import { Auth0Provider } from '@auth0/auth0-react'
 import { CssBaseline } from '@mui/material'
 
-const auth0Domain = 'dev-5lycfk2rcmzrt10t.us.auth0.com'
-const auth0ClientId = 'xZOj1GNGzd2TCqQHyS9G7dk2wMXJLzqB'
+const auth0Domain = 'dev-glolw0oje2uny1nq.us.auth0.com'
+const auth0ClientId = 'HPP8MQMcbMpSUVLvCJmjRNJNSw7lp8YU'
 const auth0Audience = 'https://flare-api'
-const auth0RedirectUri = window.location.origin
 
 ReactDOM.createRoot(document.getElementById('root')!).render( //finds <div id = "root"> in index.html
 
@@ -17,7 +16,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render( //finds <div id = 
     domain={auth0Domain}
     clientId={auth0ClientId}
     authorizationParams={{
-      redirect_uri: auth0RedirectUri,
+      redirect_uri: window.location.origin,
       audience: auth0Audience
     }}
   >
