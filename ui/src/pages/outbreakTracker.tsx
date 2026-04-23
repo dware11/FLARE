@@ -1,5 +1,19 @@
-import { useCallback, useEffect, useState } from "react";
-import { Box, Typography, Card, CardContent, CircularProgress, Alert } from "@mui/material";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Box,
+  Typography,
+  Card,
+  CardContent,
+  CircularProgress,
+  Alert,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Paper,
+} from "@mui/material";
 import ReactECharts from "echarts-for-react";
 import { fetchOutbreakStatus } from "../api/flareAPI";
 import type { OutbreakStatus } from "../api/flareAPI";
@@ -10,6 +24,15 @@ const cardSx = {
   borderRadius: 3,
   boxShadow: "0 12px 30px rgba(0,0,0,0.35)",
   color: "#fff",
+};
+
+/** Labels aligned with backend `HOSPITAL_REGISTRY` (demo). */
+const HOSPITAL_LABELS: Record<string, string> = {
+  H001: "Houston Methodist Hospital",
+  H002: "Memorial Hermann - Texas Medical Center",
+  H003: "Baylor St. Luke's Medical Center",
+  H004: "Ben Taub Hospital",
+  H005: "Texas Children's Hospital",
 };
 
 export default function OutbreakTracker() {
@@ -45,6 +68,17 @@ export default function OutbreakTracker() {
   const detectionRate = outbreak
     ? `${outbreak.percent_of_baseline.toFixed(1)}% of expected baseline`
     : "—";
+
+  const hospitalCountRows = useMemo(() => {
+    if (!outbreak?.hospital_counts) return [];
+    return Object.entries(outbreak.hospital_counts)
+      .map(([id, count]) => ({
+        id,
+        name: HOSPITAL_LABELS[id] ?? id,
+        count: count ?? 0,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [outbreak?.hospital_counts]);
 
   const months = ["Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const trendData = [1, 2, 3, 4, 6, 9, 8, 7, 6, 5, totalAbnormal || 3];
@@ -113,8 +147,8 @@ export default function OutbreakTracker() {
           Outbreak Analytics (Prototype)
         </Typography>
         <Typography sx={{ color: "rgba(255,255,255,0.6)", mt: 1, maxWidth: 720, lineHeight: 1.6 }}>
-          This reflects aggregated abnormal detections across hospitals and is intended for future
-          epidemiological expansion.
+          <strong>Metro-wide prototype / illustrative.</strong> Top-line metrics and per-hospital counts come from the
+          live API; the trend chart uses placeholder months for demo layout only.
         </Typography>
       </Box>
 
@@ -166,10 +200,48 @@ export default function OutbreakTracker() {
 
           <Card sx={{ ...cardSx, p: 3 }}>
             <Typography sx={{ fontWeight: 800, fontSize: "1.1rem", mb: 0.5 }}>
+              Approved abnormal by site (API)
+            </Typography>
+            <Typography sx={{ color: "rgba(255,255,255,0.5)", fontSize: "0.85rem", mb: 2 }}>
+              Counts from <code style={{ color: "rgba(255,255,255,0.7)" }}>hospital_counts</code> in outbreak status
+            </Typography>
+            <TableContainer
+              component={Paper}
+              sx={{
+                backgroundColor: "rgba(0,0,0,0.25)",
+                border: "1px solid rgba(255,255,255,0.08)",
+                borderRadius: 2,
+              }}
+            >
+              <Table size="small">
+                <TableHead>
+                  <TableRow sx={{ backgroundColor: "rgba(255,255,255,0.04)" }}>
+                    <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Hospital</TableCell>
+                    <TableCell align="right" sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>
+                      Approved abnormal
+                    </TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {hospitalCountRows.map((row) => (
+                    <TableRow key={row.id} hover sx={{ "&:hover": { backgroundColor: "rgba(255,255,255,0.03)" } }}>
+                      <TableCell sx={{ color: "#fff" }}>{row.name}</TableCell>
+                      <TableCell align="right" sx={{ color: "rgba(255,255,255,0.85)" }}>
+                        {row.count}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Card>
+
+          <Card sx={{ ...cardSx, p: 3 }}>
+            <Typography sx={{ fontWeight: 800, fontSize: "1.1rem", mb: 0.5 }}>
               Abnormal Detection Trend
             </Typography>
             <Typography sx={{ color: "rgba(255,255,255,0.5)", fontSize: "0.85rem", mb: 2 }}>
-              Monthly aggregate (prototype data)
+              Illustrative monthly series (prototype only — not a real time series from the server)
             </Typography>
             <ReactECharts option={chartOption} style={{ height: 340, width: "100%" }} />
           </Card>

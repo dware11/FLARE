@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Box,
@@ -23,8 +23,12 @@ import {
   Paper,
   CircularProgress,
   Alert,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from '@mui/material'
-import { fetchEhrRecords } from '../api/flareAPI'
+import { fetchEhrRecords, approveReview, rejectReview, type EhrRecord } from '../api/flareAPI'
 import SearchIcon from '@mui/icons-material/Search'
 import CloseIcon from '@mui/icons-material/Close'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
@@ -47,8 +51,8 @@ type PatientRecord = {
   scanDate: string
   aiResult: ResultClass
   confidence: number // 0-100
+  reviewStatus: string
   notes?: string
-  // In a real app these would be URLs returned by backend (S3, database)
   gradCamUrl?: string
   originalImageUrl?: string
 }
@@ -79,6 +83,36 @@ function toResultClass(result_class: string): ResultClass {
   return 'Normal'
 }
 
+function mapEhrToPatientRecord(r: EhrRecord): PatientRecord {
+  const created = r.createdAt?.split('T')[0] ?? ''
+  const overlay = r.segmentation?.overlay_url
+  const gradCamRaw = overlay ?? r.gradcam_url ?? undefined
+  const st = (r.review_status || '').toLowerCase()
+  return {
+    id: r.caseId,
+    firstName: r.firstName ?? '',
+    lastName: r.lastName ?? '',
+    dob: r.dob ?? '',
+    medicalId: (r.medicalId ?? r.patient_id) || '',
+    location: r.hospitalName ?? '',
+    cancerType: 'Brain',
+    modality: toModality(r.modality),
+    scanDate: created,
+    aiResult: toResultClass(r.result_class),
+    confidence: Math.round(Number(r.confidence) * 100),
+    reviewStatus: st,
+    notes:
+      r.reject_reason ??
+      (st === 'approved'
+        ? 'Approved by reviewer.'
+        : st === 'rejected'
+          ? 'Rejected by reviewer.'
+          : undefined),
+    gradCamUrl: toAbsoluteUrl(gradCamRaw),
+    originalImageUrl: toAbsoluteUrl(r.input_image_url),
+  }
+}
+
 function resultChipColor(result: ResultClass) {
   switch (result) {
     case 'Normal':
@@ -90,63 +124,57 @@ function resultChipColor(result: ResultClass) {
   }
 }
 
+const fieldSx = {
+  '& .MuiInputBase-root': { color: '#fff', borderRadius: 2 },
+  '& label': { color: 'rgba(255,255,255,0.65)' },
+  '& fieldset': { borderColor: 'rgba(255,255,255,0.12)' },
+}
+
 export default function EhrDatabase() {
   const navigate = useNavigate()
   const [records, setRecords] = useState<PatientRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState('')
 
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      setLoading(true)
-      setFetchError('')
-      try {
-        const { records: rows } = await fetchEhrRecords()
-        if (cancelled) return
-        const mapped: PatientRecord[] = (rows ?? []).map((r) => {
-          const created = r.createdAt?.split('T')[0] ?? ''
-          const overlay = r.segmentation?.overlay_url
-          const gradCamRaw = overlay ?? r.gradcam_url ?? undefined
-          return {
-            id: r.caseId,
-            firstName: r.firstName ?? '',
-            lastName: r.lastName ?? '',
-            dob: r.dob ?? '',
-            medicalId: (r.medicalId ?? r.patient_id) || '',
-            location: r.hospitalName ?? '',
-            cancerType: 'Brain',
-            modality: toModality(r.modality),
-            scanDate: created,
-            aiResult: toResultClass(r.result_class),
-            confidence: Math.round(Number(r.confidence) * 100),
-            notes:
-              r.reject_reason ??
-              (r.review_status === 'approved'
-                ? 'Approved by reviewer.'
-                : r.review_status === 'rejected'
-                  ? 'Rejected by reviewer.'
-                  : undefined),
-            gradCamUrl: toAbsoluteUrl(gradCamRaw),
-            originalImageUrl: toAbsoluteUrl(r.input_image_url),
-          }
-        })
-        setRecords(mapped)
-      } catch (e: unknown) {
-        if (!cancelled) setFetchError(e instanceof Error ? e.message : 'Failed to load EHR records.')
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
   const [query, setQuery] = useState('')
   const [cancerFilter, setCancerFilter] = useState<CancerType | 'All'>('All')
   const [resultFilter, setResultFilter] = useState<ResultClass | 'All'>('All')
   const [selected, setSelected] = useState<PatientRecord | null>(null)
+
+  const [signOpen, setSignOpen] = useState(false)
+  const [reviewerName, setReviewerName] = useState('')
+  const [digitalSignature, setDigitalSignature] = useState('')
+  const [signModalError, setSignModalError] = useState('')
+  const [reviewActing, setReviewActing] = useState(false)
+  const [drawerReviewMsg, setDrawerReviewMsg] = useState('')
+  const [drawerReviewErr, setDrawerReviewErr] = useState('')
+
+  const loadRecords = useCallback(async () => {
+    setFetchError('')
+    setLoading(true)
+    try {
+      const { records: rows } = await fetchEhrRecords()
+      const mapped = (rows ?? []).map(mapEhrToPatientRecord)
+      setRecords(mapped)
+      setSelected((prev) => {
+        if (!prev) return null
+        return mapped.find((x) => x.id === prev.id) ?? prev
+      })
+    } catch (e: unknown) {
+      setFetchError(e instanceof Error ? e.message : 'Failed to load EHR records.')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadRecords()
+  }, [loadRecords])
+
+  useEffect(() => {
+    setDrawerReviewMsg('')
+    setDrawerReviewErr('')
+  }, [selected?.id])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -165,6 +193,66 @@ export default function EhrDatabase() {
     })
   }, [records, query, cancerFilter, resultFilter])
 
+  const canActOnSelected = Boolean(selected?.id && selected.reviewStatus === 'pending')
+
+  function openApproveModal() {
+    if (!selected?.id || selected.reviewStatus !== 'pending') return
+    setReviewerName('')
+    setDigitalSignature('')
+    setSignModalError('')
+    setSignOpen(true)
+  }
+
+  async function confirmApprove() {
+    if (!selected?.id) return
+    const name = reviewerName.trim()
+    const sig = digitalSignature.trim()
+    if (!name || !sig) {
+      setSignModalError('Reviewer name and digital signature are required.')
+      return
+    }
+    setSignModalError('')
+    setReviewActing(true)
+    setDrawerReviewErr('')
+    setDrawerReviewMsg('')
+    try {
+      await approveReview(selected.id, { reviewerName: name, signature: sig })
+      setSignOpen(false)
+      setDrawerReviewMsg('Case approved.')
+      await loadRecords()
+      try {
+        window.dispatchEvent(new Event('flare:refresh-app'))
+      } catch {
+        /* ignore */
+      }
+    } catch (e: unknown) {
+      setDrawerReviewErr(e instanceof Error ? e.message : 'Approve failed.')
+    } finally {
+      setReviewActing(false)
+    }
+  }
+
+  async function onRejectCase() {
+    if (!selected?.id) return
+    setReviewActing(true)
+    setDrawerReviewErr('')
+    setDrawerReviewMsg('')
+    try {
+      await rejectReview(selected.id)
+      setDrawerReviewMsg('Case rejected.')
+      await loadRecords()
+      try {
+        window.dispatchEvent(new Event('flare:refresh-app'))
+      } catch {
+        /* ignore */
+      }
+    } catch (e: unknown) {
+      setDrawerReviewErr(e instanceof Error ? e.message : 'Reject failed.')
+    } finally {
+      setReviewActing(false)
+    }
+  }
+
   return (
     <Box
       sx={{
@@ -176,14 +264,74 @@ export default function EhrDatabase() {
         background: 'radial-gradient(circle at bottom right, #1b2335 0%, #0b0f19 60%)',
       }}
     >
-      {/* Page Title */}
+      <Dialog
+        open={signOpen}
+        onClose={() => !reviewActing && setSignOpen(false)}
+        PaperProps={{
+          sx: {
+            backgroundColor: '#0f1117',
+            color: '#fff',
+            border: '1px solid rgba(255,255,255,0.1)',
+            borderRadius: 2,
+            minWidth: 360,
+          },
+        }}
+      >
+        <DialogTitle sx={{ fontWeight: 800 }}>Approve case</DialogTitle>
+        <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
+          {signModalError && (
+            <Alert severity="error" sx={{ backgroundColor: 'rgba(239,68,68,0.15)', color: '#fff' }}>
+              {signModalError}
+            </Alert>
+          )}
+          <TextField
+            label="Reviewer Name"
+            required
+            value={reviewerName}
+            onChange={(e) => setReviewerName(e.target.value)}
+            fullWidth
+            sx={fieldSx}
+          />
+          <TextField
+            label="Digital Signature — type your full name to confirm"
+            required
+            value={digitalSignature}
+            onChange={(e) => setDigitalSignature(e.target.value)}
+            fullWidth
+            sx={fieldSx}
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button
+            onClick={() => setSignOpen(false)}
+            disabled={reviewActing}
+            sx={{ color: 'rgba(255,255,255,0.7)' }}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            disabled={reviewActing}
+            onClick={() => void confirmApprove()}
+            sx={{
+              backgroundColor: '#ff5c5c',
+              textTransform: 'none',
+              '&:hover': { backgroundColor: '#ff3b3b' },
+            }}
+          >
+            Confirm approval
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 2, mb: 3 }}>
         <Box>
           <Typography sx={{ fontSize: '1.7rem', fontWeight: 800, letterSpacing: '0.02em' }}>
             EHR Database
           </Typography>
-          <Typography sx={{ color: 'rgba(255,255,255,0.65)', mt: 0.5 }}>
-            Patient scan history and AI diagnostic results
+          <Typography sx={{ color: 'rgba(255,255,255,0.65)', mt: 0.5, maxWidth: 640, lineHeight: 1.6 }}>
+            Patient scan history and AI results. Pending screening cases are approved or rejected here
+            (authoritative for this demo).
           </Typography>
         </Box>
 
@@ -219,7 +367,6 @@ export default function EhrDatabase() {
         </Stack>
       </Box>
 
-      {/* Filters */}
       <Card
         sx={{
           mb: 3,
@@ -263,7 +410,7 @@ export default function EhrDatabase() {
               select
               label="Cancer Type"
               value={cancerFilter}
-              onChange={(e) => setCancerFilter(e.target.value as any)}
+              onChange={(e) => setCancerFilter(e.target.value as CancerType | 'All')}
               sx={{
                 '& .MuiInputBase-root': { color: '#fff', borderRadius: 2 },
                 '& label': { color: 'rgba(255,255,255,0.65)' },
@@ -279,7 +426,7 @@ export default function EhrDatabase() {
               select
               label="AI Result"
               value={resultFilter}
-              onChange={(e) => setResultFilter(e.target.value as any)}
+              onChange={(e) => setResultFilter(e.target.value as ResultClass | 'All')}
               sx={{
                 '& .MuiInputBase-root': { color: '#fff', borderRadius: 2 },
                 '& label': { color: 'rgba(255,255,255,0.65)' },
@@ -307,7 +454,6 @@ export default function EhrDatabase() {
         </Alert>
       )}
 
-      {/* Table */}
       <TableContainer
         component={Paper}
         sx={{
@@ -403,7 +549,6 @@ export default function EhrDatabase() {
         </Table>
       </TableContainer>
 
-      {/* Details Drawer */}
       <Drawer
         anchor="right"
         open={Boolean(selected)}
@@ -436,7 +581,6 @@ export default function EhrDatabase() {
 
             <Divider sx={{ borderColor: 'rgba(255,255,255,0.08)', my: 2 }} />
 
-            {/* Patient Info */}
             <Section title="Patient Information">
               <InfoRow label="Date of Birth" value={selected.dob} />
               <InfoRow label="Location" value={selected.location} />
@@ -444,16 +588,26 @@ export default function EhrDatabase() {
 
             <Divider sx={{ borderColor: 'rgba(255,255,255,0.08)', my: 2 }} />
 
-            {/* Scan Info */}
             <Section title="Scan Details">
               <InfoRow label="Cancer Type" value={selected.cancerType} />
               <InfoRow label="Modality" value={selected.modality} />
               <InfoRow label="Scan Date" value={selected.scanDate} />
+              <InfoRow
+                label="Review status"
+                value={
+                  selected.reviewStatus === 'pending'
+                    ? 'Pending'
+                    : selected.reviewStatus === 'approved'
+                      ? 'Approved'
+                      : selected.reviewStatus === 'rejected'
+                        ? 'Rejected'
+                        : selected.reviewStatus || '—'
+                }
+              />
             </Section>
 
             <Divider sx={{ borderColor: 'rgba(255,255,255,0.08)', my: 2 }} />
 
-            {/* AI Result */}
             <Section title="AI Diagnostic Output">
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
                 <Typography sx={{ color: 'rgba(255,255,255,0.7)' }}>Classification</Typography>
@@ -482,6 +636,20 @@ export default function EhrDatabase() {
               <Typography sx={{ color: 'rgba(255,255,255,0.85)', mt: 0.6, lineHeight: 1.6 }}>
                 {selected.notes ?? 'No notes available.'}
               </Typography>
+
+              {drawerReviewErr && (
+                <Alert severity="error" sx={{ mt: 2 }}>
+                  {drawerReviewErr}
+                </Alert>
+              )}
+              {drawerReviewMsg && (
+                <Alert
+                  severity="success"
+                  sx={{ mt: 2, backgroundColor: 'rgba(34,197,94,0.18)', color: '#fff' }}
+                >
+                  {drawerReviewMsg}
+                </Alert>
+              )}
 
               <Stack direction="row" spacing={1.5} sx={{ mt: 3 }}>
                 <Button
@@ -519,6 +687,55 @@ export default function EhrDatabase() {
                   View Localization
                 </Button>
               </Stack>
+            </Section>
+
+            <Divider sx={{ borderColor: 'rgba(255,255,255,0.08)', my: 2 }} />
+
+            <Section title="Clinician review">
+              {!canActOnSelected && (
+                <Typography sx={{ color: 'rgba(255,255,255,0.65)', fontSize: '0.92rem', lineHeight: 1.6 }}>
+                  {selected.reviewStatus === 'approved'
+                    ? 'This case is already approved. No further action is available here.'
+                    : selected.reviewStatus === 'rejected'
+                      ? 'This case was rejected. No further action is available here.'
+                      : 'This record is not in pending review state (for example demo seed data). Approve and reject are only available when review status is pending and the case exists in the review queue.'}
+                </Typography>
+              )}
+              {canActOnSelected && (
+                <>
+                  <Typography sx={{ color: 'rgba(255,255,255,0.65)', fontSize: '0.92rem', mb: 2, lineHeight: 1.6 }}>
+                    Approve requires reviewer name and signature. Reject uses the demo reviewer payload from the
+                    existing API.
+                  </Typography>
+                  <Stack direction="row" spacing={1.5} flexWrap="wrap">
+                    <Button
+                      variant="contained"
+                      disabled={reviewActing}
+                      onClick={openApproveModal}
+                      sx={{
+                        backgroundColor: '#15803d',
+                        textTransform: 'none',
+                        '&:hover': { backgroundColor: '#166534' },
+                      }}
+                    >
+                      Approve
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      disabled={reviewActing}
+                      onClick={() => void onRejectCase()}
+                      sx={{
+                        textTransform: 'none',
+                        color: '#fca5a5',
+                        borderColor: 'rgba(239,68,68,0.5)',
+                        '&:hover': { borderColor: '#fca5a5' },
+                      }}
+                    >
+                      Reject
+                    </Button>
+                  </Stack>
+                </>
+              )}
             </Section>
           </Box>
         )}

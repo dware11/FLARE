@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { InputHTMLAttributes } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Box,
   Typography,
@@ -16,6 +17,12 @@ import {
   ToggleButton,
   ToggleButtonGroup,
   Snackbar,
+  Checkbox,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  FormControlLabel,
 } from "@mui/material";
 import {
   predictScan,
@@ -180,6 +187,9 @@ function fusionModeLabel(mode: string): string {
 
 const FLARE_LAST_RESULT_KEY = "flare_last_result";
 const FLARE_FORM_KEY = "flare_form_state";
+const FLARE_AI_NOTICE_KEY = "flare_ai_notice_dismissed";
+const REVIEW_DISCLAIMER_TEXT =
+  "AI-generated result. This output must be reviewed and confirmed by a qualified clinician.";
 
 const pairImgSx = {
   width: "100%",
@@ -191,6 +201,7 @@ const pairImgSx = {
 };
 
 export default function CancerDetection() {
+  const navigate = useNavigate();
   const { stored, patchStored, clearStored } = useCancerInference();
   const hydratedRef = useRef(false);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -248,6 +259,8 @@ export default function CancerDetection() {
   const [ctScanResult, setCtScanResult] = useState<Record<string, unknown> | null>(null);
   const [fusionScanResult, setFusionScanResult] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState("");
+  const [aiNoticeOpen, setAiNoticeOpen] = useState(false);
+  const [dontShowAiNotice, setDontShowAiNotice] = useState(false);
 
   useEffect(() => {
     if (!loading) return;
@@ -275,6 +288,17 @@ export default function CancerDetection() {
     try {
       localStorage.removeItem(FLARE_LAST_RESULT_KEY);
     } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    try {
+      const dismissed = localStorage.getItem(FLARE_AI_NOTICE_KEY);
+      if (dismissed !== "true") {
+        setAiNoticeOpen(true);
+      }
+    } catch {
+      setAiNoticeOpen(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -576,6 +600,45 @@ export default function CancerDetection() {
 
   const predLegacy = scanResult?.kind === "legacy" ? scanResult.pred : null;
   const mriV2 = scanResult?.kind === "mri_api_v2" ? scanResult : null;
+  const hasAnyResult = Boolean(mriV2 || predLegacy || ctScanResult || fusionScanResult);
+
+  const reviewCaseId = useMemo(() => {
+    const fromFusion = fusionScanResult?.caseId;
+    if (typeof fromFusion === "string" && fromFusion.trim() !== "") return fromFusion;
+
+    const fromCt = ctScanResult?.caseId;
+    if (typeof fromCt === "string" && fromCt.trim() !== "") return fromCt;
+
+    const fromMri = mriV2?.caseId;
+    if (typeof fromMri === "string" && fromMri.trim() !== "") return fromMri;
+
+    const fromLegacy = predLegacy?.caseId;
+    if (typeof fromLegacy === "string" && fromLegacy.trim() !== "") return fromLegacy;
+
+    return null;
+  }, [fusionScanResult, ctScanResult, mriV2, predLegacy]);
+
+  const reviewRequired = useMemo(() => {
+    if (typeof fusionScanResult?.review_required === "boolean") return fusionScanResult.review_required;
+    if (typeof ctScanResult?.review_required === "boolean") return ctScanResult.review_required;
+    if (typeof mriV2?.review_required === "boolean") return mriV2.review_required;
+    if (typeof predLegacy?.review_required === "boolean") return predLegacy.review_required;
+    return Boolean(
+      (predLegacy && (predLegacy.prediction === "Malignant" || predLegacy.prediction === "Benign")) ||
+      (mriV2 && mriV2.classification.label.toLowerCase() === "abnormal")
+    );
+  }, [fusionScanResult, ctScanResult, mriV2, predLegacy]);
+
+  const onDismissAiNotice = useCallback(() => {
+    try {
+      if (dontShowAiNotice) {
+        localStorage.setItem(FLARE_AI_NOTICE_KEY, "true");
+      }
+    } catch {
+      // ignore storage failures; just continue
+    }
+    setAiNoticeOpen(false);
+  }, [dontShowAiNotice]);
 
   const showGeoWarning = Boolean(
     (predLegacy && (predLegacy.prediction === "Malignant" || predLegacy.prediction === "Benign")) ||
@@ -605,6 +668,52 @@ export default function CancerDetection() {
       <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 3 }}>
         Enter patient data, select cancer type, then upload a scan to run the appropriate model.
       </Typography>
+
+      <Dialog
+        open={aiNoticeOpen}
+        onClose={onDismissAiNotice}
+        PaperProps={{
+          sx: {
+            backgroundColor: "#0f1117",
+            color: "#fff",
+            border: "1px solid rgba(255,255,255,0.12)",
+            borderRadius: 2,
+            minWidth: { xs: 300, sm: 500 },
+          },
+        }}
+      >
+        <DialogTitle sx={{ fontWeight: 800 }}>AI Assistance Notice</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ color: "rgba(255,255,255,0.8)", lineHeight: 1.65 }}>
+            FLARE uses AI to analyze uploaded medical images. Results are decision-support only
+            and must be reviewed and confirmed by a qualified clinician before clinical use.
+          </Typography>
+          <FormControlLabel
+            sx={{ mt: 2, color: "rgba(255,255,255,0.8)" }}
+            control={
+              <Checkbox
+                checked={dontShowAiNotice}
+                onChange={(e) => setDontShowAiNotice(e.target.checked)}
+                sx={{ color: "rgba(255,255,255,0.7)" }}
+              />
+            }
+            label="Don’t show this again"
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button
+            variant="contained"
+            onClick={onDismissAiNotice}
+            sx={{
+              backgroundColor: "#ff5c5c",
+              textTransform: "none",
+              "&:hover": { backgroundColor: "#ff3b3b" },
+            }}
+          >
+            Continue
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Card sx={cardSx}>
         <CardContent sx={{ p: 3 }}>
@@ -1181,6 +1290,12 @@ export default function CancerDetection() {
                 Completed in {completedSeconds}s
               </Typography>
             )}
+            <Alert
+              severity="info"
+              sx={{ mb: 2, backgroundColor: "rgba(59,130,246,0.12)", color: "#e5efff" }}
+            >
+              {REVIEW_DISCLAIMER_TEXT}
+            </Alert>
             {mriV2.classification.label.toLowerCase() === "normal" &&
               (mriV2.segmentation.original_url || mriV2.input_image_url) && (
                 <Alert
@@ -1356,6 +1471,12 @@ export default function CancerDetection() {
                 Completed in {completedSeconds}s
               </Typography>
             )}
+            <Alert
+              severity="info"
+              sx={{ mb: 2, backgroundColor: "rgba(59,130,246,0.12)", color: "#e5efff" }}
+            >
+              {REVIEW_DISCLAIMER_TEXT}
+            </Alert>
             <Box
               sx={{
                 display: "flex",
@@ -1516,6 +1637,12 @@ export default function CancerDetection() {
                 Completed in {completedSeconds}s
               </Typography>
             )}
+            <Alert
+              severity="info"
+              sx={{ mb: 2, backgroundColor: "rgba(59,130,246,0.12)", color: "#e5efff" }}
+            >
+              {REVIEW_DISCLAIMER_TEXT}
+            </Alert>
             <Box
               sx={{
                 display: "flex",
@@ -1632,6 +1759,12 @@ export default function CancerDetection() {
                 Completed in {completedSeconds}s
               </Typography>
             )}
+            <Alert
+              severity="info"
+              sx={{ mb: 2, backgroundColor: "rgba(59,130,246,0.12)", color: "#e5efff" }}
+            >
+              {REVIEW_DISCLAIMER_TEXT}
+            </Alert>
 
             {(absolutizeStaticUrl(fusionScanResult.ct_cam_url as string | null | undefined) ||
               absolutizeStaticUrl(fusionScanResult.mri_input_url as string | null | undefined) ||
@@ -1793,6 +1926,50 @@ export default function CancerDetection() {
                 </Typography>
               </Box>
             </Box>
+          </CardContent>
+        </Card>
+      )}
+
+      {hasAnyResult && (
+        <Card sx={{ ...cardSx, mt: 3 }}>
+          <CardContent sx={{ p: 3 }}>
+            <Typography sx={{ fontWeight: 800, fontSize: "1.1rem", color: "#fff", mb: 1 }}>
+              Clinical review
+            </Typography>
+            <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 2, lineHeight: 1.6 }}>
+              <strong>Approve this case in the EHR Database</strong> after you have reviewed the AI output. Formal
+              approve/reject is recorded there; approved abnormal cases may appear in aggregate research views (for
+              example Geo Tracker).
+            </Typography>
+
+            {!reviewCaseId && (
+              <Alert severity="info" sx={{ mb: 2, backgroundColor: "rgba(255,255,255,0.08)", color: "#fff" }}>
+                No case ID was returned for this run, so nothing was queued for EHR review yet.
+              </Alert>
+            )}
+            {reviewCaseId && !reviewRequired && (
+              <Alert severity="info" sx={{ mb: 2, backgroundColor: "rgba(255,255,255,0.08)", color: "#fff" }}>
+                This result is not on the pending abnormal review path. Open EHR if a record exists for follow-up.
+              </Alert>
+            )}
+            {reviewCaseId && reviewRequired && (
+              <Alert severity="info" sx={{ mb: 2, backgroundColor: "rgba(255,255,255,0.08)", color: "#fff" }}>
+                Case ID <strong>{reviewCaseId}</strong> — use EHR Database to approve or reject.
+              </Alert>
+            )}
+
+            <Button
+              variant="contained"
+              onClick={() => navigate("/ehr-database")}
+              sx={{
+                width: "fit-content",
+                backgroundColor: "#ff5c5c",
+                textTransform: "none",
+                "&:hover": { backgroundColor: "#ff3b3b" },
+              }}
+            >
+              Open EHR Database
+            </Button>
           </CardContent>
         </Card>
       )}

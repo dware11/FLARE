@@ -14,6 +14,8 @@ export type PredictResponse = {
   localization_url?: string | null;
   probabilities?: ClassProbability[] | null;
   gradcam_ready?: boolean;
+  caseId?: string | null;
+  review_required?: boolean;
 };
 
 /** Shape returned by /api/mri/predict when the BRISC/BraTS-style API is enabled (folder + future single). */
@@ -36,6 +38,8 @@ export type MriFolderPredictView = {
   segmentation: MriPredictSegmentation;
   /** Raw input slice URL from API when distinct from segmentation.original_url */
   input_image_url?: string | null;
+  caseId?: string | null;
+  review_required?: boolean;
 };
 
 export type LegacyPredictView = {
@@ -107,6 +111,8 @@ export function mapMriApiJsonToPredictResponse(cancerType: CancerType, body: Rec
     confidence: Number(body.confidence ?? 0),
     localization_url: absolutizeAssetUrl(loc) ?? null,
     gradcam_ready: Boolean(body.gradcam_ready),
+    caseId: (body.caseId as string) ?? null,
+    review_required: Boolean(body.review_required),
   };
   if (body.probabilities != null) out.probabilities = body.probabilities as PredictResponse["probabilities"];
   return out;
@@ -132,6 +138,8 @@ export function parseMriPredictBody(body: Record<string, unknown>): CancerScanRe
     return {
       kind: "mri_api_v2",
       input_image_url: fromRootInput,
+      caseId: (body.caseId as string) ?? null,
+      review_required: Boolean(body.review_required),
       classification: {
         label: String(c.label ?? "Normal"),
         confidence: Math.min(1, Math.max(0, Number(c.confidence ?? 0))),
@@ -360,6 +368,8 @@ export type EhrRecord = {
   result_class: string;
   confidence: number;
   review_status: string;
+  /** Backend review/EHR flag for abnormal screening queue */
+  is_abnormal?: boolean;
   createdAt: string;
   segmentation?: { overlay_url?: string } | null;
   input_image_url?: string | null;

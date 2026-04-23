@@ -1,33 +1,17 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Box,
   Typography,
   Card,
   CardContent,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  Paper,
-  Button,
   Chip,
   CircularProgress,
   Alert,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  TextField,
+  Button,
 } from "@mui/material";
-import {
-  fetchGeoSummary,
-  fetchPendingReviews,
-  approveReview,
-  rejectReview,
-} from "../api/flareAPI";
-import type { GeoSummary, ReviewCase, HospitalSummary } from "../api/flareAPI";
+import { fetchGeoSummary } from "../api/flareAPI";
+import type { GeoSummary, HospitalSummary } from "../api/flareAPI";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -66,25 +50,16 @@ function trendLabel(t: HospitalSummary["trend"]): string {
 }
 
 export default function GeoTracker() {
+  const navigate = useNavigate();
   const [geo, setGeo] = useState<GeoSummary | null>(null);
-  const [cases, setCases] = useState<ReviewCase[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [actingId, setActingId] = useState<string | null>(null);
 
-  const [signOpen, setSignOpen] = useState(false);
-  const [approveCaseId, setApproveCaseId] = useState<string | null>(null);
-  const [reviewerName, setReviewerName] = useState("");
-  const [digitalSignature, setDigitalSignature] = useState("");
-  const [signModalError, setSignModalError] = useState("");
-
-  const loadAll = useCallback(async () => {
+  const loadGeo = useCallback(async () => {
     setError("");
     setLoading(true);
     try {
-      const [g, r] = await Promise.all([fetchGeoSummary(), fetchPendingReviews()]);
-      setGeo(g);
-      setCases(r.cases ?? []);
+      setGeo(await fetchGeoSummary());
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load Geo Tracker data.");
       setGeo(null);
@@ -94,65 +69,16 @@ export default function GeoTracker() {
   }, []);
 
   useEffect(() => {
-    void loadAll();
-  }, [loadAll]);
+    void loadGeo();
+  }, [loadGeo]);
 
   useEffect(() => {
     const onRefreshApp = () => {
-      void loadAll();
+      void loadGeo();
     };
     window.addEventListener("flare:refresh-app", onRefreshApp);
     return () => window.removeEventListener("flare:refresh-app", onRefreshApp);
-  }, [loadAll]);
-
-  function openApproveModal(caseId: string) {
-    setApproveCaseId(caseId);
-    setReviewerName("");
-    setDigitalSignature("");
-    setSignModalError("");
-    setSignOpen(true);
-  }
-
-  async function confirmApprove() {
-    if (!approveCaseId) return;
-    const name = reviewerName.trim();
-    const sig = digitalSignature.trim();
-    if (!name || !sig) {
-      setSignModalError("Reviewer name and digital signature are required.");
-      return;
-    }
-    setSignModalError("");
-    setActingId(approveCaseId);
-    setError("");
-    try {
-      await approveReview(approveCaseId, { reviewerName: name, signature: sig });
-      setSignOpen(false);
-      setApproveCaseId(null);
-      await loadAll();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Approve failed.");
-    } finally {
-      setActingId(null);
-    }
-  }
-
-  async function onReject(caseId: string) {
-    setActingId(caseId);
-    try {
-      await rejectReview(caseId);
-      await loadAll();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Reject failed.");
-    } finally {
-      setActingId(null);
-    }
-  }
-
-  const fieldSx = {
-    "& .MuiInputBase-root": { color: "#fff", borderRadius: 2 },
-    "& label": { color: "rgba(255,255,255,0.65)" },
-    "& fieldset": { borderColor: "rgba(255,255,255,0.12)" },
-  };
+  }, [loadGeo]);
 
   return (
     <Box
@@ -165,76 +91,28 @@ export default function GeoTracker() {
         background: "radial-gradient(circle at bottom right, #1b2335 0%, #0b0f19 60%)",
       }}
     >
-      {/* ── Approve signature dialog ── */}
-      <Dialog
-        open={signOpen}
-        onClose={() => !actingId && setSignOpen(false)}
-        PaperProps={{
-          sx: {
-            backgroundColor: "#0f1117",
-            color: "#fff",
-            border: "1px solid rgba(255,255,255,0.1)",
-            borderRadius: 2,
-            minWidth: 360,
-          },
-        }}
-      >
-        <DialogTitle sx={{ fontWeight: 800 }}>Sign off on this case</DialogTitle>
-        <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 1 }}>
-          {signModalError && (
-            <Alert severity="error" sx={{ backgroundColor: "rgba(239,68,68,0.15)", color: "#fff" }}>
-              {signModalError}
-            </Alert>
-          )}
-          <TextField
-            label="Reviewer Name"
-            required
-            value={reviewerName}
-            onChange={(e) => setReviewerName(e.target.value)}
-            fullWidth
-            sx={fieldSx}
-          />
-          <TextField
-            label="Digital Signature — type your full name to confirm"
-            required
-            value={digitalSignature}
-            onChange={(e) => setDigitalSignature(e.target.value)}
-            fullWidth
-            sx={fieldSx}
-          />
-        </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button
-            onClick={() => setSignOpen(false)}
-            disabled={Boolean(actingId)}
-            sx={{ color: "rgba(255,255,255,0.7)" }}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            disabled={Boolean(actingId)}
-            onClick={() => void confirmApprove()}
-            sx={{
-              backgroundColor: "#ff5c5c",
-              textTransform: "none",
-              "&:hover": { backgroundColor: "#ff3b3b" },
-            }}
-          >
-            Confirm Approval
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* ── Header ── */}
       <Box sx={{ mb: 5 }}>
         <Typography sx={{ fontSize: "1.7rem", fontWeight: 800, letterSpacing: "0.02em" }}>
           Geo Tracker
         </Typography>
-        <Typography sx={{ color: "rgba(255,255,255,0.6)", mt: 0.5 }}>
-          Hospital-level case monitoring and radiologist review queue for the Houston metro area.
+        <Typography sx={{ color: "rgba(255,255,255,0.6)", mt: 0.5, maxWidth: 720, lineHeight: 1.6 }}>
+          Research-facing view: hospital-level signals for the Houston metro. Clinical review and
+          patient-identifiable data belong in EHR Database.
         </Typography>
       </Box>
+
+      <Alert
+        severity="info"
+        sx={{
+          mb: 3,
+          backgroundColor: "rgba(59,130,246,0.12)",
+          color: "#fff",
+          border: "1px solid rgba(59,130,246,0.25)",
+        }}
+      >
+        Research view — patient-identifiable data is not shown. Approve or reject screening cases in{" "}
+        <strong>EHR Database</strong>.
+      </Alert>
 
       {loading && (
         <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}>
@@ -250,7 +128,6 @@ export default function GeoTracker() {
 
       {!loading && geo && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          {/* ── Map ── */}
           <Box
             sx={{
               borderRadius: 3,
@@ -298,9 +175,9 @@ export default function GeoTracker() {
                           <strong style={{ fontSize: "0.95rem" }}>{h.name}</strong>
                           <hr style={{ border: "none", borderTop: "1px solid #ddd", margin: "6px 0" }} />
                           <div style={{ fontSize: "0.85rem", lineHeight: 1.6 }}>
-                            Approved abnormal: <b>{h.approvedAbnormalCount}</b>
+                            Approved abnormal (aggregate): <b>{h.approvedAbnormalCount}</b>
                             <br />
-                            Pending review: <b>{h.pendingCount}</b>
+                            Pending abnormal (aggregate): <b>{h.pendingCount}</b>
                             <br />
                             Trend: <b>{trendLabel(h.trend)}</b>
                           </div>
@@ -313,7 +190,6 @@ export default function GeoTracker() {
             </MapContainer>
           </Box>
 
-          {/* ── Summary cards ── */}
           <Box
             sx={{
               display: "grid",
@@ -324,7 +200,7 @@ export default function GeoTracker() {
             <Card sx={cardSx}>
               <CardContent sx={{ p: 3 }}>
                 <Typography sx={{ color: "rgba(255,255,255,0.6)", fontSize: "0.9rem", mb: 1 }}>
-                  Total Pending
+                  Total Pending (abnormal, aggregate)
                 </Typography>
                 <Typography sx={{ fontSize: "2.25rem", fontWeight: 900 }}>
                   {geo.totals.pending}
@@ -334,7 +210,7 @@ export default function GeoTracker() {
             <Card sx={cardSx}>
               <CardContent sx={{ p: 3 }}>
                 <Typography sx={{ color: "rgba(255,255,255,0.6)", fontSize: "0.9rem", mb: 1 }}>
-                  Total Approved Abnormal
+                  Total Approved Abnormal (aggregate)
                 </Typography>
                 <Typography sx={{ fontSize: "2.25rem", fontWeight: 900 }}>
                   {geo.totals.approvedAbnormal}
@@ -343,7 +219,23 @@ export default function GeoTracker() {
             </Card>
           </Box>
 
-          {/* ── Hospital cards ── */}
+          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2, alignItems: "center" }}>
+            <Button
+              variant="contained"
+              onClick={() => navigate("/ehr-database")}
+              sx={{
+                backgroundColor: "#ff5c5c",
+                textTransform: "none",
+                "&:hover": { backgroundColor: "#ff3b3b" },
+              }}
+            >
+              Open EHR Database
+            </Button>
+            <Typography sx={{ color: "rgba(255,255,255,0.55)", fontSize: "0.9rem" }}>
+              Case-level actions are recorded only in EHR.
+            </Typography>
+          </Box>
+
           <Box>
             <Typography sx={{ fontWeight: 800, mb: 2, fontSize: "1.15rem" }}>
               Hospitals
@@ -386,7 +278,7 @@ export default function GeoTracker() {
                         {h.name}
                       </Typography>
                       <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: "0.9rem", lineHeight: 1.7 }}>
-                        Pending: {h.pendingCount}
+                        Pending abnormal: {h.pendingCount}
                         <br />
                         Approved abnormal: {h.approvedAbnormalCount}
                       </Typography>
@@ -407,88 +299,6 @@ export default function GeoTracker() {
                 );
               })}
             </Box>
-          </Box>
-
-          {/* ── Pending cases table ── */}
-          <Box>
-            <Typography sx={{ fontWeight: 800, mb: 2, fontSize: "1.15rem" }}>
-              Pending Cases
-            </Typography>
-            <TableContainer
-              component={Paper}
-              sx={{
-                backgroundColor: "rgba(0,0,0,0.30)",
-                border: "1px solid rgba(255,255,255,0.08)",
-                borderRadius: 3,
-                overflow: "hidden",
-              }}
-            >
-              <Table>
-                <TableHead>
-                  <TableRow sx={{ backgroundColor: "rgba(255,255,255,0.03)" }}>
-                    <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Patient ID</TableCell>
-                    <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Hospital</TableCell>
-                    <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Prediction</TableCell>
-                    <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Confidence</TableCell>
-                    <TableCell sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>Time</TableCell>
-                    <TableCell align="right" sx={{ color: "rgba(255,255,255,0.75)", fontWeight: 700 }}>
-                      Actions
-                    </TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {cases.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={6} sx={{ color: "rgba(255,255,255,0.65)", py: 5, textAlign: "center" }}>
-                        No pending cases.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {cases.map((c) => (
-                    <TableRow key={c.caseId} hover sx={{ "&:hover": { backgroundColor: "rgba(255,255,255,0.03)" } }}>
-                      <TableCell sx={{ color: "#fff" }}>{c.patient_id}</TableCell>
-                      <TableCell sx={{ color: "rgba(255,255,255,0.85)" }}>{c.hospitalName}</TableCell>
-                      <TableCell sx={{ color: "rgba(255,255,255,0.85)" }}>{c.result_class}</TableCell>
-                      <TableCell sx={{ color: "rgba(255,255,255,0.85)" }}>
-                        {(c.confidence * 100).toFixed(1)}%
-                      </TableCell>
-                      <TableCell sx={{ color: "rgba(255,255,255,0.85)" }}>{c.createdAt}</TableCell>
-                      <TableCell align="right">
-                        <Button
-                          size="small"
-                          disabled={actingId === c.caseId}
-                          onClick={() => openApproveModal(c.caseId)}
-                          sx={{
-                            mr: 1,
-                            textTransform: "none",
-                            color: "#86efac",
-                            borderColor: "rgba(34,197,94,0.5)",
-                            "&:hover": { borderColor: "#86efac" },
-                          }}
-                          variant="outlined"
-                        >
-                          Approve
-                        </Button>
-                        <Button
-                          size="small"
-                          disabled={actingId === c.caseId}
-                          onClick={() => void onReject(c.caseId)}
-                          sx={{
-                            textTransform: "none",
-                            color: "#fca5a5",
-                            borderColor: "rgba(239,68,68,0.5)",
-                            "&:hover": { borderColor: "#fca5a5" },
-                          }}
-                          variant="outlined"
-                        >
-                          Reject
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
           </Box>
         </Box>
       )}
