@@ -16,8 +16,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render( //finds <div id = 
     domain={auth0Domain}
     clientId={auth0ClientId}
     authorizationParams={{
-      redirect_uri: window.location.origin,
-      audience: auth0Audience
+      redirect_uri: window.location.origin
     }}
   >
     <BrowserRouter> 
