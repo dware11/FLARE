@@ -230,8 +230,7 @@ _api_cases_store: list[dict] = []
 
 def _seed_demo_data() -> None:
     # Tuples: patient_id, hospital, modality, confidence (0–1), AI result, cancer type (brain)
-    # AI: 7 Malignant, 4 Benign, 4 Normal (labels per row). Modalities: mix brain_ct, brain_mri, brain_fusion.
-    # Hospitals: 3 cases each across H001–H005.
+    # AI: 8 Malignant, 4 Benign, 4 Normal (labels per row). Extra H001 case (DEMO_016) for Houston Methodist.
     # Four cases are seeded pending (demoCase ids in _PENDING_DEMO_SEED_CASE_IDS) for EHR review demo.
     demo_cases = [
         ("DEMO_001", "H001", "brain_ct", 0.8900, "Malignant", "Glioma"),
@@ -249,6 +248,7 @@ def _seed_demo_data() -> None:
         ("DEMO_013", "H003", "brain_ct", 0.8800, "Normal", "Normal"),
         ("DEMO_014", "H004", "brain_mri", 0.9500, "Normal", "Normal"),
         ("DEMO_015", "H005", "brain_fusion", 0.9300, "Normal", "Normal"),
+        ("DEMO_016", "H001", "brain_fusion", 0.9100, "Malignant", "Glioma"),
     ]
 
     _PENDING_DEMO_SEED_CASE_IDS = frozenset(
@@ -267,7 +267,10 @@ def _seed_demo_data() -> None:
 
     for i, (pid, hid, modality, conf, result_class, cancer_type) in enumerate(demo_cases):
         case_id = f"demo_case_{i + 1:03d}"
-        created = (base_time + timedelta(hours=i * 3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if pid == "DEMO_016":
+            created = "2026-04-24T12:00:00Z"
+        else:
+            created = (base_time + timedelta(hours=i * 3)).strftime("%Y-%m-%dT%H:%M:%SZ")
         is_abn = result_class in ("Malignant", "Benign")
         pred = "Abnormal" if is_abn else "Normal"
         is_pending = case_id in _PENDING_DEMO_SEED_CASE_IDS
@@ -1184,8 +1187,8 @@ def admin_reset_demo_data():
         jsonify(
             {
                 "status": "reset",
-                "message": "Demo data reset to 15 seeded cases",
-                "total_cases": 15,
+                "message": "Demo data reset to 16 seeded cases",
+                "total_cases": 16,
             }
         ),
         200,
