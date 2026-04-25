@@ -151,6 +151,7 @@ export default function EhrDatabase() {
   const [selected, setSelected] = useState<PatientRecord | null>(null)
 
   const [signOpen, setSignOpen] = useState(false)
+  const [signDialogMode, setSignDialogMode] = useState<'approve' | 'reject'>('approve')
   const [reviewerName, setReviewerName] = useState('')
   const [digitalSignature, setDigitalSignature] = useState('')
   const [signModalError, setSignModalError] = useState('')
@@ -206,13 +207,23 @@ export default function EhrDatabase() {
 
   function openApproveModal() {
     if (!selected?.id || selected.reviewStatus !== 'pending') return
+    setSignDialogMode('approve')
     setReviewerName('')
     setDigitalSignature('')
     setSignModalError('')
     setSignOpen(true)
   }
 
-  async function confirmApprove() {
+  function openRejectModal() {
+    if (!selected?.id || selected.reviewStatus !== 'pending') return
+    setSignDialogMode('reject')
+    setReviewerName('')
+    setDigitalSignature('')
+    setSignModalError('')
+    setSignOpen(true)
+  }
+
+  async function confirmSignDialog() {
     if (!selected?.id) return
     const name = reviewerName.trim()
     const sig = digitalSignature.trim()
@@ -225,9 +236,14 @@ export default function EhrDatabase() {
     setDrawerReviewErr('')
     setDrawerReviewMsg('')
     try {
-      await approveReview(selected.id, { reviewerName: name, signature: sig })
+      if (signDialogMode === 'approve') {
+        await approveReview(selected.id, { reviewerName: name, signature: sig })
+        setDrawerReviewMsg('Case approved.')
+      } else {
+        await rejectReview(selected.id, { reviewerName: name, signature: sig })
+        setDrawerReviewMsg('Case rejected.')
+      }
       setSignOpen(false)
-      setDrawerReviewMsg('Case approved.')
       await loadRecords()
       try {
         window.dispatchEvent(new Event('flare:refresh-app'))
@@ -235,28 +251,13 @@ export default function EhrDatabase() {
         /* ignore */
       }
     } catch (e: unknown) {
-      setDrawerReviewErr(e instanceof Error ? e.message : 'Approve failed.')
-    } finally {
-      setReviewActing(false)
-    }
-  }
-
-  async function onRejectCase() {
-    if (!selected?.id) return
-    setReviewActing(true)
-    setDrawerReviewErr('')
-    setDrawerReviewMsg('')
-    try {
-      await rejectReview(selected.id)
-      setDrawerReviewMsg('Case rejected.')
-      await loadRecords()
-      try {
-        window.dispatchEvent(new Event('flare:refresh-app'))
-      } catch {
-        /* ignore */
-      }
-    } catch (e: unknown) {
-      setDrawerReviewErr(e instanceof Error ? e.message : 'Reject failed.')
+      setDrawerReviewErr(
+        e instanceof Error
+          ? e.message
+          : signDialogMode === 'approve'
+            ? 'Approve failed.'
+            : 'Reject failed.'
+      )
     } finally {
       setReviewActing(false)
     }
@@ -286,7 +287,9 @@ export default function EhrDatabase() {
           },
         }}
       >
-        <DialogTitle sx={{ fontWeight: 800 }}>Approve case</DialogTitle>
+        <DialogTitle sx={{ fontWeight: 800 }}>
+          {signDialogMode === 'reject' ? 'Reject case' : 'Approve case'}
+        </DialogTitle>
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
           {signModalError && (
             <Alert severity="error" sx={{ backgroundColor: 'rgba(239,68,68,0.15)', color: '#fff' }}>
@@ -321,14 +324,14 @@ export default function EhrDatabase() {
           <Button
             variant="contained"
             disabled={reviewActing}
-            onClick={() => void confirmApprove()}
+            onClick={() => void confirmSignDialog()}
             sx={{
               backgroundColor: '#ff5c5c',
               textTransform: 'none',
               '&:hover': { backgroundColor: '#ff3b3b' },
             }}
           >
-            Confirm approval
+            {signDialogMode === 'reject' ? 'Confirm Rejection' : 'Confirm Approval'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -715,8 +718,7 @@ export default function EhrDatabase() {
               {canActOnSelected && (
                 <>
                   <Typography sx={{ color: 'rgba(255,255,255,0.65)', fontSize: '0.92rem', mb: 2, lineHeight: 1.6 }}>
-                    Approve requires reviewer name and signature. Reject uses the demo reviewer payload from the
-                    existing API.
+                    Approve and reject require reviewer name and digital signature.
                   </Typography>
                   <Stack direction="row" spacing={1.5} flexWrap="wrap">
                     <Button
@@ -734,7 +736,7 @@ export default function EhrDatabase() {
                     <Button
                       variant="outlined"
                       disabled={reviewActing}
-                      onClick={() => void onRejectCase()}
+                      onClick={openRejectModal}
                       sx={{
                         textTransform: 'none',
                         color: '#fca5a5',

@@ -344,11 +344,21 @@ export async function approveReview(
   if (!res.ok) throw new Error(`Approve failed: ${res.status}`);
 }
 
-export async function rejectReview(caseId: string): Promise<void> {
+export async function rejectReview(
+  caseId: string,
+  opts: { reviewerName: string; signature: string }
+): Promise<void> {
+  const reviewerName = opts.reviewerName.trim();
+  const signature = opts.signature.trim();
   const res = await fetch(`${API_BASE}/api/reviews/${caseId}/reject`, {
     method: "POST",
     headers: { ...NGROK_HEADERS, "Content-Type": "application/json" },
-    body: JSON.stringify({ reviewerId: "demo-reviewer", reason: "rejected by reviewer" }),
+    body: JSON.stringify({
+      reviewerName,
+      signature,
+      reviewerId: reviewerName,
+      reason: "rejected by reviewer",
+    }),
   });
   if (!res.ok) throw new Error(`Reject failed: ${res.status}`);
 }

@@ -230,25 +230,30 @@ _api_cases_store: list[dict] = []
 
 def _seed_demo_data() -> None:
     # Tuples: patient_id, hospital, modality, confidence (0–1), AI result, cancer type (brain)
-    # AI: 6 Malignant, 5 Benign, 4 Normal. Modalities: mix brain_ct, brain_mri, brain_fusion.
+    # AI: 7 Malignant, 4 Benign, 4 Normal (labels per row). Modalities: mix brain_ct, brain_mri, brain_fusion.
     # Hospitals: 3 cases each across H001–H005.
+    # Four cases are seeded pending (demoCase ids in _PENDING_DEMO_SEED_CASE_IDS) for EHR review demo.
     demo_cases = [
         ("DEMO_001", "H001", "brain_ct", 0.8900, "Malignant", "Glioma"),
         ("DEMO_002", "H002", "brain_mri", 0.9200, "Malignant", "Meningioma"),
-        ("DEMO_003", "H003", "brain_fusion", 0.7800, "Malignant", "Pituitary"),
+        ("DEMO_003", "H003", "brain_fusion", 0.7800, "Malignant", "Glioma"),
         ("DEMO_004", "H004", "brain_ct", 0.9600, "Malignant", "Glioma"),
         ("DEMO_005", "H005", "brain_mri", 0.8400, "Malignant", "Meningioma"),
         ("DEMO_006", "H001", "brain_fusion", 0.9100, "Malignant", "Pituitary"),
-        ("DEMO_007", "H002", "brain_ct", 0.6700, "Benign", "Glioma"),
+        ("DEMO_007", "H002", "brain_ct", 0.8500, "Malignant", "Meningioma"),
         ("DEMO_008", "H003", "brain_mri", 0.7200, "Benign", "Meningioma"),
         ("DEMO_009", "H004", "brain_fusion", 0.6100, "Benign", "Pituitary"),
-        ("DEMO_010", "H005", "brain_ct", 0.7400, "Benign", "Glioma"),
+        ("DEMO_010", "H005", "brain_ct", 0.7400, "Benign", "Pituitary"),
         ("DEMO_011", "H001", "brain_mri", 0.6900, "Benign", "Meningioma"),
         ("DEMO_012", "H002", "brain_fusion", 0.9000, "Normal", "Normal"),
         ("DEMO_013", "H003", "brain_ct", 0.8800, "Normal", "Normal"),
         ("DEMO_014", "H004", "brain_mri", 0.9500, "Normal", "Normal"),
         ("DEMO_015", "H005", "brain_fusion", 0.9300, "Normal", "Normal"),
     ]
+
+    _PENDING_DEMO_SEED_CASE_IDS = frozenset(
+        {"demo_case_003", "demo_case_007", "demo_case_010", "demo_case_013"}
+    )
 
     hospital_names = {
         "H001": "Houston Methodist Hospital",
@@ -265,47 +270,89 @@ def _seed_demo_data() -> None:
         created = (base_time + timedelta(hours=i * 3)).strftime("%Y-%m-%dT%H:%M:%SZ")
         is_abn = result_class in ("Malignant", "Benign")
         pred = "Abnormal" if is_abn else "Normal"
+        is_pending = case_id in _PENDING_DEMO_SEED_CASE_IDS
 
-        _review_cases[case_id] = {
-            "caseId": case_id,
-            "patient_id": pid,
-            "hospitalId": hid,
-            "hospitalName": hospital_names[hid],
-            "modality": modality,
-            "is_abnormal": is_abn,
-            "prediction": pred,
-            "confidence": conf,
-            "review_status": "approved",
-            "createdAt": created,
-            "approvedAt": created,
-            "rejectedAt": None,
-            "reviewerId": "demo_reviewer",
-            "reject_reason": None,
-            "result_class": result_class,
-        }
+        if is_pending:
+            _review_cases[case_id] = {
+                "caseId": case_id,
+                "patient_id": pid,
+                "hospitalId": hid,
+                "hospitalName": hospital_names[hid],
+                "modality": modality,
+                "is_abnormal": is_abn,
+                "prediction": pred,
+                "confidence": conf,
+                "review_status": "pending",
+                "createdAt": created,
+                "approvedAt": None,
+                "rejectedAt": None,
+                "reviewerId": None,
+                "reject_reason": None,
+                "result_class": result_class,
+            }
+            _ehr_records[case_id] = {
+                "caseId": case_id,
+                "patient_id": pid,
+                "firstName": "Demo",
+                "lastName": f"Patient {i + 1}",
+                "dob": "1975-06-15",
+                "hospitalId": hid,
+                "hospitalName": hospital_names[hid],
+                "modality": modality,
+                "prediction": pred,
+                "confidence": conf,
+                "is_abnormal": is_abn,
+                "result_class": result_class,
+                "cancer_type": cancer_type,
+                "review_status": "pending",
+                "createdAt": created,
+                "approvedAt": None,
+                "rejectedAt": None,
+                "reviewerId": None,
+                "reject_reason": None,
+                "signature": None,
+            }
+        else:
+            _review_cases[case_id] = {
+                "caseId": case_id,
+                "patient_id": pid,
+                "hospitalId": hid,
+                "hospitalName": hospital_names[hid],
+                "modality": modality,
+                "is_abnormal": is_abn,
+                "prediction": pred,
+                "confidence": conf,
+                "review_status": "approved",
+                "createdAt": created,
+                "approvedAt": created,
+                "rejectedAt": None,
+                "reviewerId": "demo_reviewer",
+                "reject_reason": None,
+                "result_class": result_class,
+            }
 
-        _ehr_records[case_id] = {
-            "caseId": case_id,
-            "patient_id": pid,
-            "firstName": "Demo",
-            "lastName": f"Patient {i + 1}",
-            "dob": "1975-06-15",
-            "hospitalId": hid,
-            "hospitalName": hospital_names[hid],
-            "modality": modality,
-            "prediction": pred,
-            "confidence": conf,
-            "is_abnormal": is_abn,
-            "result_class": result_class,
-            "cancer_type": cancer_type,
-            "review_status": "approved",
-            "createdAt": created,
-            "approvedAt": created,
-            "rejectedAt": None,
-            "reviewerId": "demo_reviewer",
-            "reject_reason": None,
-            "signature": "Demo Reviewer MD",
-        }
+            _ehr_records[case_id] = {
+                "caseId": case_id,
+                "patient_id": pid,
+                "firstName": "Demo",
+                "lastName": f"Patient {i + 1}",
+                "dob": "1975-06-15",
+                "hospitalId": hid,
+                "hospitalName": hospital_names[hid],
+                "modality": modality,
+                "prediction": pred,
+                "confidence": conf,
+                "is_abnormal": is_abn,
+                "result_class": result_class,
+                "cancer_type": cancer_type,
+                "review_status": "approved",
+                "createdAt": created,
+                "approvedAt": created,
+                "rejectedAt": None,
+                "reviewerId": "demo_reviewer",
+                "reject_reason": None,
+                "signature": "Demo Reviewer MD",
+            }
 
 
 def _reset_demo_data() -> None:
