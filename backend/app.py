@@ -1489,8 +1489,6 @@ def api_fusion_predict():
         "fusion",
         {"prediction": pred_label, "confidence": float(fusion_score)},
     )
-    case_id = None
-    review_required = False
 
     ct_cam_url = None
     mri_input_url = None
@@ -1507,44 +1505,44 @@ def api_fusion_predict():
         if isinstance(seg, dict):
             mri_overlay_url = seg.get("overlay_url")
 
-    if is_abnormal:
-        case_id = str(uuid4())
-        review_required = True
-        site = HOSPITAL_REGISTRY[hospital_id]
-        created_at = _utc_iso()
-        _review_cases[case_id] = {
-            "caseId": case_id,
-            "hospitalId": hospital_id,
-            "hospitalName": site["name"],
-            "patient_id": patient_id,
-            "modality": "brain_fusion",
-            "pred_label": pred_label,
-            "prediction": pred_label,
-            "result_class": fusion_ehr_class,
-            "confidence": float(fusion_score),
-            "probabilities": {
-                "normal": round(1.0 - float(fusion_score), 4),
-                "abnormal": round(float(fusion_score), 4),
-            },
-            "is_abnormal": True,
-            "severity": mock_severity(float(fusion_score)),
-            "review_status": "pending",
-            "createdAt": created_at,
-            "approvedAt": None,
-            "rejectedAt": None,
-            "reviewerId": None,
-            "reject_reason": None,
-            "signature": None,
-            "gradcam_url": ct_cam_url,
-            "input_image_url": mri_input_url,
-            "segmentation": {"overlay_url": mri_overlay_url} if mri_overlay_url else None,
-        }
-        _ehr_records[case_id] = {
-            **_review_cases[case_id],
-            "firstName": first_name,
-            "lastName": last_name,
-            "dob": dob,
-        }
+    # Persist every fusion run to EHR/review (abnormal and normal) — clinician review still required.
+    case_id = str(uuid4())
+    review_required = True
+    site = HOSPITAL_REGISTRY[hospital_id]
+    created_at = _utc_iso()
+    _review_cases[case_id] = {
+        "caseId": case_id,
+        "hospitalId": hospital_id,
+        "hospitalName": site["name"],
+        "patient_id": patient_id,
+        "modality": "brain_fusion",
+        "pred_label": pred_label,
+        "prediction": pred_label,
+        "result_class": fusion_ehr_class,
+        "confidence": float(fusion_score),
+        "probabilities": {
+            "normal": round(1.0 - float(fusion_score), 4),
+            "abnormal": round(float(fusion_score), 4),
+        },
+        "is_abnormal": is_abnormal,
+        "severity": mock_severity(float(fusion_score)),
+        "review_status": "pending",
+        "createdAt": created_at,
+        "approvedAt": None,
+        "rejectedAt": None,
+        "reviewerId": None,
+        "reject_reason": None,
+        "signature": None,
+        "gradcam_url": ct_cam_url,
+        "input_image_url": mri_input_url,
+        "segmentation": {"overlay_url": mri_overlay_url} if mri_overlay_url else None,
+    }
+    _ehr_records[case_id] = {
+        **_review_cases[case_id],
+        "firstName": first_name,
+        "lastName": last_name,
+        "dob": dob,
+    }
 
     return jsonify({
         "patient_id":       patient_id,
