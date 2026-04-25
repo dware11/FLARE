@@ -28,7 +28,13 @@ import {
   DialogContent,
   DialogActions,
 } from '@mui/material'
-import { fetchEhrRecords, approveReview, rejectReview, type EhrRecord } from '../api/flareAPI'
+import {
+  fetchEhrRecords,
+  approveReview,
+  rejectReview,
+  openApiImageInNewTab,
+  type EhrRecord,
+} from '../api/flareAPI'
 import SearchIcon from '@mui/icons-material/Search'
 import CloseIcon from '@mui/icons-material/Close'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
@@ -678,7 +684,7 @@ export default function EhrDatabase() {
                   disabled={!selected.originalImageUrl}
                   onClick={() => {
                     const u = selected.originalImageUrl
-                    if (u) window.open(u, '_blank', 'noopener,noreferrer')
+                    if (u) void openApiImageInNewTab(u)
                   }}
                 >
                   View Scan
@@ -695,7 +701,7 @@ export default function EhrDatabase() {
                   disabled={!selected.gradCamUrl}
                   onClick={() => {
                     const u = selected.gradCamUrl
-                    if (u) window.open(u, '_blank', 'noopener,noreferrer')
+                    if (u) void openApiImageInNewTab(u)
                   }}
                 >
                   View Localization

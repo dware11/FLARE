@@ -30,6 +30,7 @@ import {
   predictCtFile,
   predictFusion,
   API_BASE,
+  fetchImageObjectUrl,
   type CancerScanResult,
 } from "../api/flareAPI";
 import type { CancerType, ResultClass } from "../api/flareAPI";
@@ -199,6 +200,40 @@ const pairImgSx = {
   border: "1px solid rgba(255,255,255,0.12)",
   display: "block",
 };
+
+/**
+ * Load API/static image URLs with ngrok-skip header for <img src> (ngrok interstitial otherwise).
+ * Revokes prior blob on change/unmount.
+ */
+function useApiImageObjectUrl(path: string | null | undefined): string | null {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const revokeRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (revokeRef.current) {
+      URL.revokeObjectURL(revokeRef.current);
+      revokeRef.current = null;
+    }
+    setBlobUrl(null);
+    if (path == null || path === "") return;
+    let cancelled = false;
+    void fetchImageObjectUrl(path).then((b) => {
+      if (cancelled) {
+        if (b) URL.revokeObjectURL(b);
+        return;
+      }
+      if (b) revokeRef.current = b;
+      setBlobUrl(b);
+    });
+    return () => {
+      cancelled = true;
+      if (revokeRef.current) {
+        URL.revokeObjectURL(revokeRef.current);
+        revokeRef.current = null;
+      }
+    };
+  }, [path]);
+  return blobUrl;
+}
 
 export default function CancerDetection() {
   const navigate = useNavigate();
@@ -650,6 +685,26 @@ export default function CancerDetection() {
     : mriV2
       ? predictionTheme(mriV2.classification.label.toLowerCase() === "abnormal" ? "Malignant" : "Normal")
       : predictionTheme("Normal");
+
+  const mriOrigPath = mriV2 ? mriV2.input_image_url || mriV2.segmentation.original_url || undefined : undefined;
+  const mriOvlPath = mriV2?.segmentation?.overlay_url ?? undefined;
+  const mriMaskPath = mriV2?.segmentation?.mask_url ?? undefined;
+  const mriOrigBlob = useApiImageObjectUrl(mriOrigPath);
+  const mriOvlBlob = useApiImageObjectUrl(mriOvlPath);
+  const mriMaskBlob = useApiImageObjectUrl(mriMaskPath);
+
+  const legacyLocPath = predLegacy?.localization_url ?? undefined;
+  const legacyLocBlob = useApiImageObjectUrl(legacyLocPath);
+
+  const ctCamPath = ctScanResult ? (ctScanResult.cam_url as string | undefined) : undefined;
+  const ctCamBlob = useApiImageObjectUrl(ctCamPath);
+
+  const fusionCtPath = fusionScanResult ? (fusionScanResult.ct_cam_url as string | undefined) : undefined;
+  const fusionMriInPath = fusionScanResult ? (fusionScanResult.mri_input_url as string | undefined) : undefined;
+  const fusionMriOvPath = fusionScanResult ? (fusionScanResult.mri_overlay_url as string | undefined) : undefined;
+  const fusionCtBlob = useApiImageObjectUrl(fusionCtPath);
+  const fusionMriInBlob = useApiImageObjectUrl(fusionMriInPath);
+  const fusionMriOvBlob = useApiImageObjectUrl(fusionMriOvPath);
 
   return (
     <Box
@@ -1322,13 +1377,23 @@ export default function CancerDetection() {
               }}
             >
               <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
-                {mriV2.input_image_url || mriV2.segmentation.original_url ? (
-                  <Box
-                    component="img"
-                    src={mriV2.input_image_url || mriV2.segmentation.original_url || ""}
-                    alt="Original MRI"
-                    sx={pairImgSx}
-                  />
+                {mriOrigPath ? (
+                  mriOrigBlob ? (
+                    <Box component="img" src={mriOrigBlob} alt="Original MRI" sx={pairImgSx} />
+                  ) : (
+                    <Box
+                      sx={{
+                        ...placeholderBoxSx,
+                        minHeight: 200,
+                        maxWidth: 300,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <CircularProgress size={32} sx={{ color: "#ff5c5c" }} />
+                    </Box>
+                  )
                 ) : (
                   <Box sx={{ ...placeholderBoxSx, minHeight: 200, maxWidth: 300 }}>
                     <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>No original image URL</Typography>
@@ -1339,9 +1404,24 @@ export default function CancerDetection() {
                 </Typography>
               </Box>
               <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
-                {mriV2.segmentation.overlay_url ? (
+                {mriOvlPath ? (
                   <>
-                    <Box component="img" src={mriV2.segmentation.overlay_url} alt="Segmentation" sx={pairImgSx} />
+                    {mriOvlBlob ? (
+                      <Box component="img" src={mriOvlBlob} alt="Segmentation" sx={pairImgSx} />
+                    ) : (
+                      <Box
+                        sx={{
+                          ...placeholderBoxSx,
+                          minHeight: 200,
+                          maxWidth: 300,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <CircularProgress size={32} sx={{ color: "#ff5c5c" }} />
+                      </Box>
+                    )}
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
                       Segmentation Overlay
                     </Typography>
@@ -1359,17 +1439,31 @@ export default function CancerDetection() {
               </Box>
             </Box>
 
-            {mriV2.segmentation.mask_url && (
+            {mriMaskPath && (
               <Box sx={{ mb: 2 }}>
                 <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.75, fontSize: "0.85rem" }}>
                   Tumor Mask
                 </Typography>
-                <Box
-                  component="img"
-                  src={mriV2.segmentation.mask_url}
-                  alt="Tumor mask"
-                  sx={{ maxWidth: 200, borderRadius: 1, border: "1px solid rgba(255,255,255,0.12)" }}
-                />
+                {mriMaskBlob ? (
+                  <Box
+                    component="img"
+                    src={mriMaskBlob}
+                    alt="Tumor mask"
+                    sx={{ maxWidth: 200, borderRadius: 1, border: "1px solid rgba(255,255,255,0.12)" }}
+                  />
+                ) : (
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      minHeight: 80,
+                      maxWidth: 200,
+                    }}
+                  >
+                    <CircularProgress size={28} sx={{ color: "#ff5c5c" }} />
+                  </Box>
+                )}
               </Box>
             )}
 
@@ -1499,9 +1593,24 @@ export default function CancerDetection() {
                 </Typography>
               </Box>
               <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
-                {predLegacy.localization_url ? (
+                {legacyLocPath ? (
                   <>
-                    <Box component="img" src={predLegacy.localization_url} alt="Segmentation" sx={pairImgSx} />
+                    {legacyLocBlob ? (
+                      <Box component="img" src={legacyLocBlob} alt="Segmentation" sx={pairImgSx} />
+                    ) : (
+                      <Box
+                        sx={{
+                          ...placeholderBoxSx,
+                          minHeight: 200,
+                          maxWidth: 300,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <CircularProgress size={32} sx={{ color: "#ff5c5c" }} />
+                      </Box>
+                    )}
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
                       Segmentation Overlay
                     </Typography>
@@ -1662,14 +1771,24 @@ export default function CancerDetection() {
                 </Box>
               )}
               <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
-                {absolutizeStaticUrl(ctScanResult.cam_url as string | null | undefined) ? (
+                {ctCamPath ? (
                   <>
-                    <Box
-                      component="img"
-                      src={absolutizeStaticUrl(ctScanResult.cam_url as string) ?? ""}
-                      alt="GradCAM"
-                      sx={pairImgSx}
-                    />
+                    {ctCamBlob ? (
+                      <Box component="img" src={ctCamBlob} alt="GradCAM" sx={pairImgSx} />
+                    ) : (
+                      <Box
+                        sx={{
+                          ...placeholderBoxSx,
+                          minHeight: 200,
+                          maxWidth: 300,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <CircularProgress size={32} sx={{ color: "#ff5c5c" }} />
+                      </Box>
+                    )}
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
                       GradCAM Attention Map
                     </Typography>
@@ -1780,12 +1899,22 @@ export default function CancerDetection() {
               >
                 {absolutizeStaticUrl(fusionScanResult.ct_cam_url as string | null | undefined) && (
                   <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
-                    <Box
-                      component="img"
-                      src={absolutizeStaticUrl(fusionScanResult.ct_cam_url as string) ?? ""}
-                      alt="CT GradCAM"
-                      sx={pairImgSx}
-                    />
+                    {fusionCtBlob ? (
+                      <Box component="img" src={fusionCtBlob} alt="CT GradCAM" sx={pairImgSx} />
+                    ) : (
+                      <Box
+                        sx={{
+                          ...placeholderBoxSx,
+                          minHeight: 200,
+                          maxWidth: 300,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <CircularProgress size={32} sx={{ color: "#ff5c5c" }} />
+                      </Box>
+                    )}
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
                       CT GradCAM
                     </Typography>
@@ -1793,12 +1922,22 @@ export default function CancerDetection() {
                 )}
                 {absolutizeStaticUrl(fusionScanResult.mri_input_url as string | null | undefined) && (
                   <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
-                    <Box
-                      component="img"
-                      src={absolutizeStaticUrl(fusionScanResult.mri_input_url as string) ?? ""}
-                      alt="MRI Input"
-                      sx={pairImgSx}
-                    />
+                    {fusionMriInBlob ? (
+                      <Box component="img" src={fusionMriInBlob} alt="MRI Input" sx={pairImgSx} />
+                    ) : (
+                      <Box
+                        sx={{
+                          ...placeholderBoxSx,
+                          minHeight: 200,
+                          maxWidth: 300,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <CircularProgress size={32} sx={{ color: "#ff5c5c" }} />
+                      </Box>
+                    )}
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
                       MRI Original
                     </Typography>
@@ -1806,12 +1945,22 @@ export default function CancerDetection() {
                 )}
                 {absolutizeStaticUrl(fusionScanResult.mri_overlay_url as string | null | undefined) && (
                   <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
-                    <Box
-                      component="img"
-                      src={absolutizeStaticUrl(fusionScanResult.mri_overlay_url as string) ?? ""}
-                      alt="MRI Segmentation"
-                      sx={pairImgSx}
-                    />
+                    {fusionMriOvBlob ? (
+                      <Box component="img" src={fusionMriOvBlob} alt="MRI Segmentation" sx={pairImgSx} />
+                    ) : (
+                      <Box
+                        sx={{
+                          ...placeholderBoxSx,
+                          minHeight: 200,
+                          maxWidth: 300,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <CircularProgress size={32} sx={{ color: "#ff5c5c" }} />
+                      </Box>
+                    )}
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
                       MRI Segmentation
                     </Typography>

@@ -1,6 +1,6 @@
 export const API_BASE =
   import.meta.env.VITE_API_BASE_URL ?? "https://reassign-guiding-grass.ngrok-free.dev";
-const NGROK_HEADERS = { "ngrok-skip-browser-warning": "true" } as const;
+export const NGROK_HEADERS = { "ngrok-skip-browser-warning": "true" } as const;
 
 export type CancerType = "brain" | "breast";
 export type ResultClass = "Normal" | "Benign" | "Malignant";
@@ -94,6 +94,36 @@ function absolutizeAssetUrl(path: string | null | undefined): string | null | un
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
   const base = API_BASE.replace(/\/$/, "");
   return path.startsWith("/") ? `${base}${path}` : `${base}/${path}`;
+}
+
+/** Same resolution as absolutizeAssetUrl; `null` if empty. For fetch() + ngrok. */
+export function absolutizeApiAssetUrl(path: string | null | undefined): string | null {
+  if (path == null || path === "") return null;
+  const a = absolutizeAssetUrl(path);
+  return a == null || a === "" ? null : a;
+}
+
+/** Fetch a remote/relative image with ngrok header; returns blob: URL for <img> (caller must revoke). */
+export async function fetchImageObjectUrl(path: string | null | undefined): Promise<string | null> {
+  const u = absolutizeApiAssetUrl(path);
+  if (!u) return null;
+  const res = await fetch(u, { headers: NGROK_HEADERS });
+  if (!res.ok) return null;
+  return URL.createObjectURL(await res.blob());
+}
+
+/**
+ * Open an API/static image in a new tab; uses ngrok header. Revokes object URL after delay.
+ */
+export async function openApiImageInNewTab(path: string | null | undefined): Promise<void> {
+  const u = absolutizeApiAssetUrl(path);
+  if (!u) return;
+  const res = await fetch(u, { headers: NGROK_HEADERS });
+  if (!res.ok) return;
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  window.open(objectUrl, "_blank", "noopener,noreferrer");
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 120_000);
 }
 
 /** Maps Flask /api/mri/predict JSON to the slim shape the cancer demo uses. */
