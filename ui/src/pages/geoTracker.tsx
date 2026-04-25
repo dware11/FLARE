@@ -23,23 +23,23 @@ const cardSx = {
   color: "#fff",
 };
 
-/** Risk from approved_abnormal: 4+ → High, 3 → Medium, 2 or fewer → Low */
+/** Risk from approved_abnormal: 4+ → High, 2–3 → Medium, 0–1 → Low */
 function markerColor(h: HospitalSummary): string {
   if (h.approvedAbnormalCount >= 4) return "#ef4444";
-  if (h.approvedAbnormalCount === 3) return "#f97316";
+  if (h.approvedAbnormalCount >= 2) return "#f97316";
   return "#22c55e";
 }
 
 function severityLabel(h: HospitalSummary): string {
   if (h.approvedAbnormalCount >= 4) return "High";
-  if (h.approvedAbnormalCount === 3) return "Medium";
+  if (h.approvedAbnormalCount >= 2) return "Medium";
   return "Low";
 }
 
 function severityChipColor(h: HospitalSummary) {
   if (h.approvedAbnormalCount >= 4)
     return { bg: "rgba(239,68,68,0.18)", border: "rgba(239,68,68,0.45)", text: "#fca5a5" };
-  if (h.approvedAbnormalCount === 3)
+  if (h.approvedAbnormalCount >= 2)
     return { bg: "rgba(249,115,22,0.18)", border: "rgba(249,115,22,0.45)", text: "#fdba74" };
   return { bg: "rgba(34,197,94,0.18)", border: "rgba(34,197,94,0.45)", text: "#86efac" };
 }

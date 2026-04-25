@@ -30,9 +30,14 @@ const ILLUSTRATIVE_TRENDS: Record<string, number[]> = {
   H005: [0, 0, 1, 1, 2, 3],
 };
 
+/** Hardcoded Houston metro aggregate (Feb–Jul) */
+const HOUSTON_OVERALL = "HOUSTON_OVERALL";
+const HOUSTON_OVERALL_TREND: number[] = [2, 3, 7, 11, 15, 22];
+
 const TREND_MONTHS = ["Feb", "Mar", "Apr", "May", "Jun", "Jul"];
 
 const HOSPITALS: { id: string; name: string }[] = [
+  { id: HOUSTON_OVERALL, name: "Houston Overall" },
   { id: "H001", name: "Houston Methodist Hospital" },
   { id: "H002", name: "Memorial Hermann - Texas Medical Center" },
   { id: "H003", name: "Baylor St. Luke's Medical Center" },
@@ -50,7 +55,7 @@ export default function OutbreakTracker() {
   const [outbreak, setOutbreak] = useState<OutbreakStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [selectedHospital, setSelectedHospital] = useState("H001");
+  const [selectedHospital, setSelectedHospital] = useState(HOUSTON_OVERALL);
 
   const load = useCallback(async () => {
     setError("");
@@ -82,7 +87,10 @@ export default function OutbreakTracker() {
     : "—";
 
   const chartOption = useMemo(() => {
-    const series = ILLUSTRATIVE_TRENDS[selectedHospital] ?? ILLUSTRATIVE_TRENDS.H001;
+    const series =
+      selectedHospital === HOUSTON_OVERALL
+        ? HOUSTON_OVERALL_TREND
+        : (ILLUSTRATIVE_TRENDS[selectedHospital] ?? ILLUSTRATIVE_TRENDS.H001);
     const hName = HOSPITALS.find((h) => h.id === selectedHospital)?.name ?? "Hospital";
     return {
       backgroundColor: "transparent",
@@ -226,6 +234,24 @@ export default function OutbreakTracker() {
               option={chartOption}
               style={{ height: 340, width: "100%" }}
             />
+            {selectedHospital === HOUSTON_OVERALL && (
+              <Box
+                sx={{
+                  mt: 2,
+                  p: 2.5,
+                  borderRadius: 2,
+                  border: "1px solid rgba(239,68,68,0.35)",
+                  backgroundColor: "rgba(239,68,68,0.08)",
+                }}
+              >
+                <Typography sx={{ color: "rgba(255,255,255,0.9)", fontSize: "0.95rem", lineHeight: 1.65 }}>
+                  <strong>Detection Rate:</strong> 0.3% above expected baseline of 4,500 scans/month
+                </Typography>
+                <Typography sx={{ color: "#f87171", fontWeight: 800, fontSize: "1.05rem", mt: 1 }}>
+                  Status: Critical
+                </Typography>
+              </Box>
+            )}
             <Typography
               sx={{
                 color: "rgba(255,255,255,0.45)",
