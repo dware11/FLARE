@@ -1482,7 +1482,9 @@ def api_fusion_predict():
     FUSION_THRESHOLD = 0.5
     is_abnormal  = fusion_score >= FUSION_THRESHOLD
     pred_label   = "Abnormal" if is_abnormal else "Normal"
-    result_class = "Malignant" if is_abnormal else "Benign"
+    # EHR and review queues must use the fusion decision, not MRI/CT class labels.
+    # UI maps result_class: Malignant / Benign / Normal — "Abnormal" string was misread as Normal.
+    fusion_ehr_class = "Malignant" if is_abnormal else "Normal"
     log_prediction(
         "fusion",
         {"prediction": pred_label, "confidence": float(fusion_score)},
@@ -1517,7 +1519,8 @@ def api_fusion_predict():
             "patient_id": patient_id,
             "modality": "brain_fusion",
             "pred_label": pred_label,
-            "result_class": "Abnormal",
+            "prediction": pred_label,
+            "result_class": fusion_ehr_class,
             "confidence": float(fusion_score),
             "probabilities": {
                 "normal": round(1.0 - float(fusion_score), 4),
@@ -1548,7 +1551,7 @@ def api_fusion_predict():
         "fusion_mode":      fusion_mode,
         "fusion_score":     round(fusion_score, 4),
         "pred_label":       pred_label,
-        "result_class":     result_class,
+        "result_class":     fusion_ehr_class,
         "confidence":       round(fusion_score, 4),
         "is_abnormal":      is_abnormal,
         "ct_prob":          round(ct_prob, 4) if ct_prob is not None else None,
