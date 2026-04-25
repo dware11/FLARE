@@ -230,7 +230,7 @@ _api_cases_store: list[dict] = []
 
 def _seed_demo_data() -> None:
     # Tuples: patient_id, hospital, modality, confidence (0–1), AI result, cancer type (brain)
-    # AI: 8 Malignant, 4 Benign, 4 Normal (labels per row). Extra H001 case (DEMO_016) for Houston Methodist.
+    # AI: 8 Malignant, 4 Benign, 4 Normal (labels per row). DEMO_016 is extra H001 (Houston Methodist); DEMO_011 is H003 (Baylor St. Luke's).
     # Four cases are seeded pending (demoCase ids in _PENDING_DEMO_SEED_CASE_IDS) for EHR review demo.
     demo_cases = [
         ("DEMO_001", "H001", "brain_ct", 0.8900, "Malignant", "Glioma"),
@@ -243,7 +243,7 @@ def _seed_demo_data() -> None:
         ("DEMO_008", "H003", "brain_mri", 0.7200, "Benign", "Meningioma"),
         ("DEMO_009", "H004", "brain_fusion", 0.6100, "Benign", "Pituitary"),
         ("DEMO_010", "H005", "brain_ct", 0.7400, "Benign", "Pituitary"),
-        ("DEMO_011", "H001", "brain_mri", 0.6900, "Benign", "Meningioma"),
+        ("DEMO_011", "H003", "brain_mri", 0.6900, "Benign", "Meningioma"),
         ("DEMO_012", "H002", "brain_fusion", 0.9000, "Normal", "Normal"),
         ("DEMO_013", "H003", "brain_ct", 0.8800, "Normal", "Normal"),
         ("DEMO_014", "H004", "brain_mri", 0.9500, "Normal", "Normal"),
