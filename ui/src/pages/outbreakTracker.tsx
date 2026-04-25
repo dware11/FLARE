@@ -9,6 +9,7 @@ import {
   TextField,
   MenuItem,
 } from "@mui/material";
+import { alpha } from "@mui/material/styles";
 import ReactECharts from "echarts-for-react";
 import { fetchOutbreakStatus } from "../api/flareAPI";
 import type { OutbreakStatus } from "../api/flareAPI";
@@ -21,20 +22,36 @@ const cardSx = {
   color: "#fff",
 };
 
-/** Feb–Jul monthly points (illustrative demo) keyed by HOSPITAL_REGISTRY id */
-const ILLUSTRATIVE_TRENDS: Record<string, number[]> = {
-  H001: [1, 2, 3, 5, 7, 9],
-  H002: [1, 2, 3, 5, 6, 8],
-  H003: [0, 1, 2, 3, 4, 5],
-  H004: [0, 0, 1, 1, 2, 3],
-  H005: [0, 0, 1, 1, 2, 3],
+const HOSPITAL_MONTHLY_DATA: Record<string, number[]> = {
+  H001: [42, 48, 55, 62, 71, 89],
+  H002: [38, 42, 49, 53, 61, 78],
+  H003: [28, 30, 34, 38, 42, 51],
+  H004: [18, 20, 24, 26, 28, 32],
+  H005: [16, 16, 16, 16, 16, 14],
 };
 
-/** Hardcoded Houston metro aggregate (Feb–Jul) */
-const HOUSTON_OVERALL = "HOUSTON_OVERALL";
-const HOUSTON_OVERALL_TREND: number[] = [2, 3, 7, 11, 15, 22];
+const HOSPITAL_LINE_COLORS: Record<string, string> = {
+  H001: "#378ADD",
+  H002: "#1D9E75",
+  H003: "#7F77DD",
+  H004: "#D85A30",
+  H005: "#D4537E",
+};
 
+// Houston Overall is the SUM of all 5 hospitals per month
+const HOUSTON_OVERALL_DATA = HOSPITAL_MONTHLY_DATA.H001.map(
+  (_, i) =>
+    HOSPITAL_MONTHLY_DATA.H001[i] +
+    HOSPITAL_MONTHLY_DATA.H002[i] +
+    HOSPITAL_MONTHLY_DATA.H003[i] +
+    HOSPITAL_MONTHLY_DATA.H004[i] +
+    HOSPITAL_MONTHLY_DATA.H005[i]
+);
+
+const HOUSTON_OVERALL = "HOUSTON_OVERALL";
 const TREND_MONTHS = ["Feb", "Mar", "Apr", "May", "Jun", "Jul"];
+
+const HOSPITAL_IDS = ["H001", "H002", "H003", "H004", "H005"] as const;
 
 const HOSPITALS: { id: string; name: string }[] = [
   { id: HOUSTON_OVERALL, name: "Houston Overall" },
@@ -49,6 +66,19 @@ const fieldSx = {
   "& .MuiInputBase-root": { color: "#fff", borderRadius: 2 },
   "& label": { color: "rgba(255,255,255,0.65)" },
   "& fieldset": { borderColor: "rgba(255,255,255,0.12)" },
+};
+
+const getHospitalStatus = (data: number[]) => {
+  const baseline = data[0];
+  const latest = data[data.length - 1];
+  if (baseline <= 0) {
+    if (latest <= 0) return { label: "Normal", color: "#16a34a" };
+    return { label: "Elevated", color: "#f59e0b" };
+  }
+  const pctChange = ((latest - baseline) / baseline) * 100;
+  if (pctChange >= 41) return { label: "Critical", color: "#dc2626" };
+  if (pctChange >= 16) return { label: "Elevated", color: "#f59e0b" };
+  return { label: "Normal", color: "#16a34a" };
 };
 
 export default function OutbreakTracker() {
@@ -86,36 +116,103 @@ export default function OutbreakTracker() {
     ? `${outbreak.percent_of_baseline.toFixed(1)}% of expected baseline`
     : "—";
 
+  const trendData = useMemo(() => {
+    if (selectedHospital === HOUSTON_OVERALL) return HOUSTON_OVERALL_DATA;
+    return HOSPITAL_MONTHLY_DATA[selectedHospital] ?? HOSPITAL_MONTHLY_DATA.H001;
+  }, [selectedHospital]);
+
+  const statusBadge = useMemo(() => getHospitalStatus(trendData), [trendData]);
+
+  const detectionSummaryLine = useMemo(() => {
+    const data = trendData;
+    const latestValue = data[data.length - 1];
+    const baselineValue = data[0];
+    if (baselineValue <= 0) {
+      return `${latestValue} cases`;
+    }
+    const pctChange = (((latestValue - baselineValue) / baselineValue) * 100).toFixed(0);
+    const sign = Number(pctChange) >= 0 ? "above" : "below";
+    return `${latestValue} cases — ${Math.abs(Number(pctChange))}% ${sign} Feb baseline`;
+  }, [trendData]);
+
   const chartOption = useMemo(() => {
-    const series =
-      selectedHospital === HOUSTON_OVERALL
-        ? HOUSTON_OVERALL_TREND
-        : (ILLUSTRATIVE_TRENDS[selectedHospital] ?? ILLUSTRATIVE_TRENDS.H001);
+    const commonTooltip = {
+      trigger: "axis" as const,
+      backgroundColor: "rgba(30,30,30,0.95)",
+      borderColor: "rgba(255,255,255,0.1)",
+      borderWidth: 1,
+      textStyle: { color: "#fff" },
+    };
+    const commonXAxis = {
+      type: "category" as const,
+      boundaryGap: false,
+      data: TREND_MONTHS,
+      axisLine: { lineStyle: { color: "rgba(255,255,255,0.15)" } },
+      axisLabel: { color: "rgba(255,255,255,0.55)" },
+      splitLine: { show: false },
+    };
+    const commonYAxis = {
+      type: "value" as const,
+      axisLine: { show: false },
+      axisLabel: { color: "rgba(255,255,255,0.55)" },
+      splitLine: { lineStyle: { color: "rgba(255,255,255,0.08)", type: "dashed" as const } },
+    };
+
+    if (selectedHospital === HOUSTON_OVERALL) {
+      const legendData = HOSPITAL_IDS.map(
+        (id) => HOSPITALS.find((h) => h.id === id)!.name
+      ).concat("Houston Overall");
+      const series = [
+        ...HOSPITAL_IDS.map((id) => {
+          const c = HOSPITAL_LINE_COLORS[id];
+          return {
+            name: HOSPITALS.find((h) => h.id === id)!.name,
+            type: "line" as const,
+            smooth: true,
+            data: HOSPITAL_MONTHLY_DATA[id],
+            symbol: "circle",
+            symbolSize: 6,
+            lineStyle: { width: 1.5, color: c },
+            itemStyle: { color: c },
+            z: 1,
+          };
+        }),
+        {
+          name: "Houston Overall",
+          type: "line" as const,
+          smooth: true,
+          data: HOUSTON_OVERALL_DATA,
+          symbol: "circle",
+          symbolSize: 8,
+          lineStyle: { width: 3, color: "#222" },
+          itemStyle: { color: "#222" },
+          z: 2,
+        },
+      ];
+      return {
+        backgroundColor: "transparent",
+        tooltip: commonTooltip,
+        legend: {
+          bottom: 0,
+          data: legendData,
+          textStyle: { color: "rgba(255,255,255,0.7)" },
+          type: "scroll" as const,
+        },
+        grid: { top: 48, left: 56, right: 24, bottom: 100 },
+        xAxis: commonXAxis,
+        yAxis: commonYAxis,
+        series,
+      };
+    }
+
+    const series = HOSPITAL_MONTHLY_DATA[selectedHospital] ?? HOSPITAL_MONTHLY_DATA.H001;
     const hName = HOSPITALS.find((h) => h.id === selectedHospital)?.name ?? "Hospital";
     return {
       backgroundColor: "transparent",
-      tooltip: {
-        trigger: "axis" as const,
-        backgroundColor: "rgba(30,30,30,0.95)",
-        borderColor: "rgba(255,255,255,0.1)",
-        borderWidth: 1,
-        textStyle: { color: "#fff" },
-      },
+      tooltip: commonTooltip,
       grid: { top: 48, left: 56, right: 24, bottom: 40 },
-      xAxis: {
-        type: "category" as const,
-        boundaryGap: false,
-        data: TREND_MONTHS,
-        axisLine: { lineStyle: { color: "rgba(255,255,255,0.15)" } },
-        axisLabel: { color: "rgba(255,255,255,0.55)" },
-        splitLine: { show: false },
-      },
-      yAxis: {
-        type: "value" as const,
-        axisLine: { show: false },
-        axisLabel: { color: "rgba(255,255,255,0.55)" },
-        splitLine: { lineStyle: { color: "rgba(255,255,255,0.08)", type: "dashed" as const } },
-      },
+      xAxis: commonXAxis,
+      yAxis: commonYAxis,
       series: [
         {
           name: hName,
@@ -234,24 +331,24 @@ export default function OutbreakTracker() {
               option={chartOption}
               style={{ height: 340, width: "100%" }}
             />
-            {selectedHospital === HOUSTON_OVERALL && (
-              <Box
-                sx={{
-                  mt: 2,
-                  p: 2.5,
-                  borderRadius: 2,
-                  border: "1px solid rgba(239,68,68,0.35)",
-                  backgroundColor: "rgba(239,68,68,0.08)",
-                }}
+            <Box
+              sx={{
+                mt: 2,
+                p: 2.5,
+                borderRadius: 2,
+                border: `1px solid ${alpha(statusBadge.color, 0.4)}`,
+                backgroundColor: alpha(statusBadge.color, 0.08),
+              }}
+            >
+              <Typography sx={{ color: "rgba(255,255,255,0.9)", fontSize: "0.95rem", lineHeight: 1.65 }}>
+                <strong>Detection Rate:</strong> {detectionSummaryLine}
+              </Typography>
+              <Typography
+                sx={{ color: statusBadge.color, fontWeight: 800, fontSize: "1.05rem", mt: 1 }}
               >
-                <Typography sx={{ color: "rgba(255,255,255,0.9)", fontSize: "0.95rem", lineHeight: 1.65 }}>
-                  <strong>Detection Rate:</strong> 0.3% above expected baseline of 4,500 scans/month
-                </Typography>
-                <Typography sx={{ color: "#f87171", fontWeight: 800, fontSize: "1.05rem", mt: 1 }}>
-                  Status: Critical
-                </Typography>
-              </Box>
-            )}
+                Status: {statusBadge.label}
+              </Typography>
+            </Box>
             <Typography
               sx={{
                 color: "rgba(255,255,255,0.45)",

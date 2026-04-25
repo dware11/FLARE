@@ -27,6 +27,7 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  Tooltip,
 } from '@mui/material'
 import {
   fetchEhrRecords,
@@ -145,6 +146,20 @@ const fieldSx = {
   '& fieldset': { borderColor: 'rgba(255,255,255,0.12)' },
 }
 
+const pulseDotSx = {
+  display: 'inline-block',
+  width: 8,
+  height: 8,
+  borderRadius: '50%',
+  backgroundColor: '#f59e0b',
+  marginRight: 1,
+  animation: 'pulse 1.5s ease-in-out infinite',
+  '@keyframes pulse': {
+    '0%, 100%': { opacity: 0.4 },
+    '50%': { opacity: 1 },
+  },
+}
+
 export default function EhrDatabase() {
   const navigate = useNavigate()
   const [records, setRecords] = useState<PatientRecord[]>([])
@@ -208,6 +223,14 @@ export default function EhrDatabase() {
       return matchesQuery && matchesCancer && matchesResult
     })
   }, [records, query, cancerFilter, resultFilter])
+
+  const sorted = useMemo(() => {
+    return [...filtered].sort((a, b) => {
+      const aPending = a.reviewStatus === 'pending' ? 0 : 1
+      const bPending = b.reviewStatus === 'pending' ? 0 : 1
+      return aPending - bPending
+    })
+  }, [filtered])
 
   const canActOnSelected = Boolean(selected?.id && selected.reviewStatus === 'pending')
 
@@ -500,7 +523,7 @@ export default function EhrDatabase() {
           </TableHead>
 
           <TableBody>
-            {filtered.map((r) => {
+            {sorted.map((r) => {
               const chip = resultChipColor(r.aiResult)
               return (
                 <TableRow
@@ -521,7 +544,14 @@ export default function EhrDatabase() {
                     </Typography>
                   </TableCell>
 
-                  <TableCell sx={{ color: 'rgba(255,255,255,0.85)' }}>{r.medicalId}</TableCell>
+                  <TableCell sx={{ color: 'rgba(255,255,255,0.85)' }}>
+                    {r.reviewStatus === 'pending' && (
+                      <Tooltip title="Pending review">
+                        <Box component="span" sx={pulseDotSx} />
+                      </Tooltip>
+                    )}
+                    {r.medicalId}
+                  </TableCell>
                   <TableCell sx={{ color: 'rgba(255,255,255,0.85)' }}>{r.cancerType}</TableCell>
                   <TableCell sx={{ color: 'rgba(255,255,255,0.85)' }}>{r.modality}</TableCell>
                   <TableCell sx={{ color: 'rgba(255,255,255,0.85)' }}>{r.scanDate}</TableCell>
@@ -558,7 +588,7 @@ export default function EhrDatabase() {
               )
             })}
 
-            {filtered.length === 0 && (
+            {sorted.length === 0 && (
               <TableRow>
                 <TableCell colSpan={8} sx={{ color: 'rgba(255,255,255,0.65)', py: 5, textAlign: 'center' }}>
                   No matching records found.

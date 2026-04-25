@@ -50,6 +50,8 @@ const HOSPITALS = [
   { id: "H005", name: "Texas Children's Hospital" },
 ];
 
+const isValidMedicalId = (id: string) => /^P\d{4}$/.test(id);
+
 function hospitalName(id: string): string {
   return HOSPITALS.find((h) => h.id === id)?.name ?? id;
 }
@@ -322,7 +324,15 @@ export default function CancerDetection() {
   const folderAnalysis = useMemo(() => analyzePatientFolder(folderFiles), [folderFiles]);
 
   const canUpload = useMemo(() => {
-    return Boolean(cancerType) && firstName && lastName && medicalId && dob && hospitalId;
+    return (
+      Boolean(cancerType) &&
+      firstName &&
+      lastName &&
+      medicalId &&
+      isValidMedicalId(medicalId) &&
+      dob &&
+      hospitalId
+    );
   }, [cancerType, firstName, lastName, medicalId, dob, hospitalId]);
 
   const canSubmit = useMemo(() => {
@@ -800,7 +810,20 @@ export default function CancerDetection() {
 
             <TextField label="First Name" disabled={loading} value={firstName} onChange={(e) => setFirstName(e.target.value)} sx={fieldSx} />
             <TextField label="Last Name" disabled={loading} value={lastName} onChange={(e) => setLastName(e.target.value)} sx={fieldSx} />
-            <TextField label="Medical ID" disabled={loading} value={medicalId} onChange={(e) => setMedicalId(e.target.value)} sx={fieldSx} />
+            <TextField
+              label="Medical ID"
+              disabled={loading}
+              value={medicalId}
+              onChange={(e) => setMedicalId(e.target.value)}
+              placeholder="P0001"
+              error={medicalId.length > 0 && !isValidMedicalId(medicalId)}
+              helperText={
+                medicalId.length > 0 && !isValidMedicalId(medicalId)
+                  ? "Format: P followed by 4 digits"
+                  : undefined
+              }
+              sx={fieldSx}
+            />
             <TextField
               label="Date of Birth"
               type="date"
