@@ -32,7 +32,7 @@ import {
   fetchEhrRecords,
   approveReview,
   rejectReview,
-  openApiImageInNewTab,
+  openImage,
   type EhrRecord,
 } from '../api/flareAPI'
 import SearchIcon from '@mui/icons-material/Search'
@@ -684,7 +684,7 @@ export default function EhrDatabase() {
                   disabled={!selected.originalImageUrl}
                   onClick={() => {
                     const u = selected.originalImageUrl
-                    if (u) void openApiImageInNewTab(u)
+                    if (u) void openImage(u)
                   }}
                 >
                   View Scan
@@ -701,7 +701,7 @@ export default function EhrDatabase() {
                   disabled={!selected.gradCamUrl}
                   onClick={() => {
                     const u = selected.gradCamUrl
-                    if (u) void openApiImageInNewTab(u)
+                    if (u) void openImage(u)
                   }}
                 >
                   View Localization

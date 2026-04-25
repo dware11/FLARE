@@ -103,27 +103,47 @@ export function absolutizeApiAssetUrl(path: string | null | undefined): string |
   return a == null || a === "" ? null : a;
 }
 
-/** Fetch a remote/relative image with ngrok header; returns blob: URL for <img> (caller must revoke). */
+/**
+ * Full URL of an image with ngrok header; returns a blob: URL for <img> (caller must revoke).
+ * Use for API/static image URLs that cannot be loaded via raw <img src> through ngrok.
+ */
+export async function fetchImage(url: string): Promise<string> {
+  const res = await fetch(url, { headers: NGROK_HEADERS });
+  if (!res.ok) {
+    throw new Error(`Image fetch failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
+/** Resolve relative/absolute path, then fetchImage; returns null on empty path or failed fetch. */
 export async function fetchImageObjectUrl(path: string | null | undefined): Promise<string | null> {
   const u = absolutizeApiAssetUrl(path);
   if (!u) return null;
-  const res = await fetch(u, { headers: NGROK_HEADERS });
-  if (!res.ok) return null;
-  return URL.createObjectURL(await res.blob());
+  try {
+    return await fetchImage(u);
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Open an API/static image in a new tab; uses ngrok header. Revokes object URL after delay.
+ * Open an absolute image URL in a new tab (ngrok header). Revokes object URL after delay.
  */
-export async function openApiImageInNewTab(path: string | null | undefined): Promise<void> {
-  const u = absolutizeApiAssetUrl(path);
-  if (!u) return;
-  const res = await fetch(u, { headers: NGROK_HEADERS });
+export async function openImage(url: string): Promise<void> {
+  const res = await fetch(url, { headers: NGROK_HEADERS });
   if (!res.ok) return;
   const blob = await res.blob();
   const objectUrl = URL.createObjectURL(blob);
   window.open(objectUrl, "_blank", "noopener,noreferrer");
   window.setTimeout(() => URL.revokeObjectURL(objectUrl), 120_000);
+}
+
+/** Open a relative or absolute path from API responses (EHR, predict JSON). */
+export async function openApiImageInNewTab(path: string | null | undefined): Promise<void> {
+  const u = absolutizeApiAssetUrl(path);
+  if (!u) return;
+  await openImage(u);
 }
 
 /** Maps Flask /api/mri/predict JSON to the slim shape the cancer demo uses. */

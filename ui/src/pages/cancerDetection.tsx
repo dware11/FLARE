@@ -30,7 +30,8 @@ import {
   predictCtFile,
   predictFusion,
   API_BASE,
-  fetchImageObjectUrl,
+  absolutizeApiAssetUrl,
+  fetchImage,
   type CancerScanResult,
 } from "../api/flareAPI";
 import type { CancerType, ResultClass } from "../api/flareAPI";
@@ -202,8 +203,8 @@ const pairImgSx = {
 };
 
 /**
- * Load API/static image URLs with ngrok-skip header for <img src> (ngrok interstitial otherwise).
- * Revokes prior blob on change/unmount.
+ * Load API/static image URLs via fetch (NGROK_HEADERS) for <img src> (ngrok interstitial otherwise).
+ * Revokes prior object URL on change/unmount.
  */
 function useApiImageObjectUrl(path: string | null | undefined): string | null {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
@@ -214,16 +215,22 @@ function useApiImageObjectUrl(path: string | null | undefined): string | null {
       revokeRef.current = null;
     }
     setBlobUrl(null);
-    if (path == null || path === "") return;
+    const u = absolutizeApiAssetUrl(path);
+    if (u == null) return;
     let cancelled = false;
-    void fetchImageObjectUrl(path).then((b) => {
-      if (cancelled) {
-        if (b) URL.revokeObjectURL(b);
-        return;
+    void (async () => {
+      try {
+        const b = await fetchImage(u);
+        if (cancelled) {
+          URL.revokeObjectURL(b);
+          return;
+        }
+        revokeRef.current = b;
+        setBlobUrl(b);
+      } catch {
+        if (!cancelled) setBlobUrl(null);
       }
-      if (b) revokeRef.current = b;
-      setBlobUrl(b);
-    });
+    })();
     return () => {
       cancelled = true;
       if (revokeRef.current) {
