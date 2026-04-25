@@ -229,22 +229,25 @@ _api_cases_store: list[dict] = []
 
 
 def _seed_demo_data() -> None:
+    # Tuples: patient_id, hospital, modality, confidence (0–1), AI result, cancer type (brain)
+    # AI: 6 Malignant, 5 Benign, 4 Normal. Modalities: mix brain_ct, brain_mri, brain_fusion.
+    # Hospitals: 3 cases each across H001–H005.
     demo_cases = [
-        ("DEMO_001", "H001", "brain_ct", 0.9528, True),
-        ("DEMO_002", "H001", "brain_mri", 0.8821, True),
-        ("DEMO_003", "H002", "brain_ct", 0.9102, True),
-        ("DEMO_004", "H002", "brain_mri", 0.7834, True),
-        ("DEMO_005", "H003", "brain_ct", 0.8956, True),
-        ("DEMO_006", "H003", "brain_ct", 0.9234, True),
-        ("DEMO_007", "H004", "brain_mri", 0.8102, True),
-        ("DEMO_008", "H004", "brain_ct", 0.7654, True),
-        ("DEMO_009", "H005", "brain_ct", 0.9341, True),
-        ("DEMO_010", "H005", "brain_mri", 0.8876, True),
-        ("DEMO_011", "H001", "brain_ct", 0.9102, True),
-        ("DEMO_012", "H002", "brain_ct", 0.8234, True),
-        ("DEMO_013", "H003", "brain_mri", 0.7923, True),
-        ("DEMO_014", "H001", "brain_ct", 0.9567, True),
-        ("DEMO_015", "H002", "brain_mri", 0.8341, True),
+        ("DEMO_001", "H001", "brain_ct", 0.8900, "Malignant", "Glioma"),
+        ("DEMO_002", "H002", "brain_mri", 0.9200, "Malignant", "Meningioma"),
+        ("DEMO_003", "H003", "brain_fusion", 0.7800, "Malignant", "Pituitary"),
+        ("DEMO_004", "H004", "brain_ct", 0.9600, "Malignant", "Glioma"),
+        ("DEMO_005", "H005", "brain_mri", 0.8400, "Malignant", "Meningioma"),
+        ("DEMO_006", "H001", "brain_fusion", 0.9100, "Malignant", "Pituitary"),
+        ("DEMO_007", "H002", "brain_ct", 0.6700, "Benign", "Glioma"),
+        ("DEMO_008", "H003", "brain_mri", 0.7200, "Benign", "Meningioma"),
+        ("DEMO_009", "H004", "brain_fusion", 0.6100, "Benign", "Pituitary"),
+        ("DEMO_010", "H005", "brain_ct", 0.7400, "Benign", "Glioma"),
+        ("DEMO_011", "H001", "brain_mri", 0.6900, "Benign", "Meningioma"),
+        ("DEMO_012", "H002", "brain_fusion", 0.9000, "Normal", "Normal"),
+        ("DEMO_013", "H003", "brain_ct", 0.8800, "Normal", "Normal"),
+        ("DEMO_014", "H004", "brain_mri", 0.9500, "Normal", "Normal"),
+        ("DEMO_015", "H005", "brain_fusion", 0.9300, "Normal", "Normal"),
     ]
 
     hospital_names = {
@@ -257,9 +260,11 @@ def _seed_demo_data() -> None:
 
     base_time = datetime.now(timezone.utc) - timedelta(hours=48)
 
-    for i, (pid, hid, modality, conf, is_abn) in enumerate(demo_cases):
+    for i, (pid, hid, modality, conf, result_class, cancer_type) in enumerate(demo_cases):
         case_id = f"demo_case_{i + 1:03d}"
         created = (base_time + timedelta(hours=i * 3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        is_abn = result_class in ("Malignant", "Benign")
+        pred = "Abnormal" if is_abn else "Normal"
 
         _review_cases[case_id] = {
             "caseId": case_id,
@@ -268,7 +273,7 @@ def _seed_demo_data() -> None:
             "hospitalName": hospital_names[hid],
             "modality": modality,
             "is_abnormal": is_abn,
-            "prediction": "Abnormal" if is_abn else "Normal",
+            "prediction": pred,
             "confidence": conf,
             "review_status": "approved",
             "createdAt": created,
@@ -276,7 +281,7 @@ def _seed_demo_data() -> None:
             "rejectedAt": None,
             "reviewerId": "demo_reviewer",
             "reject_reason": None,
-            "result_class": "Abnormal" if is_abn else "Normal",
+            "result_class": result_class,
         }
 
         _ehr_records[case_id] = {
@@ -288,10 +293,11 @@ def _seed_demo_data() -> None:
             "hospitalId": hid,
             "hospitalName": hospital_names[hid],
             "modality": modality,
-            "prediction": "Abnormal",
+            "prediction": pred,
             "confidence": conf,
             "is_abnormal": is_abn,
-            "result_class": "Malignant",
+            "result_class": result_class,
+            "cancer_type": cancer_type,
             "review_status": "approved",
             "createdAt": created,
             "approvedAt": created,

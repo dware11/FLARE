@@ -365,6 +365,8 @@ export type EhrRecord = {
   hospitalId: string;
   hospitalName: string;
   modality: string;
+  /** Brain demo: Glioma, Meningioma, Pituitary, Normal, etc. */
+  cancer_type?: string | null;
   result_class: string;
   confidence: number;
   review_status: string;

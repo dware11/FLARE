@@ -35,9 +35,9 @@ import UploadFileIcon from '@mui/icons-material/UploadFile'
 import DownloadIcon from '@mui/icons-material/Download'
 import VisibilityIcon from '@mui/icons-material/Visibility'
 
-type CancerType = 'Brain' | 'Breast'
+type BrainCancerLabel = 'Glioma' | 'Meningioma' | 'Pituitary' | 'Normal'
 type ResultClass = 'Normal' | 'Benign' | 'Malignant'
-type ScanModality = 'MRI' | 'CT' | 'Mammography' | 'Ultrasound'
+type ScanModality = 'MRI' | 'CT' | 'Fusion' | 'Mammography' | 'Ultrasound'
 
 type PatientRecord = {
   id: string
@@ -46,7 +46,7 @@ type PatientRecord = {
   dob: string
   medicalId: string
   location: string
-  cancerType: CancerType
+  cancerType: BrainCancerLabel
   modality: ScanModality
   scanDate: string
   aiResult: ResultClass
@@ -72,6 +72,7 @@ function toModality(modality: string): ScanModality {
   const x = (modality || '').toLowerCase()
   if (x.includes('mamm')) return 'Mammography'
   if (x.includes('ultra')) return 'Ultrasound'
+  if (x.includes('fusion')) return 'Fusion'
   if (x.includes('ct')) return 'CT'
   return 'MRI'
 }
@@ -80,6 +81,14 @@ function toResultClass(result_class: string): ResultClass {
   const u = (result_class || '').toLowerCase()
   if (u === 'malignant') return 'Malignant'
   if (u === 'benign') return 'Benign'
+  return 'Normal'
+}
+
+function mapCancerLabel(raw: string | null | undefined): BrainCancerLabel {
+  const u = (raw || '').toLowerCase()
+  if (u === 'glioma') return 'Glioma'
+  if (u === 'meningioma') return 'Meningioma'
+  if (u === 'pituitary') return 'Pituitary'
   return 'Normal'
 }
 
@@ -95,7 +104,7 @@ function mapEhrToPatientRecord(r: EhrRecord): PatientRecord {
     dob: r.dob ?? '',
     medicalId: (r.medicalId ?? r.patient_id) || '',
     location: r.hospitalName ?? '',
-    cancerType: 'Brain',
+    cancerType: mapCancerLabel(r.cancer_type),
     modality: toModality(r.modality),
     scanDate: created,
     aiResult: toResultClass(r.result_class),
@@ -137,7 +146,7 @@ export default function EhrDatabase() {
   const [fetchError, setFetchError] = useState('')
 
   const [query, setQuery] = useState('')
-  const [cancerFilter, setCancerFilter] = useState<CancerType | 'All'>('All')
+  const [cancerFilter, setCancerFilter] = useState<BrainCancerLabel | 'All'>('All')
   const [resultFilter, setResultFilter] = useState<ResultClass | 'All'>('All')
   const [selected, setSelected] = useState<PatientRecord | null>(null)
 
@@ -410,7 +419,7 @@ export default function EhrDatabase() {
               select
               label="Cancer Type"
               value={cancerFilter}
-              onChange={(e) => setCancerFilter(e.target.value as CancerType | 'All')}
+              onChange={(e) => setCancerFilter(e.target.value as BrainCancerLabel | 'All')}
               sx={{
                 '& .MuiInputBase-root': { color: '#fff', borderRadius: 2 },
                 '& label': { color: 'rgba(255,255,255,0.65)' },
@@ -418,8 +427,10 @@ export default function EhrDatabase() {
               }}
             >
               <MenuItem value="All">All</MenuItem>
-              <MenuItem value="Brain">Brain</MenuItem>
-              <MenuItem value="Breast">Breast</MenuItem>
+              <MenuItem value="Glioma">Glioma</MenuItem>
+              <MenuItem value="Meningioma">Meningioma</MenuItem>
+              <MenuItem value="Pituitary">Pituitary</MenuItem>
+              <MenuItem value="Normal">Normal</MenuItem>
             </TextField>
 
             <TextField
