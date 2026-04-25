@@ -6,14 +6,15 @@ import { useNavigate } from 'react-router-dom'
 import FlareLogo from '../assets/FLARElogo.png'
 
 export default function Login() {
-  const { loginWithRedirect, isAuthenticated } = useAuth0()
+  const { loginWithRedirect, isAuthenticated, isLoading } = useAuth0()
   const navigate = useNavigate()
 
   useEffect(() => {
+    if (isLoading) return
     if (isAuthenticated) {
-      navigate('/home')
+      navigate('/home', { replace: true })
     }
-  }, [isAuthenticated])
+  }, [isAuthenticated, isLoading, navigate])
 
   return (
     <Box
@@ -49,7 +50,7 @@ export default function Login() {
         
     <Button 
     onClick={() => {
-      loginWithRedirect()
+      loginWithRedirect({ appState: { returnTo: '/home' } })
     }}
     sx={{
             backgroundColor: '#ff5c5c',
