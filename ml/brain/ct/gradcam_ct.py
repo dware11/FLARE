@@ -8,6 +8,16 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+
+def _spatial_hw(
+    x: torch.Tensor, input_for_overlay: Optional[torch.Tensor] = None
+) -> Tuple[int, int]:
+    """(H, W) for heatmap/overlay; prefer overlay tensor when given."""
+    ref = input_for_overlay if input_for_overlay is not None else x
+    if ref.dim() < 2:
+        return 256, 256
+    return int(ref.shape[-2]), int(ref.shape[-1])
+
 def _get_layer(model: torch.nn.Module, layer_name: str) -> torch.nn.Module: 
     """ Resolve nested layer name (ex. 'features.denseblock4') for Grad-Cam """ 
     if "." not in layer_name: 
@@ -49,12 +59,13 @@ class GradCAM:
         """
         Compute Grad-CAM for input x (B=1). Uses predicted class if target_class is None.
         Returns:
-            heatmap: tensor [0,1] (256,256)
+            heatmap: tensor [0,1] (H, W) matching input / overlay
             overlay: numpy array (H,W,3) uint8 or None
         """
         self.activations = None
         self.gradients = None
         self._fwd_handle = self.layer.register_forward_hook(self._forward_hook)
+        h, w = _spatial_hw(x, input_for_overlay)
 
         try:
             self.model.zero_grad(set_to_none=True)
@@ -66,7 +77,7 @@ class GradCAM:
                 logits[0, target_class].backward()
 
             if self.activations is None or self.gradients is None:
-                return torch.zeros(256, 256, device=x.device), None
+                return torch.zeros(h, w, device=x.device), None
 
             # Compute CAM
             a = self.activations.detach()           # (1, C, H, W)
@@ -78,9 +89,10 @@ class GradCAM:
             if cam.max() > 0:
                 cam /= cam.max()
 
+            # Match overlay resolution (e.g. 224 CT vs 256 legacy) to avoid broadcast errors.
             heatmap = F.interpolate(
                 cam.unsqueeze(0).unsqueeze(0),
-                size=(256, 256),
+                size=(h, w),
                 mode="bilinear",
                 align_corners=False,
             ).squeeze(0).squeeze(0)
@@ -102,11 +114,14 @@ class GradCAM:
     def _overlay(self, heatmap: torch.Tensor, x: torch.Tensor) -> np.ndarray:
         """
         Blend the heatmap with input for visualization.
-        x: (1, 3, 256, 256) or (1, 1, 256, 256)
+        x: (1, 3, H, W) or (1, 1, 3, H, W) (first spatial slice used for 5D).
         Returns: (H, W, 3) uint8 overlay
         """
         heat = heatmap.cpu().numpy()
-        img = x.squeeze(0).cpu().numpy()
+        t = x
+        if t.dim() == 5:
+            t = t[:, 0]
+        img = t.squeeze(0).cpu().numpy()
         # Design: use first channel (brain window) as grayscale for overlay.
         gray = img[0]
         gray = (np.clip(gray, 0, 1) * 255).astype(np.uint8)
