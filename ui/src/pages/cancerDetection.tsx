@@ -30,8 +30,6 @@ import {
   predictCtFile,
   predictFusion,
   API_BASE,
-  absolutizeApiAssetUrl,
-  fetchImage,
   type CancerScanResult,
 } from "../api/flareAPI";
 import type { CancerType, ResultClass } from "../api/flareAPI";
@@ -42,6 +40,7 @@ import {
   mriBraTSFolderComplete,
 } from "../utils/scanFolderModality";
 import { useCancerInference } from "../context/CancerInferenceContext";
+import { useNgrokImage } from "../hooks/useNgrokImage";
 
 const HOSPITALS = [
   { id: "H001", name: "Houston Methodist Hospital" },
@@ -201,46 +200,6 @@ const pairImgSx = {
   border: "1px solid rgba(255,255,255,0.12)",
   display: "block",
 };
-
-/**
- * Load API/static image URLs via fetch (NGROK_HEADERS) for <img src> (ngrok interstitial otherwise).
- * Revokes prior object URL on change/unmount.
- */
-function useApiImageObjectUrl(path: string | null | undefined): string | null {
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const revokeRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (revokeRef.current) {
-      URL.revokeObjectURL(revokeRef.current);
-      revokeRef.current = null;
-    }
-    setBlobUrl(null);
-    const u = absolutizeApiAssetUrl(path);
-    if (u == null) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const b = await fetchImage(u);
-        if (cancelled) {
-          URL.revokeObjectURL(b);
-          return;
-        }
-        revokeRef.current = b;
-        setBlobUrl(b);
-      } catch {
-        if (!cancelled) setBlobUrl(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (revokeRef.current) {
-        URL.revokeObjectURL(revokeRef.current);
-        revokeRef.current = null;
-      }
-    };
-  }, [path]);
-  return blobUrl;
-}
 
 export default function CancerDetection() {
   const navigate = useNavigate();
@@ -696,22 +655,22 @@ export default function CancerDetection() {
   const mriOrigPath = mriV2 ? mriV2.input_image_url || mriV2.segmentation.original_url || undefined : undefined;
   const mriOvlPath = mriV2?.segmentation?.overlay_url ?? undefined;
   const mriMaskPath = mriV2?.segmentation?.mask_url ?? undefined;
-  const mriOrigBlob = useApiImageObjectUrl(mriOrigPath);
-  const mriOvlBlob = useApiImageObjectUrl(mriOvlPath);
-  const mriMaskBlob = useApiImageObjectUrl(mriMaskPath);
+  const mriOrigSrc = useNgrokImage(mriOrigPath);
+  const mriOvlSrc = useNgrokImage(mriOvlPath);
+  const mriMaskSrc = useNgrokImage(mriMaskPath);
 
   const legacyLocPath = predLegacy?.localization_url ?? undefined;
-  const legacyLocBlob = useApiImageObjectUrl(legacyLocPath);
+  const legacyLocSrc = useNgrokImage(legacyLocPath);
 
   const ctCamPath = ctScanResult ? (ctScanResult.cam_url as string | undefined) : undefined;
-  const ctCamBlob = useApiImageObjectUrl(ctCamPath);
+  const ctGradCamSrc = useNgrokImage(ctCamPath);
 
   const fusionCtPath = fusionScanResult ? (fusionScanResult.ct_cam_url as string | undefined) : undefined;
   const fusionMriInPath = fusionScanResult ? (fusionScanResult.mri_input_url as string | undefined) : undefined;
   const fusionMriOvPath = fusionScanResult ? (fusionScanResult.mri_overlay_url as string | undefined) : undefined;
-  const fusionCtBlob = useApiImageObjectUrl(fusionCtPath);
-  const fusionMriInBlob = useApiImageObjectUrl(fusionMriInPath);
-  const fusionMriOvBlob = useApiImageObjectUrl(fusionMriOvPath);
+  const fusionCtGradCamSrc = useNgrokImage(fusionCtPath);
+  const fusionMriOrigSrc = useNgrokImage(fusionMriInPath);
+  const fusionMriSegSrc = useNgrokImage(fusionMriOvPath);
 
   return (
     <Box
@@ -1385,8 +1344,8 @@ export default function CancerDetection() {
             >
               <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
                 {mriOrigPath ? (
-                  mriOrigBlob ? (
-                    <Box component="img" src={mriOrigBlob} alt="Original MRI" sx={pairImgSx} />
+                  mriOrigSrc ? (
+                    <Box component="img" src={mriOrigSrc} alt="Original MRI" sx={pairImgSx} />
                   ) : (
                     <Box
                       sx={{
@@ -1413,8 +1372,8 @@ export default function CancerDetection() {
               <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
                 {mriOvlPath ? (
                   <>
-                    {mriOvlBlob ? (
-                      <Box component="img" src={mriOvlBlob} alt="Segmentation" sx={pairImgSx} />
+                    {mriOvlSrc ? (
+                      <Box component="img" src={mriOvlSrc} alt="Segmentation" sx={pairImgSx} />
                     ) : (
                       <Box
                         sx={{
@@ -1451,10 +1410,10 @@ export default function CancerDetection() {
                 <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.75, fontSize: "0.85rem" }}>
                   Tumor Mask
                 </Typography>
-                {mriMaskBlob ? (
+                {mriMaskSrc ? (
                   <Box
                     component="img"
-                    src={mriMaskBlob}
+                    src={mriMaskSrc}
                     alt="Tumor mask"
                     sx={{ maxWidth: 200, borderRadius: 1, border: "1px solid rgba(255,255,255,0.12)" }}
                   />
@@ -1602,8 +1561,8 @@ export default function CancerDetection() {
               <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
                 {legacyLocPath ? (
                   <>
-                    {legacyLocBlob ? (
-                      <Box component="img" src={legacyLocBlob} alt="Segmentation" sx={pairImgSx} />
+                    {legacyLocSrc ? (
+                      <Box component="img" src={legacyLocSrc} alt="Segmentation" sx={pairImgSx} />
                     ) : (
                       <Box
                         sx={{
@@ -1780,8 +1739,8 @@ export default function CancerDetection() {
               <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
                 {ctCamPath ? (
                   <>
-                    {ctCamBlob ? (
-                      <Box component="img" src={ctCamBlob} alt="GradCAM" sx={pairImgSx} />
+                    {ctGradCamSrc ? (
+                      <Box component="img" src={ctGradCamSrc} alt="GradCAM" sx={pairImgSx} />
                     ) : (
                       <Box
                         sx={{
@@ -1906,8 +1865,8 @@ export default function CancerDetection() {
               >
                 {absolutizeStaticUrl(fusionScanResult.ct_cam_url as string | null | undefined) && (
                   <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
-                    {fusionCtBlob ? (
-                      <Box component="img" src={fusionCtBlob} alt="CT GradCAM" sx={pairImgSx} />
+                    {fusionCtGradCamSrc ? (
+                      <Box component="img" src={fusionCtGradCamSrc} alt="CT GradCAM" sx={pairImgSx} />
                     ) : (
                       <Box
                         sx={{
@@ -1929,8 +1888,8 @@ export default function CancerDetection() {
                 )}
                 {absolutizeStaticUrl(fusionScanResult.mri_input_url as string | null | undefined) && (
                   <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
-                    {fusionMriInBlob ? (
-                      <Box component="img" src={fusionMriInBlob} alt="MRI Input" sx={pairImgSx} />
+                    {fusionMriOrigSrc ? (
+                      <Box component="img" src={fusionMriOrigSrc} alt="MRI Input" sx={pairImgSx} />
                     ) : (
                       <Box
                         sx={{
@@ -1952,8 +1911,8 @@ export default function CancerDetection() {
                 )}
                 {absolutizeStaticUrl(fusionScanResult.mri_overlay_url as string | null | undefined) && (
                   <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
-                    {fusionMriOvBlob ? (
-                      <Box component="img" src={fusionMriOvBlob} alt="MRI Segmentation" sx={pairImgSx} />
+                    {fusionMriSegSrc ? (
+                      <Box component="img" src={fusionMriSegSrc} alt="MRI Segmentation" sx={pairImgSx} />
                     ) : (
                       <Box
                         sx={{
