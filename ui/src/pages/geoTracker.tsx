@@ -23,22 +23,23 @@ const cardSx = {
   color: "#fff",
 };
 
+/** Risk from approved_abnormal: 4+ → High, 3 → Medium, 2 or fewer → Low */
 function markerColor(h: HospitalSummary): string {
-  if (h.approvedAbnormalCount >= 5) return "#ef4444";
-  if (h.approvedAbnormalCount >= 2) return "#f97316";
+  if (h.approvedAbnormalCount >= 4) return "#ef4444";
+  if (h.approvedAbnormalCount === 3) return "#f97316";
   return "#22c55e";
 }
 
 function severityLabel(h: HospitalSummary): string {
-  if (h.approvedAbnormalCount >= 5) return "High";
-  if (h.approvedAbnormalCount >= 2) return "Medium";
+  if (h.approvedAbnormalCount >= 4) return "High";
+  if (h.approvedAbnormalCount === 3) return "Medium";
   return "Low";
 }
 
 function severityChipColor(h: HospitalSummary) {
-  if (h.approvedAbnormalCount >= 5)
+  if (h.approvedAbnormalCount >= 4)
     return { bg: "rgba(239,68,68,0.18)", border: "rgba(239,68,68,0.45)", text: "#fca5a5" };
-  if (h.approvedAbnormalCount >= 2)
+  if (h.approvedAbnormalCount === 3)
     return { bg: "rgba(249,115,22,0.18)", border: "rgba(249,115,22,0.45)", text: "#fdba74" };
   return { bg: "rgba(34,197,94,0.18)", border: "rgba(34,197,94,0.45)", text: "#86efac" };
 }
@@ -221,12 +222,22 @@ export default function GeoTracker() {
 
           <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2, alignItems: "center" }}>
             <Button
-              variant="contained"
+              type="button"
+              variant="outlined"
+              size="small"
               onClick={() => navigate("/ehr-database")}
               sx={{
-                backgroundColor: "#ff5c5c",
                 textTransform: "none",
-                "&:hover": { backgroundColor: "#ff3b3b" },
+                fontWeight: 500,
+                color: "rgba(255,255,255,0.65)",
+                borderColor: "rgba(255,255,255,0.22)",
+                fontSize: "0.8rem",
+                py: 0.5,
+                px: 1.25,
+                "&:hover": {
+                  borderColor: "rgba(255,255,255,0.35)",
+                  backgroundColor: "rgba(255,255,255,0.04)",
+                },
               }}
             >
               Open EHR Database
