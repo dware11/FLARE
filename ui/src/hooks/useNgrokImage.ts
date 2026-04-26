@@ -21,27 +21,6 @@ export function useNgrokImage(url: string | null | undefined): string | null {
     let cancelled = false;
     void fetch(absolute, { headers: NGROK_HEADERS })
       .then((res) => {
-        // #region agent log
-        fetch("http://127.0.0.1:7763/ingest/2925affb-f6c8-4554-8741-e0c866a0fdb9", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Debug-Session-Id": "4934c9",
-          },
-          body: JSON.stringify({
-            sessionId: "4934c9",
-            location: "useNgrokImage.ts:fetch",
-            message: "ngrok image fetch",
-            data: {
-              absolute,
-              status: res.status,
-              contentType: res.headers.get("content-type"),
-            },
-            timestamp: Date.now(),
-            hypothesisId: "H-fetch",
-          }),
-        }).catch(() => {});
-        // #endregion
         if (!res.ok) throw new Error(`Image fetch failed (${res.status})`);
         return res.blob();
       })
@@ -51,24 +30,7 @@ export function useNgrokImage(url: string | null | undefined): string | null {
         revokeRef.current = createdUrl;
         setObjectUrl(createdUrl);
       })
-      .catch((err: unknown) => {
-        // #region agent log
-        fetch("http://127.0.0.1:7763/ingest/2925affb-f6c8-4554-8741-e0c866a0fdb9", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Debug-Session-Id": "4934c9",
-          },
-          body: JSON.stringify({
-            sessionId: "4934c9",
-            location: "useNgrokImage.ts:catch",
-            message: "ngrok image fetch failed",
-            data: { absolute, err: err instanceof Error ? err.message : String(err) },
-            timestamp: Date.now(),
-            hypothesisId: "H-fetch",
-          }),
-        }).catch(() => {});
-        // #endregion
+      .catch(() => {
         if (!cancelled) setObjectUrl(null);
       });
 
