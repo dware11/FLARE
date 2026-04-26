@@ -823,6 +823,28 @@ def _ct_cam_static_dir() -> str:
     return d
 
 
+def _ct_gradcam_public_url(ct_result: dict) -> str | None:
+    """
+    Expose the CT Grad-CAM image URL when the PNG exists on disk.
+    Prefer infer's returned cam_path (authoritative). Fall back to
+    {inference_stem}.png under the cam dir (legacy check) to avoid
+    dropping cam_url when path normalization or stem heuristics disagree.
+    """
+    cam_in = ct_result.get("cam_path")
+    cam_dir = _ct_cam_static_dir()
+    if cam_in:
+        p = os.path.normpath(str(cam_in))
+        if os.path.isfile(p):
+            return _absolute_url_for_path(f"/static/cam/{os.path.basename(p)}")
+    ct_inf = ct_result.get("inference_path")
+    if ct_inf:
+        stem = Path(ct_inf).stem
+        alt = os.path.join(cam_dir, f"{stem}.png")
+        if os.path.isfile(alt):
+            return _absolute_url_for_path(f"/static/cam/{stem}.png")
+    return None
+
+
 @app.route("/api/ct/predict", methods=["POST"])
 @audit_request("ct_predict")
 @limiter.limit("20 per minute")
@@ -914,17 +936,10 @@ def api_ct_predict():
                 "dob": dob,
             }
 
-        ct_path = ct_result.get("inference_path") or saved_path
-        stem = Path(ct_path).stem
         input_format = ct_result.get("input_format")
         if input_format not in {"dicom_zip", "npz", "image"}:
             input_format = "npz"
-        cam_disk = os.path.join(cam_dir, f"{stem}.png")
-        cam_url = (
-            _absolute_url_for_path(f"/static/cam/{stem}.png")
-            if ct_result.get("cam_path") and os.path.isfile(cam_disk)
-            else None
-        )
+        cam_url = _ct_gradcam_public_url(ct_result)
 
         return (
             jsonify(
@@ -1494,11 +1509,7 @@ def api_fusion_predict():
     mri_input_url = None
     mri_overlay_url = None
     if ct_result:
-        stem = ct_result.get("cam_path") or ""
-        if stem:
-            cam_disk = os.path.join(_ct_cam_static_dir(), os.path.basename(stem))
-            if os.path.isfile(cam_disk):
-                ct_cam_url = _absolute_url_for_path(f"/static/cam/{os.path.basename(stem)}")
+        ct_cam_url = _ct_gradcam_public_url(ct_result)
     if mri_result and isinstance(mri_result, dict):
         mri_input_url = mri_result.get("input_image_url")
         seg = mri_result.get("segmentation")
