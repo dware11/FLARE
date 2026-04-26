@@ -30,9 +30,11 @@ import {
   predictCtFile,
   predictFusion,
   API_BASE,
+  absolutizeApiAssetUrl,
   type CancerScanResult,
+  type CancerType,
+  type ResultClass,
 } from "../api/flareAPI";
-import type { CancerType, ResultClass } from "../api/flareAPI";
 import {
   MRI_SEQUENCE_KEYS,
   MRI_SEQUENCE_LABELS,
@@ -167,13 +169,6 @@ function isFusionCtUploadFile(f: File | null): boolean {
 }
 
 type BrainPipeline = "mri" | "ct" | "fusion";
-
-function absolutizeStaticUrl(path: string | null | undefined): string | null {
-  if (path == null || path === "") return null;
-  if (path.startsWith("http://") || path.startsWith("https://")) return path;
-  const base = API_BASE.replace(/\/$/, "");
-  return path.startsWith("/") ? `${base}${path}` : `${base}/${path}`;
-}
 
 function fusionModeLabel(mode: string): string {
   switch (mode) {
@@ -1874,9 +1869,9 @@ export default function CancerDetection() {
               {REVIEW_DISCLAIMER_TEXT}
             </Alert>
 
-            {(absolutizeStaticUrl(fusionScanResult.ct_cam_url as string | null | undefined) ||
-              absolutizeStaticUrl(fusionScanResult.mri_input_url as string | null | undefined) ||
-              absolutizeStaticUrl(fusionScanResult.mri_overlay_url as string | null | undefined)) && (
+            {(absolutizeApiAssetUrl(fusionScanResult.ct_cam_url as string | null | undefined) ||
+              absolutizeApiAssetUrl(fusionScanResult.mri_input_url as string | null | undefined) ||
+              absolutizeApiAssetUrl(fusionScanResult.mri_overlay_url as string | null | undefined)) && (
               <Box
                 sx={{
                   display: "flex",
@@ -1886,7 +1881,7 @@ export default function CancerDetection() {
                   flexWrap: "wrap",
                 }}
               >
-                {absolutizeStaticUrl(fusionScanResult.ct_cam_url as string | null | undefined) && (
+                {absolutizeApiAssetUrl(fusionScanResult.ct_cam_url as string | null | undefined) && (
                   <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
                     {fusionCtGradCamSrc ? (
                       <Box component="img" src={fusionCtGradCamSrc} alt="CT GradCAM" sx={pairImgSx} />
@@ -1909,7 +1904,7 @@ export default function CancerDetection() {
                     </Typography>
                   </Box>
                 )}
-                {absolutizeStaticUrl(fusionScanResult.mri_input_url as string | null | undefined) && (
+                {absolutizeApiAssetUrl(fusionScanResult.mri_input_url as string | null | undefined) && (
                   <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
                     {fusionMriOrigSrc ? (
                       <Box component="img" src={fusionMriOrigSrc} alt="MRI Input" sx={pairImgSx} />
@@ -1932,7 +1927,7 @@ export default function CancerDetection() {
                     </Typography>
                   </Box>
                 )}
-                {absolutizeStaticUrl(fusionScanResult.mri_overlay_url as string | null | undefined) && (
+                {absolutizeApiAssetUrl(fusionScanResult.mri_overlay_url as string | null | undefined) && (
                   <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
                     {fusionMriSegSrc ? (
                       <Box component="img" src={fusionMriSegSrc} alt="MRI Segmentation" sx={pairImgSx} />

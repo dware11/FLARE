@@ -88,12 +88,31 @@ export async function predictScan(params: {
   return res.json();
 }
 
-/** Turn relative /static/... paths into absolute URLs for <img src>. */
+/**
+ * Turn relative /static/... into absolute URLs for fetch/img.
+ * Server JSON may incorrectly use Flask request.host_url (e.g. http://127.0.0.1:port
+ * on Delta/SSH) — the browser would hit the wrong host. Relative paths are preferred;
+ * for absolute URLs we remap localhost, loopback, or /static/... on a different origin
+ * to VITE API_BASE.
+ */
 function absolutizeAssetUrl(path: string | null | undefined): string | null | undefined {
   if (path == null || path === "") return path;
-  if (path.startsWith("http://") || path.startsWith("https://")) return path;
-  const base = API_BASE.replace(/\/$/, "");
-  return path.startsWith("/") ? `${base}${path}` : `${base}/${path}`;
+  const baseStr = API_BASE.replace(/\/$/, "");
+  if (path.startsWith("http://") || path.startsWith("https://")) {
+    try {
+      const u = new URL(path);
+      const b = new URL(baseStr);
+      const staticWrongOrigin = u.pathname.startsWith("/static/") && u.origin !== b.origin;
+      const loopback = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+      if (loopback || staticWrongOrigin) {
+        return `${b.origin}${u.pathname}${u.search}`;
+      }
+    } catch {
+      return path;
+    }
+    return path;
+  }
+  return path.startsWith("/") ? `${baseStr}${path}` : `${baseStr}/${path}`;
 }
 
 /** Same resolution as absolutizeAssetUrl; `null` if empty. For fetch() + ngrok. */

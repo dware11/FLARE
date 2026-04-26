@@ -835,13 +835,14 @@ def _ct_gradcam_public_url(ct_result: dict) -> str | None:
     if cam_in:
         p = os.path.normpath(str(cam_in))
         if os.path.isfile(p):
-            return _absolute_url_for_path(f"/static/cam/{os.path.basename(p)}")
+            # Relative path so the browser uses VITE_API_BASE_URL (same as MRI static URLs).
+            return f"/static/cam/{os.path.basename(p)}"
     ct_inf = ct_result.get("inference_path")
     if ct_inf:
         stem = Path(ct_inf).stem
         alt = os.path.join(cam_dir, f"{stem}.png")
         if os.path.isfile(alt):
-            return _absolute_url_for_path(f"/static/cam/{stem}.png")
+            return f"/static/cam/{stem}.png"
     return None
 
 
