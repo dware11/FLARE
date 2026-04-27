@@ -6,10 +6,38 @@ import type { HospitalSummary } from "../api/flareAPI";
 
 const POLL_MS = 30_000;
 
+function isHoustonMethodist(h: HospitalSummary): boolean {
+  const withId = h as HospitalSummary & { id?: string };
+  return (
+    h.hospitalId === "H001" ||
+    withId.id === "H001" ||
+    (h.name ?? "").includes("Houston Methodist")
+  );
+}
+
+/**
+ * Demo signal: one approved abnormal at H001 surfaces the regional-monitoring banner; production thresholds should be site-calibrated.
+ */
 function pickOutbreakHospital(hospitals: HospitalSummary[]): HospitalSummary | null {
+  const hm = hospitals.find(
+    (h) => isHoustonMethodist(h) && h.approvedAbnormalCount >= 1
+  );
+  if (hm) return hm;
+
   const high = hospitals.filter((h) => h.approvedAbnormalCount >= 4);
   if (high.length === 0) return null;
   return high.reduce((a, b) => (a.approvedAbnormalCount >= b.approvedAbnormalCount ? a : b));
+}
+
+function bannerMessage(h: HospitalSummary): string {
+  const n = h.approvedAbnormalCount;
+  if (isHoustonMethodist(h) && n === 1) {
+    return "Regional monitoring signal: 1 approved abnormal case at Houston Methodist. Review aggregate trends.";
+  }
+  if (isHoustonMethodist(h) && n > 1) {
+    return `Regional monitoring: ${n} approved abnormal cases at ${h.name}. Review aggregate trends.`;
+  }
+  return `⚠️ ${h.name} — ${n} confirmed abnormal brain scans detected. Possible outbreak signal.`;
 }
 
 export default function OutbreakBanner() {
@@ -32,8 +60,6 @@ export default function OutbreakBanner() {
   }, [refresh]);
 
   if (dismissed || !hospital) return null;
-
-  const n = hospital.approvedAbnormalCount;
 
   return (
     <Box
@@ -60,7 +86,7 @@ export default function OutbreakBanner() {
       }}
     >
       <Typography component="p" sx={{ m: 0, flex: 1, fontSize: "0.95rem", lineHeight: 1.45 }}>
-        ⚠️ {hospital.name} — {n} confirmed abnormal brain scans detected. Possible outbreak signal.
+        {bannerMessage(hospital)}
       </Typography>
       <IconButton
         size="small"

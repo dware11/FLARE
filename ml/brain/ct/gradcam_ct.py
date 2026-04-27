@@ -213,15 +213,19 @@ class GradCAM:
         self.activations = None
         self.gradients = None
         self._fwd_handle = self.layer.register_forward_hook(self._forward_hook)
-        if x_raw_volume is not None:
-            x_raw_volume = normalize_ct_raw_volume_for_viz(x_raw_volume, like=x)
-        k_stack = int(x.shape[1]) if x.dim() == 5 else 1
-        k_mid = k_stack // 2
-        h, w = _spatial_hw(x, input_for_overlay)
-        if x_raw_volume is not None and k_stack > 1:
-            h, w = int(x_raw_volume.shape[2]), int(x_raw_volume.shape[3])
-
+        h, w = 224, 224
         try:
+            if x_raw_volume is not None:
+                x_raw_volume = normalize_ct_raw_volume_for_viz(x_raw_volume, like=x)
+            k_stack = int(x.shape[1]) if x.dim() == 5 else 1
+            k_mid = k_stack // 2
+            h, w = _spatial_hw(x, input_for_overlay)
+            if x_raw_volume is not None and k_stack > 1 and x_raw_volume.dim() == 4:
+                if x_raw_volume.shape[1] == 3:
+                    h, w = int(x_raw_volume.shape[2]), int(x_raw_volume.shape[3])
+                elif x_raw_volume.shape[-1] in (1, 3) and x_raw_volume.shape[1] > 3:
+                    h, w = int(x_raw_volume.shape[1]), int(x_raw_volume.shape[2])
+
             self.model.zero_grad(set_to_none=True)
             with torch.enable_grad():
                 if x.dim() == 5 and is_sequence_ct_model(self.model):
@@ -235,7 +239,10 @@ class GradCAM:
                 logits[0, target_class].backward()
 
             if self.activations is None or self.gradients is None:
-                return torch.zeros(h, w, device=x.device), None
+                return (
+                    torch.zeros((h, w), device=x.device, dtype=x.dtype),
+                    None,
+                )
 
             a = self.activations.detach()
             g = self.gradients.detach()
@@ -279,7 +286,13 @@ class GradCAM:
                 overlay = self._overlay(heatmap, input_for_overlay)
 
             return heatmap, overlay
-
+        except Exception as e:
+            print(f"[CT CAM WARNING] Grad-CAM failed: {e}", flush=True)
+            return (
+                torch.zeros((h, w), device=x.device, dtype=x.dtype),
+                None,
+                {"cam_error": str(e)},
+            )
         finally:
             if self._fwd_handle is not None:
                 self._fwd_handle.remove()
@@ -291,12 +304,14 @@ class GradCAM:
     def _overlay(self, heatmap: torch.Tensor, x: torch.Tensor) -> np.ndarray:
         """
         Heatmap on CT for visualization only; not a pathologic segmentation.
-        x: (1, 3, H, W) or (1, 1, 3, H, W).
+        x: (1, 3, H, W) NCHW, or (1, H, W, 3) channels-last (coerced to NCHW here).
         """
         heat = heatmap.cpu().numpy()
         t = x
         if t.dim() == 5:
             t = t[:, 0]
+        if t.dim() == 4 and t.shape[-1] in (1, 3, 4) and t.shape[1] > 4:
+            t = t.permute(0, 3, 1, 2).contiguous()
         img = t.squeeze(0).cpu().numpy()
         gray = img[0].astype(np.float32)
         if gray.max() > 1.5:
@@ -310,6 +325,9 @@ class GradCAM:
 
         try:
             import cv2
+            if heat.shape != gray.shape:
+                heat = np.asarray(heat, dtype=np.float32)
+                heat = cv2.resize(heat, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_LINEAR)
             heat_uint8 = (np.clip(heat, 0, 1) * 255).astype(np.uint8)
             heat_colored = cv2.applyColorMap(heat_uint8, cv2.COLORMAP_JET)
             heat_rgb = cv2.cvtColor(heat_colored, cv2.COLOR_BGR2RGB)

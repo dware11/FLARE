@@ -49,7 +49,18 @@ const HOUSTON_OVERALL_DATA = HOSPITAL_MONTHLY_DATA.H001.map(
 );
 
 const HOUSTON_OVERALL = "HOUSTON_OVERALL";
-const TREND_MONTHS = ["Feb", "Mar", "Apr", "May", "Jun", "Jul"];
+
+function getLastSixMonthLabels(now: Date = new Date()): string[] {
+  const fmt = new Intl.DateTimeFormat(undefined, { month: "short" });
+  const labels: string[] = [];
+  for (let i = 5; i >= 0; i -= 1) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    labels.push(fmt.format(d));
+  }
+  return labels;
+}
+
+const TREND_MONTHS = getLastSixMonthLabels();
 
 const HOSPITAL_IDS = ["H001", "H002", "H003", "H004", "H005"] as const;
 
@@ -127,12 +138,13 @@ export default function OutbreakTracker() {
     const data = trendData;
     const latestValue = data[data.length - 1];
     const baselineValue = data[0];
+    const firstMonth = TREND_MONTHS[0] ?? "baseline";
     if (baselineValue <= 0) {
       return `${latestValue} cases`;
     }
     const pctChange = (((latestValue - baselineValue) / baselineValue) * 100).toFixed(0);
     const sign = Number(pctChange) >= 0 ? "above" : "below";
-    return `${latestValue} cases — ${Math.abs(Number(pctChange))}% ${sign} Feb baseline`;
+    return `${latestValue} cases — ${Math.abs(Number(pctChange))}% ${sign} ${firstMonth} baseline`;
   }, [trendData]);
 
   const chartOption = useMemo(() => {

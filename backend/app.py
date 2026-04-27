@@ -971,6 +971,8 @@ def api_ct_predict():
             body["cam_selection_method"] = str(ct_result["cam_selection_method"])
         if ct_result.get("cam_display_orientation") is not None:
             body["cam_display_orientation"] = str(ct_result["cam_display_orientation"])
+        if ct_result.get("cam_error"):
+            body["cam_error"] = str(ct_result["cam_error"])
         return jsonify(body), 200
     except Exception as ex:
         return jsonify({"error": f"CT inference failed: {ex}"}), 500
@@ -1462,6 +1464,7 @@ def api_fusion_predict():
                 msg = "Fusion CT file must be .npz volume, .zip DICOM study, or .jpg/.jpeg/.png image"
             return jsonify({"error": msg}), 400
         except Exception as ex:
+            app.logger.exception("Fusion: predict_ct raised unexpectedly")
             return jsonify({"error": f"CT inference failed: {ex}"}), 500
 
     if mri_file is not None:
@@ -1580,6 +1583,8 @@ def api_fusion_predict():
     }
     if ct_result and ct_result.get("cam_display_orientation") is not None:
         fusion_payload["cam_display_orientation"] = str(ct_result["cam_display_orientation"])
+    if ct_result and ct_result.get("cam_error"):
+        fusion_payload["cam_error"] = str(ct_result["cam_error"])
     return jsonify(fusion_payload), 200
 
 

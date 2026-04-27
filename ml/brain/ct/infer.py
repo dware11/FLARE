@@ -76,8 +76,9 @@ def resolve_flare_ct_cam_display_orientation() -> str:
 def apply_ct_cam_display_orientation(image_or_array, orientation: str):
     """
     Display-only transform for saved Grad-CAM visualization arrays/images.
-    Supports uint8 (H, W, C) with C=3 or 4, or a PIL Image (RGB / RGBA).
+    Supports uint8 (H, W, C) with C=3 or 4, (3, H, W) CHW, or PIL Image.
     For orientation 'none', returns the input without copying when possible.
+    On failure, returns the input unchanged (never raises).
     """
     o = (orientation or "none").strip().lower() or "none"
     if o not in _CT_CAM_ORIENTS:
@@ -97,12 +98,21 @@ def apply_ct_cam_display_orientation(image_or_array, orientation: str):
 
         if isinstance(image_or_array, Image.Image):
             arr = np.array(image_or_array)
+            if arr.ndim == 3 and arr.shape[0] in (3, 4) and arr.shape[1] > 4 and arr.shape[2] > 4:
+                arr = np.transpose(arr, (1, 2, 0))
             out = _apply_ct_cam_spatial_to_hwc(arr, o)
             return Image.fromarray(out, mode=image_or_array.mode)
     except Exception:
-        pass
-    arr = np.ascontiguousarray(np.asarray(image_or_array))
-    return _apply_ct_cam_spatial_to_hwc(arr, o)
+        return image_or_array
+    try:
+        arr = np.ascontiguousarray(np.asarray(image_or_array))
+        if arr.ndim == 3 and arr.shape[0] in (3, 4) and max(arr.shape[1], arr.shape[2]) > 4:
+            arr = np.transpose(arr, (1, 2, 0))
+        if arr.ndim == 2:
+            arr = np.stack([arr, arr, arr], axis=-1)
+        return _apply_ct_cam_spatial_to_hwc(arr, o)
+    except Exception:
+        return image_or_array
 
 
 def _apply_ct_cam_spatial_to_hwc(x: np.ndarray, o: str) -> np.ndarray:
@@ -224,24 +234,29 @@ def _run_ct_core(
     cam_error: Optional[str] = None
     cam_display_orientation: str = resolve_flare_ct_cam_display_orientation()
     if use_grad and cam_dir:
-        cam_dir_p = Path(cam_dir)
-        ge = _gradcam_save_files(
-            model,
-            x_batch,
-            x_raw_volume,
-            x_norm_volume,
-            thick,
-            pred,
-            cam_dir_p,
-            cam_stem,
-        )
-        cam_path = ge.get("cam_path")
-        cam_display_slice_index = ge.get("cam_display_slice_index")
-        cam_center_slice_index = ge.get("cam_center_slice_index")
-        cam_selection_method = ge.get("cam_selection_method")
-        cam_error = ge.get("cam_error")
-        if ge.get("cam_display_orientation") is not None:
-            cam_display_orientation = str(ge["cam_display_orientation"])
+        try:
+            cam_dir_p = Path(cam_dir)
+            ge = _gradcam_save_files(
+                model,
+                x_batch,
+                x_raw_volume,
+                x_norm_volume,
+                thick,
+                pred,
+                cam_dir_p,
+                cam_stem,
+            )
+            cam_path = ge.get("cam_path")
+            cam_display_slice_index = ge.get("cam_display_slice_index")
+            cam_center_slice_index = ge.get("cam_center_slice_index")
+            cam_selection_method = ge.get("cam_selection_method")
+            cam_error = ge.get("cam_error")
+            if ge.get("cam_display_orientation") is not None:
+                cam_display_orientation = str(ge["cam_display_orientation"])
+        except Exception as e:
+            err = str(e)
+            print(f"[CT CAM WARNING] Grad-CAM failed: {err}", flush=True)
+            cam_error = err
 
     return {
         "label": LABELS[pred],
@@ -456,7 +471,7 @@ def _gradcam_save_files(
     try:
         x_raw_viz = normalize_ct_raw_volume_for_viz(x_raw_volume, like=x_batch)
     except Exception as e:
-        print(f"WARNING: CT Grad-CAM skipped (raw volume shape for overlay): {e}", flush=True)
+        print(f"[CT CAM WARNING] Grad-CAM failed: {e}", flush=True)
         return {
             "cam_path": None,
             "cam_display_slice_index": None,
@@ -500,13 +515,21 @@ def _gradcam_save_files(
             out["cam_center_slice_index"] = meta["cam_center_slice_index"]
         if meta.get("cam_selection_method"):
             out["cam_selection_method"] = meta["cam_selection_method"]
+        if meta.get("cam_error"):
+            out["cam_error"] = str(meta["cam_error"])
 
         if overlay is None:
             out["cam_display_orientation"] = cam_orn
             return out
         cam_dir.mkdir(parents=True, exist_ok=True)
         out_path = cam_dir / f"{cam_stem}.png"
-        overlay_save = apply_ct_cam_display_orientation(np.asarray(overlay), cam_orn)
+        try:
+            overlay_save = apply_ct_cam_display_orientation(np.asarray(overlay), cam_orn)
+        except Exception as e:
+            print(f"[CT CAM WARNING] Grad-CAM failed: {e}", flush=True)
+            out["cam_error"] = str(e)
+            out["cam_display_orientation"] = cam_orn
+            return out
         if not _save_overlay_png(overlay_save, out_path):
             out["cam_display_orientation"] = cam_orn
             return out
@@ -545,7 +568,7 @@ def _gradcam_save_files(
 
         return out
     except Exception as e:
-        print(f"WARNING: CT Grad-CAM failed (inference was successful): {e}", flush=True)
+        print(f"[CT CAM WARNING] Grad-CAM failed: {e}", flush=True)
         return {
             "cam_path": None,
             "cam_display_slice_index": None,
@@ -851,23 +874,28 @@ def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus
     cam_error: Optional[str] = None
     cam_display_orientation: str = resolve_flare_ct_cam_display_orientation()
     if use_grad and cam_dir:
-        ge = _gradcam_save_files(
-            model,
-            x_batch,
-            x_raw,
-            x_all,
-            thick,
-            pred,
-            Path(cam_dir),
-            patient_id,
-        )
-        cam_path = ge.get("cam_path")
-        cam_display_slice_index = ge.get("cam_display_slice_index")
-        cam_center_slice_index = ge.get("cam_center_slice_index")
-        cam_selection_method = ge.get("cam_selection_method")
-        cam_error = ge.get("cam_error")
-        if ge.get("cam_display_orientation") is not None:
-            cam_display_orientation = str(ge["cam_display_orientation"])
+        try:
+            ge = _gradcam_save_files(
+                model,
+                x_batch,
+                x_raw,
+                x_all,
+                thick,
+                pred,
+                Path(cam_dir),
+                patient_id,
+            )
+            cam_path = ge.get("cam_path")
+            cam_display_slice_index = ge.get("cam_display_slice_index")
+            cam_center_slice_index = ge.get("cam_center_slice_index")
+            cam_selection_method = ge.get("cam_selection_method")
+            cam_error = ge.get("cam_error")
+            if ge.get("cam_display_orientation") is not None:
+                cam_display_orientation = str(ge["cam_display_orientation"])
+        except Exception as e:
+            err = str(e)
+            print(f"[CT CAM WARNING] Grad-CAM failed: {err}", flush=True)
+            cam_error = err
 
     return {
         "patient_id": patient_id,
