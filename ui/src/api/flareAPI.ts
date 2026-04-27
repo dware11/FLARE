@@ -415,9 +415,10 @@ export async function approveReview(
 
 export async function rejectReview(
   caseId: string,
-  opts: { reviewerName: string; signature: string }
+  opts: { reviewerName: string; reason: string; signature: string }
 ): Promise<void> {
   const reviewerName = opts.reviewerName.trim();
+  const reason = opts.reason.trim();
   const signature = opts.signature.trim();
   const res = await fetch(`${API_BASE}/api/reviews/${caseId}/reject`, {
     method: "POST",
@@ -426,7 +427,7 @@ export async function rejectReview(
       reviewerName,
       signature,
       reviewerId: reviewerName,
-      reason: "rejected by reviewer",
+      reason: reason || undefined,
     }),
   });
   if (!res.ok) throw new Error(`Reject failed: ${res.status}`);

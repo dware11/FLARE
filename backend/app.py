@@ -942,26 +942,24 @@ def api_ct_predict():
             input_format = "npz"
         cam_url = _ct_gradcam_public_url(ct_result)
 
-        return (
-            jsonify(
-                {
-                    "patient_id": patient_id,
-                    "modality": "brain_ct",
-                    "pred_label": ct_result["label"],
-                    "result_class": "Abnormal" if is_abnormal else "Normal",
-                    "confidence": ct_result["confidence"],
-                    "p_normal": ct_result["p_normal"],
-                    "p_abnormal": ct_result["p_abnormal"],
-                    "cam_url": cam_url,
-                    "hospitalId": hospital_id,
-                    "hospitalName": site["name"],
-                    "caseId": case_id,
-                    "review_required": review_required,
-                    "input_format": input_format,
-                }
-            ),
-            200,
-        )
+        body = {
+            "patient_id": patient_id,
+            "modality": "brain_ct",
+            "pred_label": ct_result["label"],
+            "result_class": "Abnormal" if is_abnormal else "Normal",
+            "confidence": ct_result["confidence"],
+            "p_normal": ct_result["p_normal"],
+            "p_abnormal": ct_result["p_abnormal"],
+            "cam_url": cam_url,
+            "hospitalId": hospital_id,
+            "hospitalName": site["name"],
+            "caseId": case_id,
+            "review_required": review_required,
+            "input_format": input_format,
+        }
+        if ct_result.get("cam_display_slice_index") is not None:
+            body["cam_display_slice_index"] = int(ct_result["cam_display_slice_index"])
+        return jsonify(body), 200
     except Exception as ex:
         return jsonify({"error": f"CT inference failed: {ex}"}), 500
 

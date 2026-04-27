@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useAuth0 } from '@auth0/auth0-react'
+import SignatureCanvas from 'react-signature-canvas'
 import {
   Box,
   Typography,
@@ -160,8 +162,13 @@ const pulseDotSx = {
   },
 }
 
+const SIGNATURE_FALLBACK = 'frontend-reviewer'
+
 export default function EhrDatabase() {
   const navigate = useNavigate()
+  const { user } = useAuth0()
+  const sigRef = useRef<SignatureCanvas | null>(null)
+
   const [records, setRecords] = useState<PatientRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState('')
@@ -174,11 +181,20 @@ export default function EhrDatabase() {
   const [signOpen, setSignOpen] = useState(false)
   const [signDialogMode, setSignDialogMode] = useState<'approve' | 'reject'>('approve')
   const [reviewerName, setReviewerName] = useState('')
-  const [digitalSignature, setDigitalSignature] = useState('')
+  const [rejectReason, setRejectReason] = useState('')
   const [signModalError, setSignModalError] = useState('')
   const [reviewActing, setReviewActing] = useState(false)
   const [drawerReviewMsg, setDrawerReviewMsg] = useState('')
   const [drawerReviewErr, setDrawerReviewErr] = useState('')
+
+  const defaultReviewerName = useMemo(() => {
+    if (!user) return SIGNATURE_FALLBACK
+    const n =
+      user.name?.trim() ||
+      user.nickname?.trim() ||
+      [user.given_name, user.family_name].filter(Boolean).join(' ').trim()
+    return n && n.length > 0 ? n : SIGNATURE_FALLBACK
+  }, [user])
 
   const loadRecords = useCallback(async () => {
     setFetchError('')
@@ -234,11 +250,34 @@ export default function EhrDatabase() {
 
   const canActOnSelected = Boolean(selected?.id && selected.reviewStatus === 'pending')
 
+  const clearSignPad = useCallback(() => {
+    sigRef.current?.clear()
+  }, [])
+
+  const closeSignDialog = useCallback(() => {
+    if (reviewActing) return
+    setSignModalError('')
+    setRejectReason('')
+    setSignOpen(false)
+    clearSignPad()
+  }, [reviewActing, clearSignPad])
+
+  useEffect(() => {
+    if (!signOpen) {
+      clearSignPad()
+      return
+    }
+    const t = window.setTimeout(() => {
+      sigRef.current?.clear()
+    }, 0)
+    return () => window.clearTimeout(t)
+  }, [signOpen, signDialogMode, clearSignPad])
+
   function openApproveModal() {
     if (!selected?.id || selected.reviewStatus !== 'pending') return
     setSignDialogMode('approve')
-    setReviewerName('')
-    setDigitalSignature('')
+    setReviewerName(defaultReviewerName)
+    setRejectReason('')
     setSignModalError('')
     setSignOpen(true)
   }
@@ -246,33 +285,44 @@ export default function EhrDatabase() {
   function openRejectModal() {
     if (!selected?.id || selected.reviewStatus !== 'pending') return
     setSignDialogMode('reject')
-    setReviewerName('')
-    setDigitalSignature('')
+    setReviewerName(defaultReviewerName)
+    setRejectReason('')
     setSignModalError('')
     setSignOpen(true)
   }
 
   async function confirmSignDialog() {
     if (!selected?.id) return
-    const name = reviewerName.trim()
-    const sig = digitalSignature.trim()
-    if (!name || !sig) {
-      setSignModalError('Reviewer name and digital signature are required.')
+    const name = reviewerName.trim() || defaultReviewerName
+    const sigPad = sigRef.current
+    if (!sigPad || sigPad.isEmpty()) {
+      setSignModalError('Please sign in the box before continuing.')
       return
     }
+    if (signDialogMode === 'reject' && !rejectReason.trim()) {
+      setSignModalError('A rejection reason is required.')
+      return
+    }
+    const signature = sigPad.getTrimmedCanvas().toDataURL('image/png')
     setSignModalError('')
     setReviewActing(true)
     setDrawerReviewErr('')
     setDrawerReviewMsg('')
     try {
       if (signDialogMode === 'approve') {
-        await approveReview(selected.id, { reviewerName: name, signature: sig })
+        await approveReview(selected.id, { reviewerName: name, signature })
         setDrawerReviewMsg('Case approved.')
       } else {
-        await rejectReview(selected.id, { reviewerName: name, signature: sig })
+        await rejectReview(selected.id, {
+          reviewerName: name,
+          reason: rejectReason.trim(),
+          signature,
+        })
         setDrawerReviewMsg('Case rejected.')
       }
+      setRejectReason('')
       setSignOpen(false)
+      clearSignPad()
       await loadRecords()
       try {
         window.dispatchEvent(new Event('flare:refresh-app'))
@@ -305,14 +355,15 @@ export default function EhrDatabase() {
     >
       <Dialog
         open={signOpen}
-        onClose={() => !reviewActing && setSignOpen(false)}
+        onClose={closeSignDialog}
         PaperProps={{
           sx: {
             backgroundColor: '#0f1117',
             color: '#fff',
             border: '1px solid rgba(255,255,255,0.1)',
             borderRadius: 2,
-            minWidth: 360,
+            minWidth: { xs: '92vw', sm: 420 },
+            maxWidth: 480,
           },
         }}
       >
@@ -331,20 +382,59 @@ export default function EhrDatabase() {
             value={reviewerName}
             onChange={(e) => setReviewerName(e.target.value)}
             fullWidth
+            placeholder={defaultReviewerName}
+            helperText={`Defaults to Auth0 profile, or “${SIGNATURE_FALLBACK}” if empty on submit.`}
+            FormHelperTextProps={{ sx: { color: 'rgba(255,255,255,0.45)' } }}
             sx={fieldSx}
           />
-          <TextField
-            label="Digital Signature — type your full name to confirm"
-            required
-            value={digitalSignature}
-            onChange={(e) => setDigitalSignature(e.target.value)}
-            fullWidth
-            sx={fieldSx}
-          />
+          {signDialogMode === 'reject' && (
+            <TextField
+              label="Rejection reason"
+              required
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              fullWidth
+              multiline
+              minRows={2}
+              sx={fieldSx}
+            />
+          )}
+          <Box>
+            <Typography sx={{ color: 'rgba(255,255,255,0.75)', mb: 0.75, fontSize: '0.88rem' }}>
+              Signature
+            </Typography>
+            <SignatureCanvas
+              ref={sigRef}
+              penColor="#ffffff"
+              backgroundColor="rgba(255,255,255,0.06)"
+              clearOnResize={false}
+              canvasProps={{
+                width: 400,
+                height: 160,
+                className: 'ehr-signature-canvas',
+                style: {
+                  width: '100%',
+                  maxWidth: 400,
+                  height: 160,
+                  borderRadius: 8,
+                  border: '1px solid rgba(255,255,255,0.2)',
+                },
+              }}
+            />
+            <Button
+              type="button"
+              size="small"
+              onClick={clearSignPad}
+              disabled={reviewActing}
+              sx={{ mt: 1, textTransform: 'none', color: 'rgba(255,255,255,0.75)' }}
+            >
+              Clear Signature
+            </Button>
+          </Box>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button
-            onClick={() => setSignOpen(false)}
+            onClick={closeSignDialog}
             disabled={reviewActing}
             sx={{ color: 'rgba(255,255,255,0.7)' }}
           >
@@ -544,7 +634,7 @@ export default function EhrDatabase() {
                     </Typography>
                   </TableCell>
 
-                  <TableCell sx={{ color: 'rgba(255,255,255,0.85)' }}>
+                  <TableCell sx={{ color: '#fff', fontWeight: 700 }}>
                     {r.reviewStatus === 'pending' && (
                       <Tooltip title="Pending review">
                         <Box component="span" sx={pulseDotSx} />
@@ -754,7 +844,7 @@ export default function EhrDatabase() {
               {canActOnSelected && (
                 <>
                   <Typography sx={{ color: 'rgba(255,255,255,0.65)', fontSize: '0.92rem', mb: 2, lineHeight: 1.6 }}>
-                    Approve and reject require reviewer name and digital signature.
+                    Approve and reject require reviewer name, signature, and (for reject) a reason.
                   </Typography>
                   <Stack direction="row" spacing={1.5} flexWrap="wrap">
                     <Button

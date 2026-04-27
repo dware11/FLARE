@@ -118,21 +118,21 @@ def _run_ct_core(
     pred = 1 if float(probs[1]) >= eval_threshold else 0
 
     cam_path = None
+    cam_display_slice_index: Optional[int] = None
     if use_grad and cam_dir:
-        gradcam = GradCAM(model, _gradcam_layer_name(model))
-        k = x_raw_volume.shape[0]
-        center_raw = x_raw_volume[k // 2 : k // 2 + 1]
-        if is_sequence_ct_model(model):
-            x_cam = x_norm_volume[k // 2 : k // 2 + 1].unsqueeze(0)
-        else:
-            x_cam = x_norm_volume[k // 2 : k // 2 + 1]
-        _, overlay = gradcam(x_cam, target_class=pred, input_for_overlay=center_raw)
-        if overlay is not None:
-            cam_dir_p = Path(cam_dir)
-            cam_dir_p.mkdir(parents=True, exist_ok=True)
-            cam_path_obj = cam_dir_p / f"{cam_stem}.png"
-            if _save_overlay_png(overlay, cam_path_obj):
-                cam_path = str(cam_path_obj)
+        cam_dir_p = Path(cam_dir)
+        ge = _gradcam_save_files(
+            model,
+            x_batch,
+            x_raw_volume,
+            x_norm_volume,
+            thick,
+            pred,
+            cam_dir_p,
+            cam_stem,
+        )
+        cam_path = ge.get("cam_path")
+        cam_display_slice_index = ge.get("cam_display_slice_index")
 
     return {
         "label": LABELS[pred],
@@ -140,6 +140,7 @@ def _run_ct_core(
         "p_normal": float(probs[0]),
         "p_abnormal": float(probs[1]),
         "cam_path": cam_path,
+        "cam_display_slice_index": cam_display_slice_index,
     }
 
 def _load_manifest(manifest: Path) -> list: 
@@ -283,6 +284,87 @@ def _gradcam_layer_name(model: torch.nn.Module) -> str:
     return "backbone.features.denseblock4" if is_sequence_ct_model(model) else "features.denseblock4"
 
 
+def _save_jet_heatmap_png(heatmap_2d: torch.Tensor, out_path: Path) -> bool:
+    """Save a 2D [0,1] heatmap as a JET PNG (debug/demo)."""
+    try:
+        import cv2
+
+        h = torch.clamp(heatmap_2d.detach().cpu(), 0, 1).numpy()
+        h = (h * 255).astype(np.uint8)
+        bgr = cv2.applyColorMap(h, cv2.COLORMAP_JET)
+        return bool(cv2.imwrite(str(out_path), bgr))
+    except Exception:
+        return False
+
+
+def _save_center_preview_rgb(center_raw: torch.Tensor, out_path: Path) -> bool:
+    """Grayscale center slice as RGB, same robust normalization as the overlay underlay."""
+    g = center_raw[0, 0].float().cpu().numpy()
+    if g.max() > 1.5:
+        g = np.clip(g / 255.0, 0.0, 1.0)
+    else:
+        g = np.clip(g, 0.0, 1.0)
+    p_lo, p_hi = float(np.percentile(g, 2.0)), float(np.percentile(g, 98.0))
+    if p_hi - p_lo > 1e-6:
+        g = np.clip((g - p_lo) / (p_hi - p_lo + 1e-6), 0.0, 1.0)
+    rgb = (np.stack([g, g, g], axis=-1) * 255.0).astype(np.uint8)
+    return _save_overlay_png(rgb, out_path)
+
+
+def _gradcam_save_files(
+    model: torch.nn.Module,
+    x_batch: torch.Tensor,
+    x_raw_volume: torch.Tensor,
+    x_norm_volume: torch.Tensor,
+    thick: torch.Tensor,
+    pred: int,
+    cam_dir: Path,
+    cam_stem: str,
+) -> Dict:
+    """
+    Run Grad-CAM: sequence models use the full (1,k,*,*,*) input + thickness, matching
+    the study-level forward; the overlay shows axial index k//2 in the preprocessed stack.
+    Writes {stem}.png (overlay, API cam_path), and optionally {stem}_heatmap.png and
+    {stem}_preview.png for demos.
+    """
+    gradcam = GradCAM(model, _gradcam_layer_name(model))
+    k = int(x_raw_volume.shape[0])
+    k_mid = k // 2
+    center_raw = x_raw_volume[k_mid : k_mid + 1]
+    is_seq = is_sequence_ct_model(model)
+    if is_seq:
+        # Full-volume forward so gradients match pooled patient logits.
+        heatmap, overlay = gradcam(
+            x_batch,
+            target_class=pred,
+            input_for_overlay=center_raw,
+            thickness=thick,
+        )
+    else:
+        x_cam = x_norm_volume[k_mid : k_mid + 1]
+        heatmap, overlay = gradcam(
+            x_cam,
+            target_class=pred,
+            input_for_overlay=center_raw,
+            thickness=None,
+        )
+    out: Dict = {
+        "cam_path": None,
+        "cam_display_slice_index": k_mid,
+    }
+    if overlay is None:
+        return out
+    cam_dir.mkdir(parents=True, exist_ok=True)
+    out_path = cam_dir / f"{cam_stem}.png"
+    if not _save_overlay_png(overlay, out_path):
+        return out
+    out["cam_path"] = str(out_path)
+    if heatmap is not None:
+        _save_jet_heatmap_png(heatmap, cam_dir / f"{cam_stem}_heatmap.png")
+    _save_center_preview_rgb(center_raw, cam_dir / f"{cam_stem}_preview.png")
+    return out
+
+
 def _run_single_inference(
     checkpoint: Path,
     patient_id: Optional[str] = None,
@@ -337,22 +419,20 @@ def _run_single_inference(
     pred = 1 if float(probs[1]) >= eval_threshold else 0
     conf = float(probs[pred])
     if cam_dir is not None:
-        k = x_raw.shape[0]
-        center_raw = x_raw[k // 2 : k // 2 + 1]
-        if is_sequence_ct_model(model):
-            x_cam = x_all[k // 2 : k // 2 + 1].unsqueeze(0)
+        ge = _gradcam_save_files(
+            model,
+            x_batch,
+            x_raw,
+            x_all,
+            thick,
+            pred,
+            Path(cam_dir),
+            cam_id,
+        )
+        if ge.get("cam_path"):
+            print(f"CAM overlay saved to {ge['cam_path']}")
         else:
-            x_cam = x_all[k // 2 : k // 2 + 1]
-        gradcam = GradCAM(model, _gradcam_layer_name(model))
-        _, overlay = gradcam(x_cam, target_class=pred, input_for_overlay=center_raw)
-        if overlay is not None:
-            cam_dir = Path(cam_dir)
-            cam_dir.mkdir(parents=True, exist_ok=True)
-            out_path = cam_dir / f"{cam_id}.png"
-            if _save_overlay_png(overlay, out_path):
-                print(f"CAM overlay saved to {out_path}")
-            else:
-                print("Install opencv-python or matplotlib to save CAM overlay.")
+            print("Install opencv-python or matplotlib to save CAM overlay.")
 
     print(f"Prediction: {LABELS[pred]} (confidence={conf:.4f})")
     for i, lab in enumerate(LABELS):
@@ -399,7 +479,6 @@ def _run_batch_inference(
     csv_has_cam = False 
 
     use_grad = cam_dir is not None
-    gradcam = GradCAM(model, _gradcam_layer_name(model)) if cam_dir is not None else None
 
     for e in entries:
         path = Path(e["path"])
@@ -435,24 +514,24 @@ def _run_batch_inference(
             and (not cam_when_abnormal or pred == 1)
         )
 
-        if do_cam and gradcam is not None:
-            k = x_raw.shape[0]
-            center_raw = x_raw[k // 2 : k // 2 + 1]
-            if is_sequence_ct_model(model):
-                x_cam = x_all[k // 2 : k // 2 + 1].unsqueeze(0)
+        if do_cam and cam_dir is not None:
+            ge = _gradcam_save_files(
+                model,
+                x_batch,
+                x_raw,
+                x_all,
+                thick,
+                pred,
+                Path(cam_dir),
+                pid,
+            )
+            cp = ge.get("cam_path")
+            if cp:
+                row["cam_path"] = cp
+                csv_has_cam = True
+                cam_count += 1
             else:
-                x_cam = x_all[k // 2 : k // 2 + 1]
-            _, overlay = gradcam(x_cam, target_class=pred, input_for_overlay=center_raw)
-            if overlay is not None:
-                cam_dir_p = Path(cam_dir)
-                cam_dir_p.mkdir(parents=True, exist_ok=True)
-                out_path = cam_dir_p / f"{pid}.png"
-                if _save_overlay_png(overlay, out_path):
-                    row["cam_path"] = str(out_path)
-                    csv_has_cam = True
-                    cam_count += 1
-                else:
-                    print("Install opencv-python or matplotlib to save CAM overlay.")
+                print("Install opencv-python or matplotlib to save CAM overlay.")
 
         results.append(row)
 
@@ -575,21 +654,20 @@ def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus
     pred = 1 if float(probs[1]) >= eval_threshold else 0
 
     cam_path = None
+    cam_display_slice_index: Optional[int] = None
     if use_grad and cam_dir:
-        gradcam = GradCAM(model, _gradcam_layer_name(model))
-        k = x_raw.shape[0]
-        center_raw = x_raw[k // 2 : k // 2 + 1]
-        if is_sequence_ct_model(model):
-            x_cam = x_all[k // 2 : k // 2 + 1].unsqueeze(0)
-        else:
-            x_cam = x_all[k // 2 : k // 2 + 1]
-        _, overlay = gradcam(x_cam, target_class=pred, input_for_overlay=center_raw)
-        if overlay is not None:
-            cam_dir_p = Path(cam_dir)
-            cam_dir_p.mkdir(parents=True, exist_ok=True)
-            cam_path_obj = cam_dir_p / f"{patient_id}.png"
-            if _save_overlay_png(overlay, cam_path_obj):
-                cam_path = str(cam_path_obj)
+        ge = _gradcam_save_files(
+            model,
+            x_batch,
+            x_raw,
+            x_all,
+            thick,
+            pred,
+            Path(cam_dir),
+            patient_id,
+        )
+        cam_path = ge.get("cam_path")
+        cam_display_slice_index = ge.get("cam_display_slice_index")
 
     return {
         "patient_id": patient_id,
@@ -598,6 +676,7 @@ def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus
         "p_normal": float(probs[0]),
         "p_abnormal": float(probs[1]),
         "cam_path": cam_path,
+        "cam_display_slice_index": cam_display_slice_index,
     }
 
 

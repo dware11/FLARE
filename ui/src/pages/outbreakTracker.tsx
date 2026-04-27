@@ -31,14 +31,14 @@ const HOSPITAL_MONTHLY_DATA: Record<string, number[]> = {
 };
 
 const HOSPITAL_LINE_COLORS: Record<string, string> = {
-  H001: "#378ADD",
-  H002: "#1D9E75",
-  H003: "#7F77DD",
-  H004: "#D85A30",
-  H005: "#D4537E",
+  H001: "#2563EB",
+  H002: "#059669",
+  H003: "#DB2777",
+  H004: "#EA580C",
+  H005: "#7C3AED",
 };
 
-// Houston Overall is the SUM of all 5 hospitals per month
+/** Sum of all 5 hospitals per month; chart label is "Houston Regional Trend" (id stays HOUSTON_OVERALL). */
 const HOUSTON_OVERALL_DATA = HOSPITAL_MONTHLY_DATA.H001.map(
   (_, i) =>
     HOSPITAL_MONTHLY_DATA.H001[i] +
@@ -54,7 +54,7 @@ const TREND_MONTHS = ["Feb", "Mar", "Apr", "May", "Jun", "Jul"];
 const HOSPITAL_IDS = ["H001", "H002", "H003", "H004", "H005"] as const;
 
 const HOSPITALS: { id: string; name: string }[] = [
-  { id: HOUSTON_OVERALL, name: "Houston Overall" },
+  { id: HOUSTON_OVERALL, name: "Houston Regional Trend" },
   { id: "H001", name: "Houston Methodist Hospital" },
   { id: "H002", name: "Memorial Hermann - Texas Medical Center" },
   { id: "H003", name: "Baylor St. Luke's Medical Center" },
@@ -161,7 +161,7 @@ export default function OutbreakTracker() {
     if (selectedHospital === HOUSTON_OVERALL) {
       const legendData = HOSPITAL_IDS.map(
         (id) => HOSPITALS.find((h) => h.id === id)!.name
-      ).concat("Houston Overall");
+      ).concat("Houston Regional Trend");
       const series = [
         ...HOSPITAL_IDS.map((id) => {
           const c = HOSPITAL_LINE_COLORS[id];
@@ -178,14 +178,14 @@ export default function OutbreakTracker() {
           };
         }),
         {
-          name: "Houston Overall",
+          name: "Houston Regional Trend",
           type: "line" as const,
           smooth: true,
           data: HOUSTON_OVERALL_DATA,
           symbol: "circle",
           symbolSize: 8,
-          lineStyle: { width: 3, color: "#222" },
-          itemStyle: { color: "#222" },
+          lineStyle: { width: 4, color: "#F59E0B", type: "dashed" as const },
+          itemStyle: { color: "#F59E0B" },
           z: 2,
         },
       ];

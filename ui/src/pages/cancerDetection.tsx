@@ -198,6 +198,37 @@ const pairImgSx = {
   display: "block",
 };
 
+/** Fusion: MRI localization panel is primary; CT Grad-CAM is supporting. */
+const fusionMriOvlBoxSx = { flex: "2 1 200px" as const, minWidth: 0, maxWidth: 440 };
+const fusionMriOvlImgSx = {
+  width: "100%",
+  maxWidth: 440,
+  borderRadius: 2,
+  objectFit: "cover" as const,
+  border: "1px solid rgba(255,255,255,0.12)",
+  display: "block",
+};
+
+const fusionCtCamBoxSx = { flex: "1 1 140px" as const, minWidth: 0, maxWidth: 240 };
+const fusionCtCamImgSx = {
+  width: "100%",
+  maxWidth: 240,
+  borderRadius: 2,
+  objectFit: "cover" as const,
+  border: "1px solid rgba(255,255,255,0.12)",
+  display: "block",
+};
+
+const fusionMriInBoxSx = { flex: "1 1 160px" as const, minWidth: 0, maxWidth: 300 };
+const fusionMriInImgSx = {
+  width: "100%",
+  maxWidth: 300,
+  borderRadius: 2,
+  objectFit: "cover" as const,
+  border: "1px solid rgba(255,255,255,0.12)",
+  display: "block",
+};
+
 export default function CancerDetection() {
   const navigate = useNavigate();
   const { stored, patchStored, clearStored } = useCancerInference();
@@ -658,8 +689,12 @@ export default function CancerDetection() {
       : predictionTheme("Normal");
 
   const mriOrigPath = mriV2 ? mriV2.input_image_url || mriV2.segmentation.original_url || undefined : undefined;
-  const mriOvlPath = mriV2?.segmentation?.overlay_url ?? undefined;
+  const mriOvlPath =
+    mriV2?.segmentation?.overlay_url ?? mriV2?.segmentation?.mask_url ?? undefined;
   const mriMaskPath = mriV2?.segmentation?.mask_url ?? undefined;
+  const mriHasSeparateMaskPanel = Boolean(
+    mriV2?.segmentation?.overlay_url && mriV2?.segmentation?.mask_url
+  );
   const mriOrigSrc = useNgrokImage(mriOrigPath);
   const mriOvlSrc = useNgrokImage(mriOvlPath);
   const mriMaskSrc = useNgrokImage(mriMaskPath);
@@ -670,12 +705,44 @@ export default function CancerDetection() {
   const ctCamPath = ctScanResult ? (ctScanResult.cam_url as string | undefined) : undefined;
   const ctGradCamSrc = useNgrokImage(ctCamPath);
 
-  const fusionCtPath = fusionScanResult ? (fusionScanResult.ct_cam_url as string | undefined) : undefined;
-  const fusionMriInPath = fusionScanResult ? (fusionScanResult.mri_input_url as string | undefined) : undefined;
-  const fusionMriOvPath = fusionScanResult ? (fusionScanResult.mri_overlay_url as string | undefined) : undefined;
-  const fusionCtGradCamSrc = useNgrokImage(fusionCtPath);
+  const fusionCtCamPath = useMemo(() => {
+    if (!fusionScanResult) return undefined;
+    const top = fusionScanResult.ct_cam_url as string | undefined;
+    if (top) return top;
+    const ctD = fusionScanResult.ct_details as Record<string, unknown> | undefined;
+    return typeof ctD?.cam_url === "string" && ctD.cam_url ? (ctD.cam_url as string) : undefined;
+  }, [fusionScanResult]);
+
+  const fusionMriOvlPath = useMemo(() => {
+    if (!fusionScanResult) return undefined;
+    const top = fusionScanResult.mri_overlay_url as string | undefined;
+    if (top) return top;
+    const m = fusionScanResult.mri_details as Record<string, unknown> | undefined;
+    const seg = m?.segmentation as Record<string, unknown> | undefined;
+    if (typeof seg?.overlay_url === "string" && seg.overlay_url) return seg.overlay_url as string;
+    if (typeof seg?.mask_url === "string" && seg.mask_url) return seg.mask_url as string;
+    return undefined;
+  }, [fusionScanResult]);
+
+  const fusionMriInPath = fusionScanResult
+    ? (fusionScanResult.mri_input_url as string | undefined)
+    : undefined;
+
+  const fusionMriClassLine = useMemo(() => {
+    if (!fusionScanResult) return null;
+    const m = fusionScanResult.mri_details as Record<string, unknown> | undefined;
+    if (!m) return null;
+    const pl = m.pred_label ?? m.result_class;
+    const c = m.confidence;
+    const confNum = typeof c === "number" ? c : c != null ? Number(c) : NaN;
+    const predStr = pl != null && String(pl).length > 0 ? String(pl) : "—";
+    const confStr = Number.isFinite(confNum) ? `${(confNum * 100).toFixed(1)}%` : "—";
+    return { predStr, confStr };
+  }, [fusionScanResult]);
+
+  const fusionCtGradCamSrc = useNgrokImage(fusionCtCamPath);
   const fusionMriOrigSrc = useNgrokImage(fusionMriInPath);
-  const fusionMriSegSrc = useNgrokImage(fusionMriOvPath);
+  const fusionMriSegSrc = useNgrokImage(fusionMriOvlPath);
 
   return (
     <Box
@@ -1391,7 +1458,7 @@ export default function CancerDetection() {
                 {mriOvlPath ? (
                   <>
                     {mriOvlSrc ? (
-                      <Box component="img" src={mriOvlSrc} alt="Segmentation" sx={pairImgSx} />
+                      <Box component="img" src={mriOvlSrc} alt="MRI Segmentation Overlay" sx={pairImgSx} />
                     ) : (
                       <Box
                         sx={{
@@ -1407,23 +1474,25 @@ export default function CancerDetection() {
                       </Box>
                     )}
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
-                      Segmentation Overlay
+                      MRI Segmentation Overlay
                     </Typography>
                   </>
                 ) : (
                   <>
                     <Box sx={{ ...placeholderBoxSx, minHeight: 200, maxWidth: 300 }}>
-                      <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>Segmentation processing...</Typography>
+                      <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>
+                        MRI segmentation overlay is not available for this run.
+                      </Typography>
                     </Box>
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
-                      Segmentation Overlay
+                      MRI Segmentation Overlay
                     </Typography>
                   </>
                 )}
               </Box>
             </Box>
 
-            {mriMaskPath && (
+            {mriHasSeparateMaskPanel && mriMaskPath && (
               <Box sx={{ mb: 2 }}>
                 <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.75, fontSize: "0.85rem" }}>
                   Tumor Mask
@@ -1758,7 +1827,7 @@ export default function CancerDetection() {
                 {ctCamPath ? (
                   <>
                     {ctGradCamSrc ? (
-                      <Box component="img" src={ctGradCamSrc} alt="GradCAM" sx={pairImgSx} />
+                      <Box component="img" src={ctGradCamSrc} alt="CT Grad-CAM Attention Map" sx={pairImgSx} />
                     ) : (
                       <Box
                         sx={{
@@ -1774,16 +1843,18 @@ export default function CancerDetection() {
                       </Box>
                     )}
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
-                      GradCAM Attention Map
+                      CT Grad-CAM Attention Map
                     </Typography>
                   </>
                 ) : (
                   <>
                     <Box sx={{ ...placeholderBoxSx, minHeight: 200, maxWidth: 300 }}>
-                      <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>GradCAM processing...</Typography>
+                      <Typography sx={{ color: "rgba(255,255,255,0.5)" }}>
+                        CT Grad-CAM is not available for this run.
+                      </Typography>
                     </Box>
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
-                      GradCAM Attention Map
+                      CT Grad-CAM Attention Map
                     </Typography>
                   </>
                 )}
@@ -1869,68 +1940,99 @@ export default function CancerDetection() {
               {REVIEW_DISCLAIMER_TEXT}
             </Alert>
 
-            {(absolutizeApiAssetUrl(fusionScanResult.ct_cam_url as string | null | undefined) ||
-              absolutizeApiAssetUrl(fusionScanResult.mri_input_url as string | null | undefined) ||
-              absolutizeApiAssetUrl(fusionScanResult.mri_overlay_url as string | null | undefined)) && (
+            <Box sx={{ mb: 2, display: "flex", flexDirection: "column", gap: 0.75 }}>
+              {fusionScanResult.ct_prob != null && (
+                <Typography sx={{ color: "rgba(255,255,255,0.8)", fontSize: "0.95rem" }}>
+                  CT abnormality (p_abnormal):{" "}
+                  <strong>{(Number(fusionScanResult.ct_prob) * 100).toFixed(1)}%</strong>
+                </Typography>
+              )}
+              {fusionMriClassLine && (
+                <Typography sx={{ color: "rgba(255,255,255,0.8)", fontSize: "0.95rem" }}>
+                  MRI predicted class: <strong>{fusionMriClassLine.predStr}</strong> · confidence{" "}
+                  <strong>{fusionMriClassLine.confStr}</strong>
+                </Typography>
+              )}
+            </Box>
+
+            {(absolutizeApiAssetUrl(fusionMriOvlPath) ||
+              absolutizeApiAssetUrl(fusionCtCamPath) ||
+              absolutizeApiAssetUrl(fusionMriInPath)) && (
               <Box
                 sx={{
                   display: "flex",
                   flexDirection: { xs: "column", sm: "row" },
+                  alignItems: { sm: "flex-start" },
                   gap: 2,
                   mb: 3,
                   flexWrap: "wrap",
                 }}
               >
-                {absolutizeApiAssetUrl(fusionScanResult.ct_cam_url as string | null | undefined) && (
-                  <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
-                    {fusionCtGradCamSrc ? (
-                      <Box component="img" src={fusionCtGradCamSrc} alt="CT GradCAM" sx={pairImgSx} />
-                    ) : (
-                      <Box
-                        sx={{
-                          ...placeholderBoxSx,
-                          minHeight: 200,
-                          maxWidth: 300,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                        }}
-                      >
-                        <CircularProgress size={32} sx={{ color: "#ff5c5c" }} />
-                      </Box>
-                    )}
-                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
-                      CT GradCAM
-                    </Typography>
-                  </Box>
-                )}
-                {absolutizeApiAssetUrl(fusionScanResult.mri_input_url as string | null | undefined) && (
-                  <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
-                    {fusionMriOrigSrc ? (
-                      <Box component="img" src={fusionMriOrigSrc} alt="MRI Input" sx={pairImgSx} />
-                    ) : (
-                      <Box
-                        sx={{
-                          ...placeholderBoxSx,
-                          minHeight: 200,
-                          maxWidth: 300,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                        }}
-                      >
-                        <CircularProgress size={32} sx={{ color: "#ff5c5c" }} />
-                      </Box>
-                    )}
-                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
-                      MRI Original
-                    </Typography>
-                  </Box>
-                )}
-                {absolutizeApiAssetUrl(fusionScanResult.mri_overlay_url as string | null | undefined) && (
-                  <Box sx={{ flex: "1 1 140px", maxWidth: 300 }}>
+                {absolutizeApiAssetUrl(fusionMriOvlPath) && (
+                  <Box sx={fusionMriOvlBoxSx}>
                     {fusionMriSegSrc ? (
-                      <Box component="img" src={fusionMriSegSrc} alt="MRI Segmentation" sx={pairImgSx} />
+                      <Box
+                        component="img"
+                        src={fusionMriSegSrc}
+                        alt="MRI Segmentation Overlay"
+                        sx={fusionMriOvlImgSx}
+                      />
+                    ) : (
+                      <Box
+                        sx={{
+                          ...placeholderBoxSx,
+                          minHeight: 200,
+                          maxWidth: 440,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <CircularProgress size={32} sx={{ color: "#ff5c5c" }} />
+                      </Box>
+                    )}
+                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+                      MRI Segmentation Overlay
+                    </Typography>
+                  </Box>
+                )}
+                {absolutizeApiAssetUrl(fusionCtCamPath) && (
+                  <Box sx={fusionCtCamBoxSx}>
+                    {fusionCtGradCamSrc ? (
+                      <Box
+                        component="img"
+                        src={fusionCtGradCamSrc}
+                        alt="CT Grad-CAM Attention Map"
+                        sx={fusionCtCamImgSx}
+                      />
+                    ) : (
+                      <Box
+                        sx={{
+                          ...placeholderBoxSx,
+                          minHeight: 200,
+                          maxWidth: 240,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <CircularProgress size={32} sx={{ color: "#ff5c5c" }} />
+                      </Box>
+                    )}
+                    <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
+                      CT Grad-CAM Attention Map
+                    </Typography>
+                  </Box>
+                )}
+                {absolutizeApiAssetUrl(fusionMriInPath) && (
+                  <Box sx={fusionMriInBoxSx}>
+                    {fusionMriOrigSrc ? (
+                      <Box
+                        component="img"
+                        src={fusionMriOrigSrc}
+                        alt="MRI input"
+                        sx={fusionMriInImgSx}
+                      />
                     ) : (
                       <Box
                         sx={{
@@ -1946,7 +2048,7 @@ export default function CancerDetection() {
                       </Box>
                     )}
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
-                      MRI Segmentation
+                      MRI input (soft-tissue reference)
                     </Typography>
                   </Box>
                 )}
@@ -2024,7 +2126,7 @@ export default function CancerDetection() {
 
               <Box>
                 <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5, fontWeight: 600 }}>
-                  CT Confidence: {(Number(fusionScanResult.ct_prob ?? 0) * 100).toFixed(0)}%
+                  CT abnormality (p_abnormal): {(Number(fusionScanResult.ct_prob ?? 0) * 100).toFixed(0)}%
                 </Typography>
                 <LinearProgress
                   variant="determinate"
@@ -2042,7 +2144,7 @@ export default function CancerDetection() {
               </Box>
               <Box>
                 <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 0.5, fontWeight: 600 }}>
-                  MRI Confidence: {(Number(fusionScanResult.mri_prob ?? 0) * 100).toFixed(0)}%
+                  MRI model score (mri_prob): {(Number(fusionScanResult.mri_prob ?? 0) * 100).toFixed(0)}%
                 </Typography>
                 <LinearProgress
                   variant="determinate"
