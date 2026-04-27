@@ -144,9 +144,16 @@ class ModelEndpointContractsTest(unittest.TestCase):
             "inference_path": "backend/static/uploads/P001_ct.png",
         }
         mock_predict_mri.return_value = {
-            "pred_label": "abnormal",
-            "result_class": "Malignant",
+            "pred_label": "meningioma",
+            "result_class": "Benign",
             "confidence": 0.90,
+            "probabilities": [
+                {"label": "meningioma", "value": 0.6},
+                {"label": "glioma", "value": 0.2},
+                {"label": "pituitary", "value": 0.1},
+                {"label": "no_tumor", "value": 0.05},
+                {"label": "normal", "value": 0.05},
+            ],
             "input_image_url": "/static/uploads/mri.png",
             "segmentation": {"overlay_url": "/static/masks/overlay.png"},
         }

@@ -31,6 +31,7 @@ import {
   DialogContent,
   DialogActions,
   Tooltip,
+  Radio,
 } from '@mui/material'
 import {
   fetchEhrRecords,
@@ -355,6 +356,9 @@ export default function EhrDatabase() {
   const [cancerFilter, setCancerFilter] = useState<BrainCancerLabel | 'All'>('All')
   const [resultFilter, setResultFilter] = useState<ResultClass | 'All'>('All')
   const [selected, setSelected] = useState<PatientRecord | null>(null)
+  /** Single explicit case for printable report (independent of View / drawer). */
+  const [exportCaseId, setExportCaseId] = useState<string | null>(null)
+  const [drawerOpen, setDrawerOpen] = useState(false)
 
   const [signOpen, setSignOpen] = useState(false)
   const [signDialogMode, setSignDialogMode] = useState<'approve' | 'reject'>('approve')
@@ -391,6 +395,10 @@ export default function EhrDatabase() {
       setSelected((prev) => {
         if (!prev) return null
         return mapped.find((x) => x.id === prev.id) ?? prev
+      })
+      setExportCaseId((prev) => {
+        if (!prev) return null
+        return mapped.some((x) => x.id === prev) ? prev : null
       })
     } catch (e: unknown) {
       setFetchError(e instanceof Error ? e.message : 'Failed to load EHR records.')
@@ -433,7 +441,17 @@ export default function EhrDatabase() {
     })
   }, [filtered])
 
+  const exportRecord = useMemo(
+    () => (exportCaseId ? (records.find((x) => x.id === exportCaseId) ?? null) : null),
+    [exportCaseId, records]
+  )
+
   const canActOnSelected = Boolean(selected?.id && selected.reviewStatus === 'pending')
+
+  const openCaseDetail = useCallback((r: PatientRecord) => {
+    setSelected(r)
+    setDrawerOpen(true)
+  }, [])
 
   const clearSignPad = useCallback(() => {
     sigRef.current?.clear()
@@ -528,15 +546,16 @@ export default function EhrDatabase() {
   }
 
   const handleExportReport = useCallback(() => {
-    if (!selected) {
+    if (!exportCaseId || !exportRecord) {
       setSnackbar({
         open: true,
-        message: 'Select a case before exporting a report.',
+        message:
+          'Select exactly one case for the clinical report (For report column), then click Export. You can also use “Select for report” in the case panel.',
         severity: 'warning',
       })
       return
     }
-    const raw = ehrSourceRows.find((r) => r.caseId === selected.id) as EhrRecordLoose | undefined
+    const raw = ehrSourceRows.find((r) => r.caseId === exportCaseId) as EhrRecordLoose | undefined
     if (!raw) {
       setSnackbar({
         open: true,
@@ -545,7 +564,7 @@ export default function EhrDatabase() {
       })
       return
     }
-    const html = buildClinicalReportHtml(selected, raw, toAbsoluteUrl)
+    const html = buildClinicalReportHtml(exportRecord, raw, toAbsoluteUrl)
     const ok = openPrintableReport(html)
     if (ok) {
       setSnackbar({
@@ -560,7 +579,7 @@ export default function EhrDatabase() {
         severity: 'error',
       })
     }
-  }, [selected, ehrSourceRows])
+  }, [exportCaseId, exportRecord, ehrSourceRows])
 
   return (
     <Box
@@ -680,27 +699,59 @@ export default function EhrDatabase() {
           <Typography sx={{ fontSize: '1.7rem', fontWeight: 800, letterSpacing: '0.02em' }}>
             EHR Database
           </Typography>
-          <Typography sx={{ color: 'rgba(255,255,255,0.65)', mt: 0.5, maxWidth: 640, lineHeight: 1.6 }}>
+          <Typography sx={{ color: 'rgba(255,255,255,0.65)', mt: 0.5, maxWidth: 720, lineHeight: 1.6 }}>
             Patient scan history and AI results. Pending screening cases are approved or rejected here
-            (authoritative for this demo).
+            (authoritative for this demo). For the printable AI review, use the{' '}
+            <Box component="span" sx={{ color: 'rgba(255,180,180,0.95)', fontWeight: 700 }}>
+              For report
+            </Box>{' '}
+            control — one case only; nothing is bulk-exported.
           </Typography>
         </Box>
 
-        <Stack direction="row" spacing={1.5}>
-          <Button
-            variant="outlined"
-            startIcon={<DownloadIcon />}
-            sx={{
-              borderColor: 'rgba(255,255,255,0.18)',
-              color: '#fff',
-              textTransform: 'none',
-              borderRadius: 2,
-              '&:hover': { borderColor: 'rgba(255,255,255,0.35)' },
-            }}
-            onClick={() => handleExportReport()}
+        <Stack direction="row" spacing={1.5} flexWrap="wrap" alignItems="center" useFlexGap sx={{ justifyContent: 'flex-end' }}>
+          {exportRecord && (
+            <Tooltip title="Only this case will be included in the printable report.">
+              <Chip
+                size="small"
+                label={`Report: ${[exportRecord.firstName, exportRecord.lastName].filter(Boolean).join(' ')} · ${exportRecord.medicalId}`}
+                sx={{
+                  maxWidth: { xs: '100%', sm: 280 },
+                  fontWeight: 700,
+                  color: '#fff',
+                  backgroundColor: 'rgba(255,92,92,0.22)',
+                  border: '1px solid rgba(255,92,92,0.45)',
+                  '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' },
+                }}
+              />
+            </Tooltip>
+          )}
+          <Tooltip
+            title={
+              !exportCaseId
+                ? 'Choose one case in the “For report” column (or in the case panel) before exporting.'
+                : 'Opens a print-ready clinical AI review for the selected case only.'
+            }
           >
-            Export
-          </Button>
+            <span>
+              <Button
+                variant="outlined"
+                startIcon={<DownloadIcon />}
+                disabled={!exportCaseId}
+                sx={{
+                  borderColor: 'rgba(255,255,255,0.18)',
+                  color: '#fff',
+                  textTransform: 'none',
+                  borderRadius: 2,
+                  '&:hover': { borderColor: 'rgba(255,255,255,0.35)' },
+                  '&.Mui-disabled': { color: 'rgba(255,255,255,0.35)' },
+                }}
+                onClick={() => handleExportReport()}
+              >
+                Export report
+              </Button>
+            </span>
+          </Tooltip>
 
           <Button
             variant="contained"
@@ -819,6 +870,14 @@ export default function EhrDatabase() {
         <Table sx={{ opacity: loading ? 0.4 : 1, pointerEvents: loading ? 'none' : 'auto' }}>
           <TableHead>
             <TableRow sx={{ backgroundColor: 'rgba(255,255,255,0.03)' }}>
+              <TableCell
+                align="center"
+                sx={{ color: 'rgba(255,255,255,0.75)', fontWeight: 700, width: 72, py: 1.5 }}
+              >
+                <Tooltip title="Single-select. Only this row is used for the printable clinical report.">
+                  <span>For report</span>
+                </Tooltip>
+              </TableCell>
               <TableCell sx={{ color: 'rgba(255,255,255,0.75)', fontWeight: 700 }}>Patient</TableCell>
               <TableCell sx={{ color: 'rgba(255,255,255,0.75)', fontWeight: 700 }}>Medical ID</TableCell>
               <TableCell sx={{ color: 'rgba(255,255,255,0.75)', fontWeight: 700 }}>Cancer Type</TableCell>
@@ -839,12 +898,41 @@ export default function EhrDatabase() {
                 <TableRow
                   key={r.id}
                   hover
-                  onClick={() => setSelected(r)}
+                  onClick={() => openCaseDetail(r)}
+                  selected={exportCaseId === r.id}
                   sx={{
                     cursor: 'pointer',
+                    position: 'relative',
                     '&:hover': { backgroundColor: 'rgba(255,255,255,0.03)' },
+                    ...(exportCaseId === r.id
+                      ? {
+                          backgroundColor: 'rgba(59,130,246,0.08)',
+                          boxShadow: 'inset 3px 0 0 #ff5c5c',
+                          '&.Mui-selected': { backgroundColor: 'rgba(59,130,246,0.1)' },
+                        }
+                      : {}),
                   }}
                 >
+                  <TableCell
+                    align="center"
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    sx={{ py: 1, width: 72 }}
+                  >
+                    <Radio
+                      checked={exportCaseId === r.id}
+                      onChange={() => setExportCaseId(r.id)}
+                      value={r.id}
+                      name="flare-ehr-export-case"
+                      size="small"
+                      sx={{
+                        p: 0.5,
+                        color: 'rgba(255,255,255,0.45)',
+                        '&.Mui-checked': { color: '#ff5c5c' },
+                      }}
+                      inputProps={{ 'aria-label': `Select case ${r.id} for printable report` }}
+                    />
+                  </TableCell>
                   <TableCell sx={{ color: '#fff' }}>
                     <Typography sx={{ fontWeight: 700 }}>
                       {r.firstName} {r.lastName}
@@ -887,7 +975,7 @@ export default function EhrDatabase() {
                       startIcon={<VisibilityIcon />}
                       onClick={(e) => {
                         e.stopPropagation()
-                        setSelected(r)
+                        openCaseDetail(r)
                       }}
                       sx={{ textTransform: 'none', color: '#fff' }}
                     >
@@ -900,7 +988,7 @@ export default function EhrDatabase() {
 
             {sorted.length === 0 && (
               <TableRow>
-                <TableCell colSpan={8} sx={{ color: 'rgba(255,255,255,0.65)', py: 5, textAlign: 'center' }}>
+                <TableCell colSpan={9} sx={{ color: 'rgba(255,255,255,0.65)', py: 5, textAlign: 'center' }}>
                   No matching records found.
                 </TableCell>
               </TableRow>
@@ -911,8 +999,8 @@ export default function EhrDatabase() {
 
       <Drawer
         anchor="right"
-        open={Boolean(selected)}
-        onClose={() => setSelected(null)}
+        open={drawerOpen && Boolean(selected)}
+        onClose={() => setDrawerOpen(false)}
         PaperProps={{
           sx: {
             width: { xs: '100%', sm: 440 },
@@ -924,17 +1012,46 @@ export default function EhrDatabase() {
       >
         {selected && (
           <Box sx={{ p: 3 }}>
-            <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 1 }}>
-              <Box>
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 1, gap: 1 }}>
+              <Box sx={{ minWidth: 0 }}>
                 <Typography sx={{ fontWeight: 900, fontSize: '1.25rem' }}>
                   {selected.firstName} {selected.lastName}
                 </Typography>
                 <Typography sx={{ color: 'rgba(255,255,255,0.65)' }}>
                   Case ID: {selected.id} • Medical ID: {selected.medicalId}
                 </Typography>
+                {exportCaseId === selected.id ? (
+                  <Chip
+                    size="small"
+                    sx={{
+                      mt: 1.25,
+                      fontWeight: 800,
+                      color: '#fff',
+                      backgroundColor: 'rgba(255,92,92,0.2)',
+                      border: '1px solid rgba(255,92,92,0.4)',
+                    }}
+                    label="Selected for printable report"
+                  />
+                ) : (
+                  <Button
+                    type="button"
+                    size="small"
+                    onClick={() => {
+                      setExportCaseId(selected.id)
+                      setSnackbar({
+                        open: true,
+                        message: 'This case is now selected for export. Click Export report when ready.',
+                        severity: 'info',
+                      })
+                    }}
+                    sx={{ mt: 1.25, textTransform: 'none', color: '#ffb4b4', fontWeight: 700 }}
+                  >
+                    Select for report
+                  </Button>
+                )}
               </Box>
 
-              <IconButton onClick={() => setSelected(null)} sx={{ color: '#fff' }}>
+              <IconButton onClick={() => setDrawerOpen(false)} sx={{ color: '#fff' }} aria-label="Close details">
                 <CloseIcon />
               </IconButton>
             </Box>

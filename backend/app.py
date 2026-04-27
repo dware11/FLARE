@@ -20,6 +20,12 @@ import uuid as _uuid
 from pathlib import Path
 from predict_mri import predict_mri
 from predict_ct import predict_ct
+from fusion_brain import (
+    CT_WEIGHT,
+    FUSION_THRESHOLD,
+    MRI_WEIGHT,
+    mri_abnormal_probability,
+)
 # audit_log.py tracks every API call and prediction for compliance
 from audit_log import audit_request, log_prediction
 
@@ -1403,7 +1409,7 @@ def _save_upload(file_storage, patient_id: str, prefix: str = "file") -> str:
 @audit_request("fusion_predict")
 @limiter.limit("20 per minute")
 def api_fusion_predict():
-    """Late fusion: CT + MRI weighted average (CT=0.4, MRI=0.6)."""
+    """Late fusion: CT p_abnormal + 5-class MRI tumor mass (0.4·CT + 0.6·MRI), threshold 0.5."""
     patient_id  = request.form.get("patient_id")
     hospital_id = request.form.get("hospitalId") or "H001"
     first_name  = request.form.get("first_name")
@@ -1459,31 +1465,23 @@ def api_fusion_predict():
     if mri_file is not None:
         try:
             mri_path = _save_upload(mri_file, patient_id, prefix="mri")
-            from predict_mri import predict_mri
             mri_result = predict_mri(mri_path, "brain_mri", patient_id)
-            if mri_result and "error" not in mri_result:
-                raw_conf = mri_result.get("confidence")
-                if raw_conf is not None and isinstance(raw_conf, (int, float)):
-                    mri_conf = float(raw_conf)
-                    mri_is_abnormal = mri_result.get("result_class", "").lower() in (
-                        "malignant", "abnormal", "tumor"
-                    )
-                    mri_prob = mri_conf if mri_is_abnormal else (1.0 - mri_conf)
-                else:
+            if mri_result and not mri_result.get("error"):
+                mri_prob = mri_abnormal_probability(mri_result)
+                if mri_prob is None:
                     app.logger.warning(
-                        "Fusion: MRI returned no valid confidence — falling back to CT-only. "
-                        "mri_result=%s", mri_result
+                        "Fusion: could not derive MRI tumor probability (need 5-class probabilities "
+                        "or BraTS tumor_voxels_total). mri_result=%s",
+                        mri_result,
                     )
             else:
                 app.logger.warning(
                     "Fusion: MRI inference returned error or empty — falling back to CT-only. "
-                    "mri_result=%s", mri_result
+                    "mri_result=%s",
+                    mri_result,
                 )
         except Exception as ex:
             return jsonify({"error": f"MRI inference failed: {ex}"}), 500
-
-    CT_WEIGHT  = 0.4
-    MRI_WEIGHT = 0.6
 
     if ct_prob is not None and mri_prob is not None:
         fusion_score = (ct_prob * CT_WEIGHT) + (mri_prob * MRI_WEIGHT)
@@ -1497,7 +1495,6 @@ def api_fusion_predict():
     else:
         return jsonify({"error": "Both models returned no result"}), 500
 
-    FUSION_THRESHOLD = 0.5
     is_abnormal  = fusion_score >= FUSION_THRESHOLD
     pred_label   = "Abnormal" if is_abnormal else "Normal"
     # EHR and review queues must use the fusion decision, not MRI/CT class labels.
@@ -1591,19 +1588,6 @@ def add_security_headers(response):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
         response.headers["Pragma"] = "no-cache"
     return response
-
-
-def _save_upload(file_storage, patient_id: str, prefix: str = "file") -> str:
-    import os
-    from werkzeug.utils import secure_filename
-    upload_dir = os.path.join(os.path.dirname(__file__), "static", "uploads")
-    os.makedirs(upload_dir, exist_ok=True)
-    ext = os.path.splitext(file_storage.filename or "")[-1] or ".bin"
-    fname = f"{patient_id}_{prefix}{ext}"
-    fpath = os.path.join(upload_dir, secure_filename(fname))
-    file_storage.seek(0)
-    file_storage.save(fpath)
-    return fpath
 
 
 if __name__ == "__main__":
