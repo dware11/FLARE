@@ -386,21 +386,24 @@ def run_explain_offline(
 
     for rank, t in enumerate(order):
         x_sub = _slice_subvolume(x, t)
+        raw_slice = _raw_slice_for_overlay(input_path, t)
+        # Non-sequence models expect 4D (B,C,H,W); x_sub is (1,1,C,H,W) so squeeze dim 1.
+        x_sub_2d = x_sub if is_sequence_ct_model(model) else x_sub.squeeze(1)
         if method_l == "gradcam":
             gradcam = GradCAM(model, layer_name)
             _go = gradcam(
                 x_sub,
                 target_class=target_class,
-                input_for_overlay=x[0, t : t + 1].detach().cpu().clamp(0, 1),
+                input_for_overlay=raw_slice,
             )
             heatmap, overlay = _go[0], _go[1]
             cam2d = heatmap
         elif method_l == "gradcam++":
-            cam2d = _gradcam_plus_plus(model, layer_mod, x_sub, target_class)
+            cam2d = _gradcam_plus_plus(model, layer_mod, x_sub_2d, target_class)
         elif method_l == "layercam":
-            cam2d = _layer_cam(model, layer_mod, x_sub, target_class)
+            cam2d = _layer_cam(model, layer_mod, x_sub_2d, target_class)
         elif method_l == "scorecam":
-            cam2d = _score_cam_lite(model, layer_mod, x_sub, target_class)
+            cam2d = _score_cam_lite(model, layer_mod, x_sub_2d, target_class)
         else:
             raise ValueError(f"Unknown method {method}")
 

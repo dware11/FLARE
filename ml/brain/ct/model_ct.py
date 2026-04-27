@@ -167,6 +167,11 @@ def is_sequence_ct_model(module: nn.Module) -> bool:
     return isinstance(module, CTSlicedSequenceModel)
 
 
+def is_ct_middle_slice_resnet18(module: nn.Module) -> bool:
+    """True when module is a ResNet-style model (has layer4) but not a sequence CT model."""
+    return not is_sequence_ct_model(module) and hasattr(module, "layer4")
+
+
 def load_sequence_weights_compat(model: CTSlicedSequenceModel, state: dict) -> None:
     """
     Load weights from checkpoint. Maps v1 keys (head.*) -> slice_head.* for older checkpoints

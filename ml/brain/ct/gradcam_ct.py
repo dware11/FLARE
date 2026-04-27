@@ -115,6 +115,8 @@ class GradCAM:
             with torch.enable_grad():
                 if x.dim() == 5 and is_sequence_ct_model(self.model):
                     logits = self.model(x, thickness=thickness)
+                elif x.dim() == 5 and k_stack == 1:
+                    logits = self.model(x.squeeze(1))
                 elif x.dim() == 5:
                     raise ValueError("5D input requires a sequence CT model for Grad-CAM")
                 else:
