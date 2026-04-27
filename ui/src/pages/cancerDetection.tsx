@@ -76,12 +76,21 @@ function getTodayYmdLocal(d = new Date()): string {
   return toYmdLocal(d);
 }
 
+/** Display YYYY-MM-DD as MM/DD/YYYY for patient-facing helper text (adult cutoff). */
+function formatYmdAsUs(ymd: string): string {
+  const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return ymd;
+  return `${m[2]}/${m[3]}/${m[1]}`;
+}
+
+const ERR_DOB_INVALID = "Please enter a valid date of birth.";
+
 type DobValidation = { valid: true } | { valid: false; message: string };
 
 function validateAdultDob(dob: string): DobValidation {
   const t = dob.trim();
   if (!t) return { valid: false, message: "" };
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return { valid: false, message: ERR_DOB_FUTURE };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return { valid: false, message: ERR_DOB_INVALID };
   const todayY = getTodayYmdLocal();
   if (t > todayY) return { valid: false, message: ERR_DOB_FUTURE };
   const maxAdult = getAdultDobMaxYmd();
@@ -401,6 +410,15 @@ export default function CancerDetection() {
   const folderAnalysis = useMemo(() => analyzePatientFolder(folderFiles), [folderFiles]);
 
   const dobValidation = useMemo(() => validateAdultDob(dob), [dob]);
+
+  /** Latest allowed DOB for age ≥ 18; recomputed each render so cutoff matches “today”. */
+  const adultDobCutoffYmd = getAdultDobMaxYmd();
+  const dobGuidanceText = `Adult patient only: select a date on or before ${formatYmdAsUs(adultDobCutoffYmd)}.`;
+  const dobShowError = Boolean(dob) && !dobValidation.valid;
+  const dobHelperText =
+    dobShowError && dobValidation.valid === false && dobValidation.message
+      ? dobValidation.message
+      : dobGuidanceText;
 
   const canUpload = useMemo(() => {
     return (
@@ -1004,14 +1022,18 @@ export default function CancerDetection() {
               value={dob}
               onChange={(e) => setDob(e.target.value)}
               InputLabelProps={{ shrink: true }}
-              error={Boolean(dob) && !dobValidation.valid}
-              helperText={
-                dob && !dobValidation.valid && dobValidation.valid === false
-                  ? dobValidation.message || "\u00a0"
-                  : "\u00a0"
-              }
-              FormHelperTextProps={{ sx: { minHeight: 22 } }}
-              inputProps={{ max: getAdultDobMaxYmd() }}
+              error={dobShowError}
+              helperText={dobHelperText}
+              FormHelperTextProps={{
+                sx: {
+                  minHeight: 40,
+                  lineHeight: 1.45,
+                  ...(dobShowError
+                    ? {}
+                    : { color: "rgba(255,255,255,0.58)" }),
+                },
+              }}
+              inputProps={{ max: adultDobCutoffYmd }}
               sx={dobFieldSx}
             />
           </Box>
