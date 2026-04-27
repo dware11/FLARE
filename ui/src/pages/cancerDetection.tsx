@@ -198,6 +198,22 @@ const pairImgSx = {
   display: "block",
 };
 
+const MRI_SEG_OVERLAY_LABEL = "MRI Segmentation Overlay";
+const MRI_RAW_MASK_LABEL = "Raw Tumor Mask";
+
+/**
+ * For legacy /predict, localization_url is overlay | mask (then gradcam). No explicit field — infer from path.
+ * BRISC: *_overlay.png = blend; *_mask.png without overlay = raw mask.
+ */
+function mriPathLooksLikeMaskOnly(url: string | undefined): boolean {
+  if (url == null || url === "") return false;
+  const p = url.toLowerCase();
+  if (p.includes("overlay")) return false;
+  if (p.includes("gradcam") || p.includes("/static/cam/") || p.includes("/cam/")) return false;
+  if (p.includes("_mask") || p.includes("mask.png")) return true;
+  return false;
+}
+
 /** Fusion: MRI localization panel is primary; CT Grad-CAM is supporting. */
 const fusionMriOvlBoxSx = { flex: "2 1 200px" as const, minWidth: 0, maxWidth: 440 };
 const fusionMriOvlImgSx = {
@@ -695,11 +711,27 @@ export default function CancerDetection() {
   const mriHasSeparateMaskPanel = Boolean(
     mriV2?.segmentation?.overlay_url && mriV2?.segmentation?.mask_url
   );
+  const mriV2SecondColumnLabel = useMemo(() => {
+    if (!mriV2?.segmentation) return MRI_SEG_OVERLAY_LABEL;
+    if (mriV2.segmentation.overlay_url) return MRI_SEG_OVERLAY_LABEL;
+    if (mriV2.segmentation.mask_url) return MRI_RAW_MASK_LABEL;
+    return MRI_SEG_OVERLAY_LABEL;
+  }, [mriV2]);
+
   const mriOrigSrc = useNgrokImage(mriOrigPath);
   const mriOvlSrc = useNgrokImage(mriOvlPath);
   const mriMaskSrc = useNgrokImage(mriMaskPath);
 
   const legacyLocPath = predLegacy?.localization_url ?? undefined;
+  const legacySecondColumnLabel = useMemo(
+    () =>
+      legacyLocPath == null
+        ? MRI_SEG_OVERLAY_LABEL
+        : mriPathLooksLikeMaskOnly(legacyLocPath)
+          ? MRI_RAW_MASK_LABEL
+          : MRI_SEG_OVERLAY_LABEL,
+    [legacyLocPath]
+  );
   const legacyLocSrc = useNgrokImage(legacyLocPath);
 
   const ctCamPath = ctScanResult ? (ctScanResult.cam_url as string | undefined) : undefined;
@@ -722,6 +754,16 @@ export default function CancerDetection() {
     if (typeof seg?.overlay_url === "string" && seg.overlay_url) return seg.overlay_url as string;
     if (typeof seg?.mask_url === "string" && seg.mask_url) return seg.mask_url as string;
     return undefined;
+  }, [fusionScanResult]);
+
+  const fusionMriColumnLabel = useMemo(() => {
+    if (!fusionScanResult) return MRI_SEG_OVERLAY_LABEL;
+    if (fusionScanResult.mri_overlay_url) return MRI_SEG_OVERLAY_LABEL;
+    const m = fusionScanResult.mri_details as Record<string, unknown> | undefined;
+    const seg = m?.segmentation as Record<string, unknown> | undefined;
+    if (typeof seg?.overlay_url === "string" && seg.overlay_url) return MRI_SEG_OVERLAY_LABEL;
+    if (typeof seg?.mask_url === "string" && seg.mask_url) return MRI_RAW_MASK_LABEL;
+    return MRI_SEG_OVERLAY_LABEL;
   }, [fusionScanResult]);
 
   const fusionMriInPath = fusionScanResult
@@ -1481,7 +1523,7 @@ export default function CancerDetection() {
                 {mriOvlPath ? (
                   <>
                     {mriOvlSrc ? (
-                      <Box component="img" src={mriOvlSrc} alt="MRI Segmentation Overlay" sx={pairImgSx} />
+                      <Box component="img" src={mriOvlSrc} alt={mriV2SecondColumnLabel} sx={pairImgSx} />
                     ) : (
                       <Box
                         sx={{
@@ -1497,7 +1539,7 @@ export default function CancerDetection() {
                       </Box>
                     )}
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
-                      MRI Segmentation Overlay
+                      {mriV2SecondColumnLabel}
                     </Typography>
                   </>
                 ) : (
@@ -1508,7 +1550,7 @@ export default function CancerDetection() {
                       </Typography>
                     </Box>
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
-                      MRI Segmentation Overlay
+                      {MRI_SEG_OVERLAY_LABEL}
                     </Typography>
                   </>
                 )}
@@ -1672,7 +1714,7 @@ export default function CancerDetection() {
                 {legacyLocPath ? (
                   <>
                     {legacyLocSrc ? (
-                      <Box component="img" src={legacyLocSrc} alt="Segmentation" sx={pairImgSx} />
+                      <Box component="img" src={legacyLocSrc} alt={legacySecondColumnLabel} sx={pairImgSx} />
                     ) : (
                       <Box
                         sx={{
@@ -1688,7 +1730,7 @@ export default function CancerDetection() {
                       </Box>
                     )}
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
-                      Segmentation Overlay
+                      {legacySecondColumnLabel}
                     </Typography>
                   </>
                 ) : (
@@ -1699,7 +1741,7 @@ export default function CancerDetection() {
                       </Typography>
                     </Box>
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
-                      Segmentation Overlay
+                      {MRI_SEG_OVERLAY_LABEL}
                     </Typography>
                   </>
                 )}
@@ -1997,7 +2039,7 @@ export default function CancerDetection() {
                       <Box
                         component="img"
                         src={fusionMriSegSrc}
-                        alt="MRI Segmentation Overlay"
+                        alt={fusionMriColumnLabel}
                         sx={fusionMriOvlImgSx}
                       />
                     ) : (
@@ -2015,7 +2057,7 @@ export default function CancerDetection() {
                       </Box>
                     )}
                     <Typography sx={{ color: "rgba(255,255,255,0.65)", mt: 1, fontWeight: 600, fontSize: "0.9rem" }}>
-                      MRI Segmentation Overlay
+                      {fusionMriColumnLabel}
                     </Typography>
                   </Box>
                 )}

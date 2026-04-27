@@ -367,7 +367,7 @@ export default function EhrDatabase() {
           },
         }}
       >
-        <DialogTitle sx={{ fontWeight: 800, pt: 2.5, px: 3, pb: 0 }}>
+        <DialogTitle sx={{ fontWeight: 800, pt: 2.5, px: 3, pb: 1.5 }}>
           {signDialogMode === 'reject' ? 'Reject case' : 'Approve case'}
         </DialogTitle>
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 3, px: 3, pb: 1 }}>
@@ -385,7 +385,7 @@ export default function EhrDatabase() {
             placeholder={defaultReviewerName}
             helperText={`Defaults to Auth0 profile, or “${SIGNATURE_FALLBACK}” if empty on submit.`}
             FormHelperTextProps={{ sx: { color: 'rgba(255,255,255,0.45)' } }}
-            sx={fieldSx}
+            sx={{ ...fieldSx, mt: 1 }}
           />
           {signDialogMode === 'reject' && (
             <TextField

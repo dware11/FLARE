@@ -1,9 +1,10 @@
 """
-Demo: Hook model.layer4, compute Grad-CAM heatmap + overlay.
-Design: enable_grad required so we can backward on target class for gradients.
+CT Grad-CAM: saliency over DenseNet feature maps. This is attention for explanation,
+not a tumor mask or automatic segmentation.
 """
 
-from typing import Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -32,12 +33,45 @@ def _get_layer(model: torch.nn.Module, layer_name: str) -> torch.nn.Module:
     return obj
 
 
+def _top5_mean_activation_score(cam_hw: torch.Tensor) -> float:
+    """
+    After per-slice 0-1 CAM normalization, score slice saliency as the mean of the
+    largest 5% of (nonnegative) values — smoother than a single max pixel.
+    """
+    v = F.relu(cam_hw).detach().float().view(-1)
+    if v.numel() == 0:
+        return 0.0
+    n = v.numel()
+    k = max(1, int(0.05 * n + 0.999))
+    k = min(k, n)
+    topk_vals, _ = torch.topk(v, k)
+    return float(topk_vals.mean().item())
+
+
+def _cam_hw_from_ag(
+    a1: torch.Tensor, g1: torch.Tensor, out_h: int, out_w: int
+) -> torch.Tensor:
+    """Single-slice (1,C,h,w) activations+grads -> (H,W) in [0,1]."""
+    weights = g1.mean(dim=(2, 3), keepdim=True)
+    cam = (weights * a1).sum(dim=1)
+    cam = F.relu(cam).squeeze(0)
+    cam = cam - cam.min()
+    if cam.max() > 0:
+        cam = cam / (cam.max() + 1e-8)
+    return F.interpolate(
+        cam.unsqueeze(0).unsqueeze(0),
+        size=(out_h, out_w),
+        mode="bilinear",
+        align_corners=False,
+    ).squeeze(0).squeeze(0)
+
+
 class GradCAM:
     """
-    Grad-CAM on DenseNet last conv block. For the sequence (k-slice) model, pass the
-    full (B, k, C, H, W) volume so the backward matches study-level prediction; use
-    center-slice (k//2) activations/gradients for the displayed heatmap, aligned with
-    input_for_overlay (same axial index in the preprocessed stack).
+    Grad-CAM on the last DenseNet conv block. For k-slice sequence models, one
+    full-volume forward+backward (same as prediction) yields (k, C, h, w) hooks;
+    we compute a CAM per slice and display the slice with the strongest
+    top-5%-mean saliency on the corresponding raw slice.
     """
 
     def __init__(self, model: torch.nn.Module, layer_name: str = "features.denseblock4"):
@@ -50,7 +84,7 @@ class GradCAM:
 
     def _forward_hook(self, _module: torch.nn.Module, _inp: tuple, out: torch.Tensor):
         self.activations = out
-        # Design: backward hook captures gradients w.r.t. activations for CAM weights.
+
         def _backward_hook(grad: torch.Tensor):
             self.gradients = grad
 
@@ -62,20 +96,19 @@ class GradCAM:
         target_class: Optional[int] = None,
         input_for_overlay: Optional[torch.Tensor] = None,
         thickness: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[np.ndarray]]:
-        """
-        Compute Grad-CAM.
-        - Sequence model: x is (1, k, C, H, W); pass thickness if the model uses it
-          (must match the prediction forward). CAM uses slice index k//2 to match
-          input_for_overlay (one axial slice, ~[0,1] raw).
-        - Legacy 2D path: x is (1, C, H, W); thickness ignored.
-        """
+        x_raw_volume: Optional[torch.Tensor] = None,
+    ) -> Union[
+        Tuple[torch.Tensor, Optional[np.ndarray]],
+        Tuple[torch.Tensor, Optional[np.ndarray], Dict[str, Any]],
+    ]:
         self.activations = None
         self.gradients = None
         self._fwd_handle = self.layer.register_forward_hook(self._forward_hook)
-        h, w = _spatial_hw(x, input_for_overlay)
         k_stack = int(x.shape[1]) if x.dim() == 5 else 1
-        k_slice_for_cam = k_stack // 2
+        k_mid = k_stack // 2
+        h, w = _spatial_hw(x, input_for_overlay)
+        if x_raw_volume is not None and k_stack > 1:
+            h, w = int(x_raw_volume.shape[2]), int(x_raw_volume.shape[3])
 
         try:
             self.model.zero_grad(set_to_none=True)
@@ -83,7 +116,6 @@ class GradCAM:
                 if x.dim() == 5 and is_sequence_ct_model(self.model):
                     logits = self.model(x, thickness=thickness)
                 elif x.dim() == 5:
-                    # Legacy 2D model should not receive 5D here; if it does, fail clearly.
                     raise ValueError("5D input requires a sequence CT model for Grad-CAM")
                 else:
                     logits = self.model(x)
@@ -96,19 +128,45 @@ class GradCAM:
 
             a = self.activations.detach()
             g = self.gradients.detach()
-            # Backbone processes (B*k) slices: take center slice to match on-screen overlay.
+            use_multislice = (
+                x_raw_volume is not None
+                and k_stack > 1
+                and a.dim() == 4
+                and g.dim() == 4
+                and a.shape[0] == k_stack
+                and g.shape[0] == k_stack
+            )
+
+            if use_multislice:
+                heatmaps: List[torch.Tensor] = []
+                scores: List[float] = []
+                for i in range(k_stack):
+                    hi = _cam_hw_from_ag(a[i : i + 1], g[i : i + 1], h, w)
+                    heatmaps.append(hi)
+                    scores.append(_top5_mean_activation_score(hi))
+                best_idx = int(max(range(k_stack), key=lambda j: scores[j]))
+                heatmap = heatmaps[best_idx]
+                raw_slice = x_raw_volume[best_idx : best_idx + 1]
+                overlay = self._overlay(heatmap, raw_slice)
+                meta: Dict[str, Any] = {
+                    "cam_display_slice_index": best_idx,
+                    "cam_center_slice_index": k_mid,
+                    "cam_selection_method": "top5_mean_activation",
+                    "heatmaps_per_slice": heatmaps,
+                    "top5_mean_per_slice": scores,
+                }
+                return heatmap, overlay, meta
+
             if a.dim() == 4 and a.shape[0] > 1 and k_stack > 1:
                 if a.shape[0] == k_stack and g.shape[0] == k_stack:
-                    a = a[k_slice_for_cam : k_slice_for_cam + 1]
-                    g = g[k_slice_for_cam : k_slice_for_cam + 1]
-            # Compute CAM
-            weights = g.mean(dim=(2, 3), keepdim=True)  # (1, C, 1, 1)
-            cam = (weights * a).sum(dim=1)  # (1, H, W)
-            cam = F.relu(cam).squeeze(0)  # (H, W)
+                    a = a[k_mid : k_mid + 1]
+                    g = g[k_mid : k_mid + 1]
+            weights = g.mean(dim=(2, 3), keepdim=True)
+            cam = (weights * a).sum(dim=1)
+            cam = F.relu(cam).squeeze(0)
             cam = cam - cam.min()
             if cam.max() > 0:
-                cam = cam / cam.max()
-
+                cam = cam / (cam.max() + 1e-8)
             heatmap = F.interpolate(
                 cam.unsqueeze(0).unsqueeze(0),
                 size=(h, w),
@@ -132,10 +190,8 @@ class GradCAM:
 
     def _overlay(self, heatmap: torch.Tensor, x: torch.Tensor) -> np.ndarray:
         """
-        Blend the heatmap with input for visualization.
-        x: (1, 3, H, W) or (1, 1, 3, H, W) (first spatial slice used for 5D).
-        Grayscale: robust display (0–1 or 0–255 raw + percentile stretch) so the
-        underlay is visible next to the JET colormap.
+        Heatmap on CT for visualization only; not a pathologic segmentation.
+        x: (1, 3, H, W) or (1, 1, 3, H, W).
         """
         heat = heatmap.cpu().numpy()
         t = x

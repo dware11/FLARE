@@ -9,7 +9,7 @@ import csv
 import json 
 import sys 
 from pathlib import Path 
-from typing import Optional, List, Dict 
+from typing import Any, Optional, List, Dict, Tuple, Union 
 
 import numpy as np
 import torch
@@ -97,6 +97,17 @@ def _denormalize_volume(x_norm: torch.Tensor) -> torch.Tensor:
     return (x_norm * std + mean).clamp(0.0, 1.0)
 
 
+def _unpack_gradcam_out(
+    res: Union[Tuple[torch.Tensor, Any], Tuple[torch.Tensor, Any, Dict]],
+) -> Tuple[torch.Tensor, Any, Dict]:
+    if isinstance(res, tuple) and len(res) == 3:
+        h, o, m = res
+        return h, o, m if isinstance(m, dict) else {}
+    if isinstance(res, tuple) and len(res) == 2:
+        return res[0], res[1], {}
+    raise TypeError("GradCAM must return a 2- or 3-tuple")
+
+
 def _run_ct_core(
     model: torch.nn.Module,
     agg: str,
@@ -119,6 +130,8 @@ def _run_ct_core(
 
     cam_path = None
     cam_display_slice_index: Optional[int] = None
+    cam_center_slice_index: Optional[int] = None
+    cam_selection_method: Optional[str] = None
     if use_grad and cam_dir:
         cam_dir_p = Path(cam_dir)
         ge = _gradcam_save_files(
@@ -133,6 +146,8 @@ def _run_ct_core(
         )
         cam_path = ge.get("cam_path")
         cam_display_slice_index = ge.get("cam_display_slice_index")
+        cam_center_slice_index = ge.get("cam_center_slice_index")
+        cam_selection_method = ge.get("cam_selection_method")
 
     return {
         "label": LABELS[pred],
@@ -141,6 +156,8 @@ def _run_ct_core(
         "p_abnormal": float(probs[1]),
         "cam_path": cam_path,
         "cam_display_slice_index": cam_display_slice_index,
+        "cam_center_slice_index": cam_center_slice_index,
+        "cam_selection_method": cam_selection_method,
     }
 
 def _load_manifest(manifest: Path) -> list: 
@@ -323,9 +340,11 @@ def _gradcam_save_files(
 ) -> Dict:
     """
     Run Grad-CAM: sequence models use the full (1,k,*,*,*) input + thickness, matching
-    the study-level forward; the overlay shows axial index k//2 in the preprocessed stack.
-    Writes {stem}.png (overlay, API cam_path), and optionally {stem}_heatmap.png and
-    {stem}_preview.png for demos.
+    the study-level forward. The saved overlay (attention, not segmentation) uses the
+    slice selected by per-slice saliency (top-5% mean) when the hook is (k,C,h,w);
+    else falls back to center-slice (k//2) as before.
+    Writes {stem}.png (overlay, API cam_path), and optionally {stem}_heatmap.png,
+    {stem}_preview.png, {stem}_center.png, {stem}_best.png, {stem}_top3.png for demos.
     """
     gradcam = GradCAM(model, _gradcam_layer_name(model))
     k = int(x_raw_volume.shape[0])
@@ -333,25 +352,35 @@ def _gradcam_save_files(
     center_raw = x_raw_volume[k_mid : k_mid + 1]
     is_seq = is_sequence_ct_model(model)
     if is_seq:
-        # Full-volume forward so gradients match pooled patient logits.
-        heatmap, overlay = gradcam(
+        gout = gradcam(
             x_batch,
             target_class=pred,
             input_for_overlay=center_raw,
             thickness=thick,
+            x_raw_volume=x_raw_volume,
         )
     else:
         x_cam = x_norm_volume[k_mid : k_mid + 1]
-        heatmap, overlay = gradcam(
+        gout = gradcam(
             x_cam,
             target_class=pred,
             input_for_overlay=center_raw,
             thickness=None,
         )
+    heatmap, overlay, meta = _unpack_gradcam_out(gout)
     out: Dict = {
         "cam_path": None,
         "cam_display_slice_index": k_mid,
+        "cam_center_slice_index": k_mid,
+        "cam_selection_method": None,
     }
+    if meta.get("cam_display_slice_index") is not None:
+        out["cam_display_slice_index"] = meta["cam_display_slice_index"]
+    if meta.get("cam_center_slice_index") is not None:
+        out["cam_center_slice_index"] = meta["cam_center_slice_index"]
+    if meta.get("cam_selection_method"):
+        out["cam_selection_method"] = meta["cam_selection_method"]
+
     if overlay is None:
         return out
     cam_dir.mkdir(parents=True, exist_ok=True)
@@ -362,6 +391,24 @@ def _gradcam_save_files(
     if heatmap is not None:
         _save_jet_heatmap_png(heatmap, cam_dir / f"{cam_stem}_heatmap.png")
     _save_center_preview_rgb(center_raw, cam_dir / f"{cam_stem}_preview.png")
+
+    hms = meta.get("heatmaps_per_slice")
+    sc_list = meta.get("top5_mean_per_slice")
+    if hms is not None and sc_list is not None and len(hms) == k and len(sc_list) == k:
+        o_center = gradcam._overlay(hms[k_mid], x_raw_volume[k_mid : k_mid + 1])
+        _save_overlay_png(o_center, cam_dir / f"{cam_stem}_center.png")
+        _save_overlay_png(overlay, cam_dir / f"{cam_stem}_best.png")
+        order = sorted(range(k), key=lambda j: -float(sc_list[j]))[:3]
+        try:
+            tiles = [gradcam._overlay(hms[j], x_raw_volume[j : j + 1]) for j in order]
+            if len(tiles) == 1:
+                top3_arr = tiles[0]
+            else:
+                top3_arr = np.hstack(tiles)
+            _save_overlay_png(top3_arr, cam_dir / f"{cam_stem}_top3.png")
+        except Exception:
+            pass
+
     return out
 
 
@@ -655,6 +702,8 @@ def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus
 
     cam_path = None
     cam_display_slice_index: Optional[int] = None
+    cam_center_slice_index: Optional[int] = None
+    cam_selection_method: Optional[str] = None
     if use_grad and cam_dir:
         ge = _gradcam_save_files(
             model,
@@ -668,6 +717,8 @@ def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus
         )
         cam_path = ge.get("cam_path")
         cam_display_slice_index = ge.get("cam_display_slice_index")
+        cam_center_slice_index = ge.get("cam_center_slice_index")
+        cam_selection_method = ge.get("cam_selection_method")
 
     return {
         "patient_id": patient_id,
@@ -677,6 +728,8 @@ def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus
         "p_abnormal": float(probs[1]),
         "cam_path": cam_path,
         "cam_display_slice_index": cam_display_slice_index,
+        "cam_center_slice_index": cam_center_slice_index,
+        "cam_selection_method": cam_selection_method,
     }
 
 
