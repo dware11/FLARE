@@ -740,6 +740,29 @@ export default function CancerDetection() {
     return { predStr, confStr };
   }, [fusionScanResult]);
 
+  /** Final fused abnormality: API is_abnormal > score vs threshold > result_class / pred_label (not MRI class alone). */
+  const fusionDecisionAbnormal = useMemo(() => {
+    if (!fusionScanResult) return false;
+    if (typeof fusionScanResult.is_abnormal === "boolean") {
+      return fusionScanResult.is_abnormal;
+    }
+    const t = Number(fusionScanResult.threshold ?? 0.5);
+    const s = Number(fusionScanResult.fusion_score ?? 0);
+    if (Number.isFinite(s) && Number.isFinite(t)) {
+      return s >= t;
+    }
+    const ehr = String(fusionScanResult.result_class ?? "");
+    if (ehr === "Malignant" || ehr === "Abnormal") return true;
+    if (ehr === "Normal" || ehr === "Benign") return false;
+    return String(fusionScanResult.pred_label ?? "") === "Abnormal";
+  }, [fusionScanResult]);
+
+  const fusionStatusCopy = fusionDecisionAbnormal
+    ? "Abnormal / Review Required"
+    : "Normal / Not Flagged";
+
+  const fusionFinalTheme = predictionTheme(fusionDecisionAbnormal ? "Malignant" : "Normal");
+
   const fusionCtGradCamSrc = useNgrokImage(fusionCtCamPath);
   const fusionMriOrigSrc = useNgrokImage(fusionMriInPath);
   const fusionMriSegSrc = useNgrokImage(fusionMriOvlPath);
@@ -2076,7 +2099,7 @@ export default function CancerDetection() {
                     fontSize: { xs: "2.75rem", sm: "3.25rem" },
                     fontWeight: 900,
                     lineHeight: 1.1,
-                    color: predictionTheme(String(fusionScanResult.pred_label) === "Abnormal" ? "Malignant" : "Normal").text,
+                    color: fusionFinalTheme.text,
                   }}
                 >
                   {(Number(fusionScanResult.fusion_score ?? 0) * 100).toFixed(1)}%
@@ -2092,7 +2115,7 @@ export default function CancerDetection() {
                     borderRadius: 1,
                     backgroundColor: "rgba(255,255,255,0.08)",
                     "& .MuiLinearProgress-bar": {
-                      backgroundColor: predictionTheme(String(fusionScanResult.pred_label) === "Abnormal" ? "Malignant" : "Normal").bar,
+                      backgroundColor: fusionFinalTheme.bar,
                       borderRadius: 1,
                     },
                   }}
@@ -2103,24 +2126,23 @@ export default function CancerDetection() {
                 sx={{
                   p: 2.5,
                   borderRadius: 2,
-                  backgroundColor: predictionTheme(
-                    String(fusionScanResult.pred_label) === "Abnormal" ? "Malignant" : "Normal"
-                  ).bg,
-                  border: `1px solid ${predictionTheme(String(fusionScanResult.pred_label) === "Abnormal" ? "Malignant" : "Normal").border}`,
+                  backgroundColor: fusionFinalTheme.bg,
+                  border: `1px solid ${fusionFinalTheme.border}`,
                   textAlign: "center",
                 }}
               >
                 <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: "0.85rem", mb: 0.5 }}>
-                  Prediction
+                  Fused screening status
                 </Typography>
                 <Typography
                   sx={{
-                    fontSize: "2rem",
+                    fontSize: "1.25rem",
                     fontWeight: 900,
-                    color: predictionTheme(String(fusionScanResult.pred_label) === "Abnormal" ? "Malignant" : "Normal").text,
+                    lineHeight: 1.35,
+                    color: fusionFinalTheme.text,
                   }}
                 >
-                  {String(fusionScanResult.pred_label ?? "")}
+                  {fusionStatusCopy}
                 </Typography>
               </Box>
 

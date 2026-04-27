@@ -367,10 +367,10 @@ export default function EhrDatabase() {
           },
         }}
       >
-        <DialogTitle sx={{ fontWeight: 800 }}>
+        <DialogTitle sx={{ fontWeight: 800, pt: 2.5, px: 3, pb: 0 }}>
           {signDialogMode === 'reject' ? 'Reject case' : 'Approve case'}
         </DialogTitle>
-        <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
+        <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 3, px: 3, pb: 1 }}>
           {signModalError && (
             <Alert severity="error" sx={{ backgroundColor: 'rgba(239,68,68,0.15)', color: '#fff' }}>
               {signModalError}
