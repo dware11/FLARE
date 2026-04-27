@@ -37,6 +37,94 @@ SPLIT_SEED = 42
 # Warn once per NPZ path when K differs from checkpoint / expected preprocess depth.
 _K_WARNED_PATHS: set = set()
 
+# Display-only: rotate/flip saved CT Grad-CAM PNGs to match UI orientation (not model input / logits / raw CAM).
+_CT_CAM_ORIENTS = frozenset(
+    {
+        "none",
+        "rot90_cw",
+        "rot90_ccw",
+        "rot180",
+        "flip_lr",
+        "flip_ud",
+        "transpose",
+        "transpose_flip_lr",
+    }
+)
+_CAM_ORIENT_INVALID_WARNED: set = set()
+
+_FLARE_CT_CAM_ENV = "FLARE_CT_CAM_DISPLAY_ORIENTATION"
+
+
+def resolve_flare_ct_cam_display_orientation() -> str:
+    """
+    Read FLARE_CT_CAM_DISPLAY_ORIENTATION (default: none).
+    Invalid values log once and map to 'none' (no display transform on disk).
+    """
+    raw = os.environ.get(_FLARE_CT_CAM_ENV, "none")
+    o = (raw or "none").strip().lower() or "none"
+    if o in _CT_CAM_ORIENTS:
+        return o
+    if o not in _CAM_ORIENT_INVALID_WARNED:
+        _CAM_ORIENT_INVALID_WARNED.add(o)
+        print(
+            f"WARNING: {_FLARE_CT_CAM_ENV}={raw!r} is not allowed; use one of {sorted(_CT_CAM_ORIENTS)}. Using 'none'.",
+            flush=True,
+        )
+    return "none"
+
+
+def apply_ct_cam_display_orientation(image_or_array, orientation: str):
+    """
+    Display-only transform for saved Grad-CAM visualization arrays/images.
+    Supports uint8 (H, W, C) with C=3 or 4, or a PIL Image (RGB / RGBA).
+    For orientation 'none', returns the input without copying when possible.
+    """
+    o = (orientation or "none").strip().lower() or "none"
+    if o not in _CT_CAM_ORIENTS:
+        o = "none"
+    if o == "none":
+        try:
+            from PIL import Image  # type: ignore
+
+            if isinstance(image_or_array, Image.Image):
+                return image_or_array
+        except Exception:
+            pass
+        return image_or_array
+
+    try:
+        from PIL import Image  # type: ignore
+
+        if isinstance(image_or_array, Image.Image):
+            arr = np.array(image_or_array)
+            out = _apply_ct_cam_spatial_to_hwc(arr, o)
+            return Image.fromarray(out, mode=image_or_array.mode)
+    except Exception:
+        pass
+    arr = np.ascontiguousarray(np.asarray(image_or_array))
+    return _apply_ct_cam_spatial_to_hwc(arr, o)
+
+
+def _apply_ct_cam_spatial_to_hwc(x: np.ndarray, o: str) -> np.ndarray:
+    if x.ndim != 3 or x.shape[2] not in (3, 4):
+        return x
+    if o == "rot90_cw":
+        return np.rot90(x, k=-1, axes=(0, 1))
+    if o == "rot90_ccw":
+        return np.rot90(x, k=1, axes=(0, 1))
+    if o == "rot180":
+        return np.rot90(x, k=2, axes=(0, 1))
+    if o == "flip_lr":
+        return np.ascontiguousarray(np.fliplr(x))
+    if o == "flip_ud":
+        return np.ascontiguousarray(np.flipud(x))
+    if o == "transpose":
+        return np.ascontiguousarray(np.transpose(x, (1, 0, 2)))
+    if o == "transpose_flip_lr":
+        t = np.transpose(x, (1, 0, 2))
+        return np.ascontiguousarray(np.fliplr(t))
+    return x
+
 
 def _save_overlay_png(overlay: np.ndarray, out_path: Path) -> bool:
     """Save RGB overlay (H,W,3) uint8 to PNG. Tries cv2 then matplotlib. Returns True if saved."""
@@ -134,6 +222,7 @@ def _run_ct_core(
     cam_center_slice_index: Optional[int] = None
     cam_selection_method: Optional[str] = None
     cam_error: Optional[str] = None
+    cam_display_orientation: str = resolve_flare_ct_cam_display_orientation()
     if use_grad and cam_dir:
         cam_dir_p = Path(cam_dir)
         ge = _gradcam_save_files(
@@ -151,6 +240,8 @@ def _run_ct_core(
         cam_center_slice_index = ge.get("cam_center_slice_index")
         cam_selection_method = ge.get("cam_selection_method")
         cam_error = ge.get("cam_error")
+        if ge.get("cam_display_orientation") is not None:
+            cam_display_orientation = str(ge["cam_display_orientation"])
 
     return {
         "label": LABELS[pred],
@@ -162,6 +253,7 @@ def _run_ct_core(
         "cam_center_slice_index": cam_center_slice_index,
         "cam_selection_method": cam_selection_method,
         "cam_error": cam_error,
+        "cam_display_orientation": cam_display_orientation,
     }
 
 def _load_manifest(manifest: Path) -> list: 
@@ -313,20 +405,21 @@ def _gradcam_layer_name(model: torch.nn.Module) -> str:
     return f"{base}.denseblock3"
 
 
-def _save_jet_heatmap_png(heatmap_2d: torch.Tensor, out_path: Path) -> bool:
-    """Save a 2D [0,1] heatmap as a JET PNG (debug/demo)."""
+def _save_jet_heatmap_png(heatmap_2d: torch.Tensor, out_path: Path, cam_orientation: str = "none") -> bool:
+    """Save a 2D [0,1] heatmap as a JET PNG (debug/demo). Display orientation is display-only."""
     try:
         import cv2
 
         h = torch.clamp(heatmap_2d.detach().cpu(), 0, 1).numpy()
         h = (h * 255).astype(np.uint8)
         bgr = cv2.applyColorMap(h, cv2.COLORMAP_JET)
+        bgr = apply_ct_cam_display_orientation(bgr, cam_orientation)
         return bool(cv2.imwrite(str(out_path), bgr))
     except Exception:
         return False
 
 
-def _save_center_preview_rgb(center_raw: torch.Tensor, out_path: Path) -> bool:
+def _save_center_preview_rgb(center_raw: torch.Tensor, out_path: Path, cam_orientation: str = "none") -> bool:
     """Grayscale center slice as RGB, same robust normalization as the overlay underlay."""
     g = center_raw[0, 0].float().cpu().numpy()
     if g.max() > 1.5:
@@ -337,6 +430,7 @@ def _save_center_preview_rgb(center_raw: torch.Tensor, out_path: Path) -> bool:
     if p_hi - p_lo > 1e-6:
         g = np.clip((g - p_lo) / (p_hi - p_lo + 1e-6), 0.0, 1.0)
     rgb = (np.stack([g, g, g], axis=-1) * 255.0).astype(np.uint8)
+    rgb = apply_ct_cam_display_orientation(rgb, cam_orientation)
     return _save_overlay_png(rgb, out_path)
 
 
@@ -358,6 +452,7 @@ def _gradcam_save_files(
     Writes {stem}.png (overlay, API cam_path), and optionally {stem}_heatmap.png,
     {stem}_preview.png, {stem}_center.png, {stem}_best.png, {stem}_top3.png for demos.
     """
+    cam_orn = resolve_flare_ct_cam_display_orientation()
     try:
         x_raw_viz = normalize_ct_raw_volume_for_viz(x_raw_volume, like=x_batch)
     except Exception as e:
@@ -368,6 +463,7 @@ def _gradcam_save_files(
             "cam_center_slice_index": None,
             "cam_selection_method": None,
             "cam_error": str(e),
+            "cam_display_orientation": cam_orn,
         }
     try:
         gradcam = GradCAM(model, _gradcam_layer_name(model))
@@ -406,22 +502,32 @@ def _gradcam_save_files(
             out["cam_selection_method"] = meta["cam_selection_method"]
 
         if overlay is None:
+            out["cam_display_orientation"] = cam_orn
             return out
         cam_dir.mkdir(parents=True, exist_ok=True)
         out_path = cam_dir / f"{cam_stem}.png"
-        if not _save_overlay_png(overlay, out_path):
+        overlay_save = apply_ct_cam_display_orientation(np.asarray(overlay), cam_orn)
+        if not _save_overlay_png(overlay_save, out_path):
+            out["cam_display_orientation"] = cam_orn
             return out
         out["cam_path"] = str(out_path)
+        out["cam_display_orientation"] = cam_orn
         if heatmap is not None:
-            _save_jet_heatmap_png(heatmap, cam_dir / f"{cam_stem}_heatmap.png")
-        _save_center_preview_rgb(center_raw, cam_dir / f"{cam_stem}_preview.png")
+            _save_jet_heatmap_png(heatmap, cam_dir / f"{cam_stem}_heatmap.png", cam_orientation=cam_orn)
+        _save_center_preview_rgb(center_raw, cam_dir / f"{cam_stem}_preview.png", cam_orientation=cam_orn)
 
         hms = meta.get("heatmaps_per_slice")
         sc_list = meta.get("top5_mean_per_slice")
         if hms is not None and sc_list is not None and len(hms) == k and len(sc_list) == k:
             o_center = gradcam._overlay(hms[k_mid], x_raw_viz[k_mid : k_mid + 1])
-            _save_overlay_png(o_center, cam_dir / f"{cam_stem}_center.png")
-            _save_overlay_png(overlay, cam_dir / f"{cam_stem}_best.png")
+            _save_overlay_png(
+                apply_ct_cam_display_orientation(np.asarray(o_center), cam_orn),
+                cam_dir / f"{cam_stem}_center.png",
+            )
+            _save_overlay_png(
+                apply_ct_cam_display_orientation(np.asarray(overlay), cam_orn),
+                cam_dir / f"{cam_stem}_best.png",
+            )
             order = sorted(range(k), key=lambda j: -float(sc_list[j]))[:3]
             try:
                 tiles = [gradcam._overlay(hms[j], x_raw_viz[j : j + 1]) for j in order]
@@ -429,7 +535,10 @@ def _gradcam_save_files(
                     top3_arr = tiles[0]
                 else:
                     top3_arr = np.hstack(tiles)
-                _save_overlay_png(top3_arr, cam_dir / f"{cam_stem}_top3.png")
+                _save_overlay_png(
+                    apply_ct_cam_display_orientation(np.asarray(top3_arr), cam_orn),
+                    cam_dir / f"{cam_stem}_top3.png",
+                )
             except Exception:
                 pass
 
@@ -442,6 +551,7 @@ def _gradcam_save_files(
             "cam_center_slice_index": None,
             "cam_selection_method": None,
             "cam_error": str(e),
+            "cam_display_orientation": cam_orn,
         }
 
 
@@ -738,6 +848,7 @@ def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus
     cam_center_slice_index: Optional[int] = None
     cam_selection_method: Optional[str] = None
     cam_error: Optional[str] = None
+    cam_display_orientation: str = resolve_flare_ct_cam_display_orientation()
     if use_grad and cam_dir:
         ge = _gradcam_save_files(
             model,
@@ -754,6 +865,8 @@ def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus
         cam_center_slice_index = ge.get("cam_center_slice_index")
         cam_selection_method = ge.get("cam_selection_method")
         cam_error = ge.get("cam_error")
+        if ge.get("cam_display_orientation") is not None:
+            cam_display_orientation = str(ge["cam_display_orientation"])
 
     return {
         "patient_id": patient_id,
@@ -766,6 +879,7 @@ def run_ct_for_patient(patient_id, checkpoint=None, cam_dir="backend/camo_outpus
         "cam_center_slice_index": cam_center_slice_index,
         "cam_selection_method": cam_selection_method,
         "cam_error": cam_error,
+        "cam_display_orientation": cam_display_orientation,
     }
 
 

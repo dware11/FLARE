@@ -8,12 +8,16 @@ mismatch (e.g. MRI saved with np.rot90 vs DICOM-as-is CT) rather than a model bu
 Default output (override with --out-dir):
   /scratch/bckk/flare/projects/FLARE/artifacts/ct_orientation_debug/
 
-Example (latest P10-style demo assets — adjust paths if your site uses different IDs):
+Example (P0001 CT Grad-CAM, default out-dir):
 
   python scripts/debug_ct_cam_orientation_variants.py \\
-    --cam backend/static/cam/P0010_ct.png \\
-    --ref backend/static/uploads/P0010_ct.png \\
+    --cam backend/static/cam/P0001_ct.png \\
     --out-dir /scratch/bckk/flare/projects/FLARE/artifacts/ct_orientation_debug/
+
+  # optional reference slice for the contact sheet:
+  python scripts/debug_ct_cam_orientation_variants.py \\
+    --cam backend/static/cam/P0001_ct.png \\
+    --ref backend/static/uploads/P0001_ct.png
 """
 
 from __future__ import annotations
@@ -128,7 +132,7 @@ def _write_contact_sheet(
         ax = ax_flat[i]
         ax.imshow(arr)
         ax.axis("off")
-        ax.set_xlabel(label, fontsize=9, color="#333", labelpad=4)
+        ax.set_title(label, fontsize=8, color="#222", pad=2)
     for j in range(n, len(ax_flat)):
         ax_flat[j].axis("off")
     plt.tight_layout(rect=(0, 0.02, 1, 0.95))

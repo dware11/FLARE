@@ -969,6 +969,8 @@ def api_ct_predict():
             body["cam_center_slice_index"] = int(ct_result["cam_center_slice_index"])
         if ct_result.get("cam_selection_method"):
             body["cam_selection_method"] = str(ct_result["cam_selection_method"])
+        if ct_result.get("cam_display_orientation") is not None:
+            body["cam_display_orientation"] = str(ct_result["cam_display_orientation"])
         return jsonify(body), 200
     except Exception as ex:
         return jsonify({"error": f"CT inference failed: {ex}"}), 500

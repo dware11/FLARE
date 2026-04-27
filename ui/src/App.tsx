@@ -8,6 +8,7 @@ import EhrDatabase from "./pages/ehrDatabase";
 import GeoTracker from "./pages/geoTracker";
 import OutbreakTracker from "./pages/outbreakTracker";
 import Privacy from "./pages/Privacy";
+import BrainCtDemo from "./pages/brainCtDemo";
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="/geo-tracker" element={<GeoTracker />} />
           <Route path="/outbreak-tracker" element={<OutbreakTracker />} />
           <Route path="/ehr-database" element={<EhrDatabase />} />
+          <Route path="/brain-ct-demo" element={<BrainCtDemo />} />
         </Route>
       </Route>
     </Routes>

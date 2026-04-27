@@ -133,6 +133,10 @@ export default function Header() {
                 EHR Database
               </MenuItem>
 
+              <MenuItem onClick={() => go('/brain-ct-demo')}>
+                Brain CT Demo
+              </MenuItem>
+
               <Box sx={{ display: 'flex', justifyContent: 'center', py: 0.5 }}>
                 <IconButton
                   onClick={refreshApp}
