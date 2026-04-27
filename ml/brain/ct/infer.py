@@ -512,6 +512,7 @@ def _gradcam_save_files(
             return out
         out["cam_path"] = str(out_path)
         out["cam_display_orientation"] = cam_orn
+        print(f"[CT CAM] display orientation = {cam_orn}", flush=True)
         if heatmap is not None:
             _save_jet_heatmap_png(heatmap, cam_dir / f"{cam_stem}_heatmap.png", cam_orientation=cam_orn)
         _save_center_preview_rgb(center_raw, cam_dir / f"{cam_stem}_preview.png", cam_orientation=cam_orn)

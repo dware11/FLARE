@@ -1557,7 +1557,7 @@ def api_fusion_predict():
         "dob": dob,
     }
 
-    return jsonify({
+    fusion_payload: dict = {
         "patient_id":       patient_id,
         "fusion_mode":      fusion_mode,
         "fusion_score":     round(fusion_score, 4),
@@ -1577,7 +1577,10 @@ def api_fusion_predict():
         "review_required":  review_required,
         "ct_details":       ct_result,
         "mri_details":      mri_result,
-    }), 200
+    }
+    if ct_result and ct_result.get("cam_display_orientation") is not None:
+        fusion_payload["cam_display_orientation"] = str(ct_result["cam_display_orientation"])
+    return jsonify(fusion_payload), 200
 
 
 # SECURITY: HTTP security headers — prevents caching of PHI on client devices (HIPAA consideration)
