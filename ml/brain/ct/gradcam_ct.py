@@ -3,6 +3,7 @@ CT Grad-CAM: saliency over DenseNet feature maps. This is attention for explanat
 not a tumor mask or automatic segmentation.
 """
 
+import os
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -10,6 +11,81 @@ import torch
 import torch.nn.functional as F
 
 from ml.brain.ct.model_ct import is_sequence_ct_model
+
+
+def normalize_ct_raw_volume_for_viz(
+    x: Union[torch.Tensor, np.ndarray],
+    *,
+    like: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """
+    Coerce a raw CT volume to (k, 3, H, W) for Grad-CAM overlay and preview only.
+    Accepts torch tensors or numpy arrays. Does not modify tensors used for classification.
+
+    Layouts:
+      (k, 3, H, W) — unchanged; (k, H, W, 3) — to NCHW; (3, H, W) — (1, 3, H, W);
+      (H, W, 3) — (1, 3, H, W); (H, W) — (1, 3, H, W) by repeating a single channel.
+    """
+    if isinstance(x, np.ndarray):
+        t = torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32))
+    elif isinstance(x, torch.Tensor):
+        t = x.detach()
+        if t.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+            t = t.float()
+    else:
+        raise TypeError(f"Expected Tensor or ndarray, got {type(x)}")
+
+    dev = like.device if like is not None else t.device
+    t = t.to(device=dev, dtype=torch.float32, non_blocking=True)
+
+    d = t.dim()
+    if d == 2:
+        # (H, W) -> (1, 3, H, W)
+        t = t.unsqueeze(0).unsqueeze(0).expand(1, 3, t.shape[0], t.shape[1])
+    elif d == 3:
+        s0, s1, s2 = t.shape[0], t.shape[1], t.shape[2]
+        if s0 == 3 and s1 > 3 and s2 > 3:
+            t = t.unsqueeze(0)
+        elif s2 == 3 and s0 > 3 and s1 > 3:
+            t = t.permute(2, 0, 1).contiguous().unsqueeze(0)
+        elif s0 == 1 and s1 > 1 and s2 > 1:
+            t = t.repeat(3, 1, 1).unsqueeze(0)
+        else:
+            raise ValueError(
+                f"Unrecognized 3D raw shape {tuple(t.shape)} for CT viz; "
+                "expected (3,H,W), (H,W,3), or (1,H,W)"
+            )
+    elif d == 4:
+        c1, c4 = t.shape[1], t.shape[3]
+        if c1 == 1:
+            t = t.repeat(1, 3, 1, 1)
+        elif c1 == 3 and c4 != 3:
+            pass
+        elif c4 == 3 and c1 != 3:
+            t = t.permute(0, 3, 1, 2).contiguous()
+        elif c1 == 3 and c4 == 3:
+            if t.shape[2] == 3:
+                pass
+            else:
+                t = t.permute(0, 3, 1, 2).contiguous()
+        else:
+            raise ValueError(
+                f"Unrecognized 4D raw shape {tuple(t.shape)} for CT viz; "
+                "expected (k,3,H,W) or (k,H,W,3) or (k,1,H,W)"
+            )
+    elif d == 5:
+        if t.shape[0] == 1:
+            t = t.squeeze(0)
+            return normalize_ct_raw_volume_for_viz(t, like=like)
+        raise ValueError(f"Unrecognized 5D raw shape {tuple(t.shape)} for CT viz")
+    else:
+        raise ValueError(
+            f"Unrecognized raw rank {d} shape {tuple(t.shape)} for CT viz; "
+            "expected 2D–5D (after coercion)"
+        )
+    if t.dim() != 4:
+        raise ValueError(f"After normalization expected 4D, got {tuple(t.shape)}")
+    return t.contiguous()
 
 
 def _spatial_hw(
@@ -35,10 +111,19 @@ def _get_layer(model: torch.nn.Module, layer_name: str) -> torch.nn.Module:
 
 def _top5_mean_activation_score(cam_hw: torch.Tensor) -> float:
     """
-    After per-slice 0-1 CAM normalization, score slice saliency as the mean of the
-    largest 5% of (nonnegative) values — smoother than a single max pixel.
+    After per-slice 0-1 heatmap, score saliency as the mean of the largest 5% of values
+    in a central ROI (ignores the outer 40% of the frame, where border/padding
+    artifacts often peak). Tuning: FLARE_GRADCAM_SCORE_CROP=0.2 uses middle 60%%.
     """
-    v = F.relu(cam_hw).detach().float().view(-1)
+    v2 = F.relu(cam_hw).detach().float()
+    h, w = v2.shape
+    m = max(0.0, min(0.45, float(os.environ.get("FLARE_GRADCAM_SCORE_CROP", "0.2"))))
+    t = int(m * h)
+    b_ = max(t + 1, h - t)
+    l = int(m * w)
+    r = max(l + 1, w - int(m * w))
+    v2 = v2[t:b_, l:r] if b_ > t and r > l else v2
+    v = v2.reshape(-1)
     if v.numel() == 0:
         return 0.0
     n = v.numel()
@@ -48,6 +133,32 @@ def _top5_mean_activation_score(cam_hw: torch.Tensor) -> float:
     return float(topk_vals.mean().item())
 
 
+def refine_ct_gradcam_heatmap_2d(cam: torch.Tensor) -> torch.Tensor:
+    """
+    Post-process a spatial CAM (H, W) after ReLU: percentile contrast stretch,
+    then 2D Hann taper to de-emphasize full-frame edges (reduces spurious
+    top/bottom or corner hotspots from padding / receptive field + min-max).
+    """
+    if cam.numel() == 0:
+        return cam
+    flat = cam.flatten()
+    lo = torch.quantile(flat, 0.02)
+    hi = torch.quantile(flat, 0.98)
+    if float(hi - lo) < 1e-8:
+        c = cam * 0.0
+    else:
+        c = ((cam - lo) / (hi - lo + 1e-8)).clamp(0.0, 1.0)
+    h, w = c.shape
+    device, dtype = c.device, c.dtype
+    hann_h = torch.hann_window(h, periodic=False, device=device, dtype=dtype)
+    hann_w = torch.hann_window(w, periodic=False, device=device, dtype=dtype)
+    c = c * torch.outer(hann_h, hann_w)
+    mx = c.max()
+    if mx > 1e-8:
+        c = c / mx
+    return c
+
+
 def _cam_hw_from_ag(
     a1: torch.Tensor, g1: torch.Tensor, out_h: int, out_w: int
 ) -> torch.Tensor:
@@ -55,9 +166,7 @@ def _cam_hw_from_ag(
     weights = g1.mean(dim=(2, 3), keepdim=True)
     cam = (weights * a1).sum(dim=1)
     cam = F.relu(cam).squeeze(0)
-    cam = cam - cam.min()
-    if cam.max() > 0:
-        cam = cam / (cam.max() + 1e-8)
+    cam = refine_ct_gradcam_heatmap_2d(cam)
     return F.interpolate(
         cam.unsqueeze(0).unsqueeze(0),
         size=(out_h, out_w),
@@ -68,13 +177,13 @@ def _cam_hw_from_ag(
 
 class GradCAM:
     """
-    Grad-CAM on the last DenseNet conv block. For k-slice sequence models, one
-    full-volume forward+backward (same as prediction) yields (k, C, h, w) hooks;
+    Grad-CAM on a DenseNet conv block (default: denseblock3 for finer maps). For
+    k-slice sequence models, one full-volume forward+backward yields (k, C, h, w);
     we compute a CAM per slice and display the slice with the strongest
-    top-5%-mean saliency on the corresponding raw slice.
+    top-5%-mean saliency (within a central ROI) on the corresponding raw slice.
     """
 
-    def __init__(self, model: torch.nn.Module, layer_name: str = "features.denseblock4"):
+    def __init__(self, model: torch.nn.Module, layer_name: str = "features.denseblock3"):
         self.model = model
         self.layer = _get_layer(model, layer_name)
         self.activations: Optional[torch.Tensor] = None
@@ -104,6 +213,8 @@ class GradCAM:
         self.activations = None
         self.gradients = None
         self._fwd_handle = self.layer.register_forward_hook(self._forward_hook)
+        if x_raw_volume is not None:
+            x_raw_volume = normalize_ct_raw_volume_for_viz(x_raw_volume, like=x)
         k_stack = int(x.shape[1]) if x.dim() == 5 else 1
         k_mid = k_stack // 2
         h, w = _spatial_hw(x, input_for_overlay)
@@ -161,18 +272,7 @@ class GradCAM:
                 if a.shape[0] == k_stack and g.shape[0] == k_stack:
                     a = a[k_mid : k_mid + 1]
                     g = g[k_mid : k_mid + 1]
-            weights = g.mean(dim=(2, 3), keepdim=True)
-            cam = (weights * a).sum(dim=1)
-            cam = F.relu(cam).squeeze(0)
-            cam = cam - cam.min()
-            if cam.max() > 0:
-                cam = cam / (cam.max() + 1e-8)
-            heatmap = F.interpolate(
-                cam.unsqueeze(0).unsqueeze(0),
-                size=(h, w),
-                mode="bilinear",
-                align_corners=False,
-            ).squeeze(0).squeeze(0)
+            heatmap = _cam_hw_from_ag(a, g, h, w)
 
             overlay = None
             if input_for_overlay is not None:

@@ -32,11 +32,15 @@ import {
   DialogActions,
   Tooltip,
   Radio,
+  useMediaQuery,
+  useTheme,
 } from '@mui/material'
 import {
+  absolutizeApiAssetUrl,
   fetchEhrRecords,
   approveReview,
   rejectReview,
+  NGROK_HEADERS,
   openImage,
   type EhrRecord,
 } from '../api/flareAPI'
@@ -56,6 +60,8 @@ type PatientRecord = {
   id: string
   firstName: string
   lastName: string
+  /** Best-effort display name for table/report (never use IDs as primary label here). */
+  displayName: string
   dob: string
   medicalId: string
   location: string
@@ -70,15 +76,8 @@ type PatientRecord = {
   originalImageUrl?: string
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'https://reassign-guiding-grass.ngrok-free.dev'
-
 function toAbsoluteUrl(url: string | null | undefined): string | undefined {
-  if (!url) return undefined
-  const t = url.trim()
-  if (t.startsWith('http://') || t.startsWith('https://')) return t
-  const base = API_BASE.replace(/\/$/, '')
-  const path = t.startsWith('/') ? t : `/${t}`
-  return `${base}${path}`
+  return absolutizeApiAssetUrl(url) ?? undefined
 }
 
 function toModality(modality: string): ScanModality {
@@ -105,15 +104,39 @@ function mapCancerLabel(raw: string | null | undefined): BrainCancerLabel {
   return 'Normal'
 }
 
+function formatPatientNameFromLoose(row: EhrRecordLoose): string {
+  const fn = String((row as { firstName?: string }).firstName ?? row.first_name ?? '').trim()
+  const ln = String((row as { lastName?: string }).lastName ?? row.last_name ?? '').trim()
+  const fromParts = [fn, ln].filter(Boolean).join(' ').trim()
+  if (fromParts) return fromParts
+  for (const k of ['patientName', 'patient_name', 'name'] as const) {
+    const v = row[k]
+    if (v != null && String(v).trim()) return String(v).trim()
+  }
+  return 'Unknown Patient'
+}
+
+function formatPatientTableSubline(dob: string, location: string): string {
+  const d = (dob || '').trim()
+  const loc = (location || '').trim()
+  if (d && loc) return `DOB: ${d} • ${loc}`
+  if (d) return `DOB: ${d}`
+  if (loc) return loc
+  return ''
+}
+
 function mapEhrToPatientRecord(r: EhrRecord): PatientRecord {
+  const loose = r as EhrRecordLoose
   const created = r.createdAt?.split('T')[0] ?? ''
   const overlay = r.segmentation?.overlay_url
-  const gradCamRaw = overlay ?? r.gradcam_url ?? undefined
+  const gradCamRaw = loose.gradcam_url ?? (r as { ct_cam_url?: string }).ct_cam_url ?? overlay ?? undefined
+  const mriIn = (loose as { mri_input_url?: string }).mri_input_url
   const st = (r.review_status || '').toLowerCase()
   return {
     id: r.caseId,
-    firstName: r.firstName ?? '',
-    lastName: r.lastName ?? '',
+    firstName: String(r.firstName ?? loose.first_name ?? '').trim(),
+    lastName: String(r.lastName ?? loose.last_name ?? '').trim(),
+    displayName: formatPatientNameFromLoose(loose),
     dob: r.dob ?? '',
     medicalId: (r.medicalId ?? r.patient_id) || '',
     location: r.hospitalName ?? '',
@@ -131,8 +154,22 @@ function mapEhrToPatientRecord(r: EhrRecord): PatientRecord {
           ? 'Rejected by reviewer.'
           : undefined),
     gradCamUrl: toAbsoluteUrl(gradCamRaw),
-    originalImageUrl: toAbsoluteUrl(r.input_image_url),
+    originalImageUrl: toAbsoluteUrl(r.input_image_url ?? mriIn),
   }
+}
+
+function formatHumanReviewStatus(status: string): string {
+  const s = (status || '').toLowerCase()
+  if (s === 'pending') return 'Pending'
+  if (s === 'approved') return 'Approved'
+  if (s === 'rejected') return 'Rejected'
+  if (!s) return '—'
+  return s.replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function isReviewCompleteForExport(status: string): boolean {
+  const s = (status || '').toLowerCase()
+  return s === 'approved' || s === 'rejected'
 }
 
 function resultChipColor(result: ResultClass) {
@@ -177,6 +214,11 @@ function escapeHtml(s: string | number | null | undefined): string {
     .replace(/"/g, '&quot;')
 }
 
+/** Minimal escapes for a long `data:` or `https:` string inside a double-quoted attribute. */
+function escapeHtmlAttr(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+}
+
 function safeHref(url: string | null | undefined): string | null {
   if (!url || typeof url !== 'string') return null
   const t = url.trim()
@@ -188,43 +230,162 @@ function rowHtml(label: string, value: string): string {
   return `<tr><td class="lab">${escapeHtml(label)}</td><td>${escapeHtml(value)}</td></tr>`
 }
 
-function linkRow(
-  label: string,
-  url: string | null | undefined,
-  toAbs: (u: string | null | undefined) => string | undefined
+function pickRawFieldLoose(
+  raw: EhrRecordLoose,
+  keys: string[],
+  fallback = '—'
 ): string {
-  const h = safeHref(url)
-  if (!h) return rowHtml(label, '—')
-  const full = toAbs(h) ?? h
-  return `<tr><td class="lab">${escapeHtml(label)}</td><td><a href="${escapeHtml(full)}">${escapeHtml(full)}</a></td></tr>`
+  for (const k of keys) {
+    const v = raw[k]
+    if (v != null && String(v).trim() !== '' && String(v) !== '—') {
+      return String(v)
+    }
+  }
+  return fallback
 }
 
-function buildClinicalReportHtml(
+const REPORT_IMAGE_FETCH_INIT: RequestInit = {
+  mode: 'cors',
+  credentials: 'omit',
+  cache: 'no-store',
+  headers: NGROK_HEADERS,
+}
+
+function responseContentTypeIsImage(res: Response): boolean {
+  const raw = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
+  return raw.startsWith('image/')
+}
+
+async function tryFetchImageDataUrl(url: string): Promise<string | null> {
+  const t = (url || '').trim()
+  if (!t) return null
+  if (t.toLowerCase().startsWith('data:image/')) return t
+  if (!safeHref(t)) return null
+
+  const full = absolutizeApiAssetUrl(t)
+  if (!full) return null
+  if (full.toLowerCase().startsWith('data:image/')) return full
+  if (!full.startsWith('http://') && !full.startsWith('https://')) return null
+
+  try {
+    const res = await fetch(full, REPORT_IMAGE_FETCH_INIT)
+    if (!res.ok) return null
+    if (!responseContentTypeIsImage(res)) return null
+
+    const blob = await res.blob()
+    if (blob.size === 0) return null
+    if (blob.type && !blob.type.startsWith('image/')) return null
+
+    return await new Promise((resolve) => {
+      const fr = new FileReader()
+      fr.onload = () => {
+        const s = String(fr.result || '')
+        if (!s.toLowerCase().startsWith('data:image/')) {
+          resolve(null)
+          return
+        }
+        resolve(s)
+      }
+      fr.onerror = () => resolve(null)
+      fr.readAsDataURL(blob)
+    })
+  } catch {
+    return null
+  }
+}
+
+function signatureBlockHtml(raw: EhrRecordLoose): string {
+  const sig = pickRawFieldLoose(
+    raw,
+    ['signature', 'digitalSignature', 'digital_signature'],
+    '—'
+  )
+  if (sig !== '—' && sig.toLowerCase().startsWith('data:image/')) {
+    return `<p class="sigbox"><em>Signature image (captured in workflow)</em></p><p><img class="evimg" src="${escapeHtmlAttr(sig)}" alt="Digital signature" /></p>`
+  }
+  return ''
+}
+
+async function buildVisualRowsEmbedded(raw: EhrRecordLoose): Promise<string> {
+  const overlayUrl =
+    raw.segmentation && typeof raw.segmentation === 'object'
+      ? (raw.segmentation as { overlay_url?: string }).overlay_url
+      : undefined
+  const pairs: [string, string | null | undefined][] = [
+    ['CT / Grad-CAM (gradcam_url)', raw.gradcam_url as string | undefined],
+    ['CT cam (ct_cam_url)', (raw as { ct_cam_url?: string }).ct_cam_url],
+    ['MRI / segmentation overlay', overlayUrl],
+    ['MRI overlay (mri_overlay_url)', (raw as { mri_overlay_url?: string }).mri_overlay_url],
+    ['Input / scan image (input_image_url)', raw.input_image_url as string | undefined],
+    ['MRI input (mri_input_url)', (raw as { mri_input_url?: string }).mri_input_url],
+  ]
+  const rows: string[] = []
+  for (const [label, u] of pairs) {
+    if (!u || !String(u).trim()) continue
+    const data = await tryFetchImageDataUrl(String(u))
+    const h = safeHref(String(u))
+    const normalizedForLink = h
+      ? absolutizeApiAssetUrl(String(u).trim()) ?? String(u).trim()
+      : ''
+    if (data) {
+      rows.push(
+        `<tr><td class="lab" colspan="2"><div class="vlabel">${escapeHtml(
+          label
+        )}</div><div class="vimg"><img class="evimg" src="${escapeHtmlAttr(
+          data
+        )}" alt="${escapeHtml(label)}" /></div></td></tr>`
+      )
+    } else {
+      const fallback = h
+        ? `Image could not be embedded. Source: <a href="${escapeHtml(
+            normalizedForLink
+          )}">${escapeHtml(normalizedForLink)}</a>`
+        : '—'
+      rows.push(
+        `<tr><td class="lab">${escapeHtml(
+          label
+        )}</td><td class="vfall">${fallback}</td></tr>`
+      )
+    }
+  }
+  if (rows.length === 0) {
+    return rowHtml('Images', 'No image URLs in this case.')
+  }
+  return rows.join('')
+}
+
+async function buildClinicalReportHtml(
   p: PatientRecord,
-  raw: EhrRecordLoose,
-  toAbs: (u: string | null | undefined) => string | undefined
-): string {
+  raw: EhrRecordLoose
+): Promise<string> {
   const genAt = new Date().toISOString()
-  const sig = raw.signature
-  const sigPresent =
-    typeof sig === 'string' && sig.length > 0 && !/^null$/i.test(sig) ? 'Yes' : 'No'
+  const sig = pickRawFieldLoose(
+    raw,
+    ['signature', 'digitalSignature', 'digital_signature'],
+    ''
+  )
+  const sigPresent = sig && sig !== '—' && !/^null$/i.test(sig) ? 'Yes' : 'No'
   const pl = raw.pred_label as string | undefined
   const pred = raw.prediction as string | undefined
   const ctProb = raw.ct_prob as number | undefined
   const mriProb = raw.mri_prob as number | undefined
   const fusionScore = raw.fusion_score as number | undefined
   const fusionMode = raw.fusion_mode as string | undefined
-  const overlayUrl =
-    raw.segmentation && typeof raw.segmentation === 'object'
-      ? (raw.segmentation as { overlay_url?: string }).overlay_url
-      : undefined
+  const st = (pickRawFieldLoose(raw, ['review_status'], '') || p.reviewStatus || '')
+    .toLowerCase()
+    .trim()
+  const pending = st === 'pending' || p.reviewStatus === 'pending'
+  const pendingNote = pending
+    ? '<p class="pending human"><strong>Pending clinician review.</strong> Reviewer and signature fields may be incomplete.</p>'
+    : ''
 
   const patientBlock = [
+    rowHtml('Patient name (as shown in app)', p.displayName || '—'),
     rowHtml('Patient ID', String(raw.patient_id ?? '—')),
     rowHtml('Medical ID', p.medicalId || '—'),
-    rowHtml('First name', p.firstName || '—'),
-    rowHtml('Last name', p.lastName || '—'),
-    rowHtml('Date of birth', p.dob || '—'),
+    rowHtml('First name (record)', p.firstName || '—'),
+    rowHtml('Last name (record)', p.lastName || '—'),
+    rowHtml('Date of birth', p.dob?.trim() ? p.dob : '—'),
     rowHtml('Case ID', p.id),
     rowHtml('Hospital ID', String(raw.hospitalId ?? '—')),
     rowHtml('Hospital / facility', String(raw.hospitalName ?? p.location ?? '—')),
@@ -238,9 +399,9 @@ function buildClinicalReportHtml(
   ]
 
   const aiLines: string[] = [
-    rowHtml('result_class (AI)', String(raw.result_class ?? p.aiResult)),
+    rowHtml('result_class (AI / fusion triage)', String(raw.result_class ?? p.aiResult)),
     rowHtml('prediction (if present)', String(pred ?? '—')),
-    rowHtml('pred_label (if present)', String(pl ?? '—')),
+    rowHtml('pred_label (tumor / modality detail)', String(pl ?? '—')),
     rowHtml('confidence (API value)', String(raw.confidence ?? '—')),
     rowHtml('confidence (UI display %)', `${p.confidence}%`),
   ]
@@ -248,7 +409,7 @@ function buildClinicalReportHtml(
     aiLines.push(rowHtml('ct_prob (CT abnormality)', String(ctProb)))
   }
   if (typeof mriProb === 'number' && Number.isFinite(mriProb)) {
-    aiLines.push(rowHtml('mri_prob (MRI score)', String(mriProb)))
+    aiLines.push(rowHtml('mri_prob (MRI abnormality mass)', String(mriProb)))
   }
   if (typeof fusionScore === 'number' && Number.isFinite(fusionScore)) {
     aiLines.push(rowHtml('fusion_score', String(fusionScore)))
@@ -258,20 +419,21 @@ function buildClinicalReportHtml(
   }
 
   const reviewBlock = [
-    rowHtml('Review status (clinician workflow)', p.reviewStatus || '—'),
-    rowHtml('Reviewer ID', String(raw.reviewerId ?? '—')),
-    rowHtml('Reviewer name (if stored)', String(raw.reviewerName ?? '—')),
+    rowHtml('Review status', pickRawFieldLoose(raw, ['review_status'], p.reviewStatus || '—')),
+    rowHtml('Reviewer name', pickRawFieldLoose(raw, ['reviewerName', 'reviewer_name'], '—')),
+    rowHtml('Reviewer ID', pickRawFieldLoose(raw, ['reviewerId', 'reviewer_id'], '—')),
     rowHtml('Digital signature on file', sigPresent),
-    rowHtml('Approved at', String(raw.approvedAt ?? '—')),
-    rowHtml('Rejected at', String(raw.rejectedAt ?? '—')),
-    rowHtml('Rejection reason / notes', String(raw.reject_reason ?? p.notes ?? '—')),
+    rowHtml('Approved at', pickRawFieldLoose(raw, ['approvedAt', 'approved_at'], '—')),
+    rowHtml('Rejected at', pickRawFieldLoose(raw, ['rejectedAt', 'rejected_at'], '—')),
+    rowHtml(
+      'Rejection / review reason',
+      pickRawFieldLoose(raw, ['reject_reason', 'rejectionReason'], '—')
+    ),
+    rowHtml('Notes', pickRawFieldLoose(raw, ['notes'], p.notes && p.notes !== '—' ? p.notes : '—')),
   ]
 
-  const visualBlock = [
-    linkRow('gradcam_url (CT attention / localization)', raw.gradcam_url, toAbs),
-    linkRow('segmentation.overlay_url (MRI overlay)', overlayUrl, toAbs),
-    linkRow('input_image_url', raw.input_image_url, toAbs),
-  ].join('')
+  const visualTableBody = await buildVisualRowsEmbedded(raw)
+  const sigHtml = signatureBlockHtml(raw)
 
   const disclaimer =
     'This report was generated by FLARE, a prototype AI decision-support system. It is not a certified medical device, not a legal medical record, and must be reviewed and confirmed by a qualified clinician before any clinical use. FLARE demonstrates HIPAA-aligned prototype safeguards but is not a production EHR system.'
@@ -290,11 +452,17 @@ function buildClinicalReportHtml(
     .ai { background: #e8f2fc; border-color: #6b90b5; }
     .human { background: #eef8ee; border-color: #6a9a6a; }
     .disc { background: #fffbf0; border: 1px solid #c9a227; padding: 14px; margin-top: 18px; font-size: 10pt; line-height: 1.5; }
+    .pending { font-size: 10pt; color: #0f5132; margin: 0 0 8px; }
     table { width: 100%; border-collapse: collapse; }
     td { padding: 5px 8px; vertical-align: top; }
     td.lab { width: 40%; font-weight: 600; color: #333; }
     a { color: #0b57d0; word-break: break-all; }
     .note { font-size: 9pt; color: #555; margin-top: 10px; }
+    .evimg { max-width: 100%; max-height: 360px; height: auto; object-fit: contain; border: 1px solid #ccc; }
+    .vimg { margin-top: 6px; }
+    .vlabel { font-size: 10pt; font-weight: 600; margin-bottom: 4px; }
+    .vfall { font-size: 9pt; }
+    .sigbox { margin: 8px 0 0; }
     @media print {
       body { margin: 12mm; }
       a { color: #000; }
@@ -315,15 +483,44 @@ function buildClinicalReportHtml(
   <div class="box ai"><table>${aiLines.join('')}</table></div>
 
   <h2>Visual evidence</h2>
-  <div class="box"><table>${visualBlock}</table></div>
+  <div class="box"><table>${visualTableBody}</table></div>
 
-  <h2>Clinical review</h2>
-  <div class="box human"><table>${reviewBlock.join('')}</table></div>
+  <h2>Clinical review (human decision)</h2>
+  <div class="box human">
+    ${pendingNote}
+    <table>${reviewBlock.join('')}</table>
+    ${sigHtml}
+  </div>
 
   <div class="disc">${escapeHtml(disclaimer)}</div>
   <p class="note">The sections above separate automated AI outputs from human review decisions. This document is for demonstration only.</p>
 </body>
 </html>`
+}
+
+function snackbarAlertSx(severity: 'success' | 'error' | 'warning' | 'info') {
+  const icon = {
+    '& .MuiAlert-icon': { color: '#fff' },
+    '& .MuiAlert-action': { color: '#fff' },
+  }
+  const base = {
+    width: '100%',
+    alignItems: 'center',
+    color: '#fff',
+    fontWeight: 600,
+    ...icon,
+  }
+  switch (severity) {
+    case 'success':
+      return { ...base, bgcolor: '#166534' }
+    case 'error':
+      return { ...base, bgcolor: '#7f1d1d' }
+    case 'warning':
+      return { ...base, bgcolor: '#a16207' }
+    case 'info':
+    default:
+      return { ...base, bgcolor: '#1e3a5f' }
+  }
 }
 
 function openPrintableReport(html: string): boolean {
@@ -346,6 +543,9 @@ function openPrintableReport(html: string): boolean {
 export default function EhrDatabase() {
   const navigate = useNavigate()
   const { user } = useAuth0()
+  const muiTheme = useTheme()
+  const reportChipNarrow = useMediaQuery(muiTheme.breakpoints.down('md'))
+  const reportChipPrefix = reportChipNarrow ? 'Selected:' : 'Selected report case:'
   const sigRef = useRef<SignatureCanvas | null>(null)
 
   const [records, setRecords] = useState<PatientRecord[]>([])
@@ -358,6 +558,8 @@ export default function EhrDatabase() {
   const [selected, setSelected] = useState<PatientRecord | null>(null)
   /** Single explicit case for printable report (independent of View / drawer). */
   const [exportCaseId, setExportCaseId] = useState<string | null>(null)
+  /** When true, the table shows the “For report” column (hidden until user prepares). */
+  const [reportSelectMode, setReportSelectMode] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   const [signOpen, setSignOpen] = useState(false)
@@ -422,7 +624,7 @@ export default function EhrDatabase() {
     return records.filter((r) => {
       const matchesQuery =
         !q ||
-        `${r.firstName} ${r.lastName}`.toLowerCase().includes(q) ||
+        r.displayName.toLowerCase().includes(q) ||
         r.medicalId.toLowerCase().includes(q) ||
         r.id.toLowerCase().includes(q)
 
@@ -444,6 +646,11 @@ export default function EhrDatabase() {
   const exportRecord = useMemo(
     () => (exportCaseId ? (records.find((x) => x.id === exportCaseId) ?? null) : null),
     [exportCaseId, records]
+  )
+
+  const exportCaseReviewComplete = useMemo(
+    () => Boolean(exportRecord && isReviewCompleteForExport(exportRecord.reviewStatus)),
+    [exportRecord]
   )
 
   const canActOnSelected = Boolean(selected?.id && selected.reviewStatus === 'pending')
@@ -545,12 +752,37 @@ export default function EhrDatabase() {
     }
   }
 
-  const handleExportReport = useCallback(() => {
+  const handlePrepareReport = useCallback(() => {
+    setReportSelectMode(true)
+    setExportCaseId(null)
+    setSnackbar({
+      open: true,
+      message: 'Choose one case to include in the report.',
+      severity: 'info',
+    })
+  }, [])
+
+  const handleCancelReportSelection = useCallback(() => {
+    setReportSelectMode(false)
+    setExportCaseId(null)
+  }, [])
+
+  const handleExportReport = useCallback(async () => {
     if (!exportCaseId || !exportRecord) {
       setSnackbar({
         open: true,
         message:
-          'Select exactly one case for the clinical report (For report column), then click Export. You can also use “Select for report” in the case panel.',
+          reportSelectMode
+            ? 'Select exactly one case using the “For report” control, then click Export selected report. Or use “Select for report” in the case details panel (when prepared).'
+            : 'Click “Select report case”, choose a case, then click Export selected report.',
+        severity: 'warning',
+      })
+      return
+    }
+    if (!isReviewCompleteForExport(exportRecord.reviewStatus)) {
+      setSnackbar({
+        open: true,
+        message: 'Approve or reject this case before exporting a clinical review report.',
         severity: 'warning',
       })
       return
@@ -564,7 +796,17 @@ export default function EhrDatabase() {
       })
       return
     }
-    const html = buildClinicalReportHtml(exportRecord, raw, toAbsoluteUrl)
+    let html: string
+    try {
+      html = await buildClinicalReportHtml(exportRecord, raw)
+    } catch (e) {
+      setSnackbar({
+        open: true,
+        message: e instanceof Error ? e.message : 'Could not build the report.',
+        severity: 'error',
+      })
+      return
+    }
     const ok = openPrintableReport(html)
     if (ok) {
       setSnackbar({
@@ -579,7 +821,7 @@ export default function EhrDatabase() {
         severity: 'error',
       })
     }
-  }, [exportCaseId, exportRecord, ehrSourceRows])
+  }, [exportCaseId, exportRecord, ehrSourceRows, reportSelectMode])
 
   return (
     <Box
@@ -694,34 +936,66 @@ export default function EhrDatabase() {
         </DialogActions>
       </Dialog>
 
-      <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 2, mb: 3 }}>
-        <Box>
+      <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 2, mb: 3, flexWrap: 'wrap' }}>
+        <Box sx={{ pr: { md: 2 }, pb: 1, minWidth: 0, flex: '1 1 280px' }}>
           <Typography sx={{ fontSize: '1.7rem', fontWeight: 800, letterSpacing: '0.02em' }}>
             EHR Database
           </Typography>
-          <Typography sx={{ color: 'rgba(255,255,255,0.65)', mt: 0.5, maxWidth: 720, lineHeight: 1.6 }}>
-            Patient scan history and AI results. Pending screening cases are approved or rejected here
-            (authoritative for this demo). For the printable AI review, use the{' '}
-            <Box component="span" sx={{ color: 'rgba(255,180,180,0.95)', fontWeight: 700 }}>
-              For report
-            </Box>{' '}
-            control — one case only; nothing is bulk-exported.
+          <Typography sx={{ color: 'rgba(255,255,255,0.65)', mt: 0.75, maxWidth: 720, lineHeight: 1.65 }}>
+            For a printable report, select one reviewed case. Bulk export is disabled.
           </Typography>
         </Box>
 
-        <Stack direction="row" spacing={1.5} flexWrap="wrap" alignItems="center" useFlexGap sx={{ justifyContent: 'flex-end' }}>
-          {exportRecord && (
-            <Tooltip title="Only this case will be included in the printable report.">
+        <Stack
+          direction="row"
+          spacing={2}
+          flexWrap="wrap"
+          alignItems="center"
+          useFlexGap
+          sx={{ justifyContent: 'flex-end', rowGap: 1.5, columnGap: 2, py: 0.5 }}
+        >
+          <Button
+            type="button"
+            variant="outlined"
+            onClick={handlePrepareReport}
+            sx={{
+              borderColor: 'rgba(255,255,255,0.18)',
+              color: '#fff',
+              textTransform: 'none',
+              borderRadius: 2,
+              fontWeight: 700,
+              px: 1.75,
+              py: 0.75,
+              '&:hover': { borderColor: 'rgba(255,255,255,0.35)' },
+            }}
+          >
+            Select report case
+          </Button>
+          {reportSelectMode && (
+            <Button
+              type="button"
+              variant="text"
+              onClick={handleCancelReportSelection}
+              sx={{ color: 'rgba(255,200,200,0.95)', textTransform: 'none', fontWeight: 600, px: 1.5 }}
+            >
+              Cancel
+            </Button>
+          )}
+          {exportCaseId && exportRecord && (
+            <Tooltip title="Only this case will be included. Export is allowed after the case is approved or rejected.">
               <Chip
                 size="small"
-                label={`Report: ${[exportRecord.firstName, exportRecord.lastName].filter(Boolean).join(' ')} · ${exportRecord.medicalId}`}
+                label={`${reportChipPrefix} ${exportRecord.displayName} · ${exportRecord.medicalId} · ${formatHumanReviewStatus(exportRecord.reviewStatus)}`}
                 sx={{
-                  maxWidth: { xs: '100%', sm: 280 },
+                  maxWidth: { xs: '100%', md: 480 },
                   fontWeight: 700,
                   color: '#fff',
                   backgroundColor: 'rgba(255,92,92,0.22)',
                   border: '1px solid rgba(255,92,92,0.45)',
-                  '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' },
+                  py: 0.5,
+                  height: 'auto',
+                  minHeight: 32,
+                  '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'normal', lineHeight: 1.3 },
                 }}
               />
             </Tooltip>
@@ -729,26 +1003,31 @@ export default function EhrDatabase() {
           <Tooltip
             title={
               !exportCaseId
-                ? 'Choose one case in the “For report” column (or in the case panel) before exporting.'
-                : 'Opens a print-ready clinical AI review for the selected case only.'
+                ? 'Select a report case, then choose a row. Export selected report is enabled after selection and review completion.'
+                : !exportCaseReviewComplete
+                  ? 'This case must be approved or rejected before export.'
+                  : 'Opens a print-ready clinical AI review for the selected case only.'
             }
           >
             <span>
               <Button
                 variant="outlined"
                 startIcon={<DownloadIcon />}
-                disabled={!exportCaseId}
+                disabled={!exportCaseId || !exportCaseReviewComplete}
                 sx={{
                   borderColor: 'rgba(255,255,255,0.18)',
                   color: '#fff',
                   textTransform: 'none',
                   borderRadius: 2,
+                  fontWeight: 600,
+                  px: 1.75,
+                  py: 0.75,
                   '&:hover': { borderColor: 'rgba(255,255,255,0.35)' },
                   '&.Mui-disabled': { color: 'rgba(255,255,255,0.35)' },
                 }}
-                onClick={() => handleExportReport()}
+                onClick={() => void handleExportReport()}
               >
-                Export report
+                Export selected report
               </Button>
             </span>
           </Tooltip>
@@ -870,14 +1149,16 @@ export default function EhrDatabase() {
         <Table sx={{ opacity: loading ? 0.4 : 1, pointerEvents: loading ? 'none' : 'auto' }}>
           <TableHead>
             <TableRow sx={{ backgroundColor: 'rgba(255,255,255,0.03)' }}>
-              <TableCell
-                align="center"
-                sx={{ color: 'rgba(255,255,255,0.75)', fontWeight: 700, width: 72, py: 1.5 }}
-              >
-                <Tooltip title="Single-select. Only this row is used for the printable clinical report.">
-                  <span>For report</span>
-                </Tooltip>
-              </TableCell>
+              {reportSelectMode && (
+                <TableCell
+                  align="center"
+                  sx={{ color: 'rgba(255,255,255,0.75)', fontWeight: 700, width: 72, py: 1.5 }}
+                >
+                  <Tooltip title="Single-select. Only this row is included in the printable report.">
+                    <span>For report</span>
+                  </Tooltip>
+                </TableCell>
+              )}
               <TableCell sx={{ color: 'rgba(255,255,255,0.75)', fontWeight: 700 }}>Patient</TableCell>
               <TableCell sx={{ color: 'rgba(255,255,255,0.75)', fontWeight: 700 }}>Medical ID</TableCell>
               <TableCell sx={{ color: 'rgba(255,255,255,0.75)', fontWeight: 700 }}>Cancer Type</TableCell>
@@ -894,17 +1175,19 @@ export default function EhrDatabase() {
           <TableBody>
             {sorted.map((r) => {
               const chip = resultChipColor(r.aiResult)
+              const sub = formatPatientTableSubline(r.dob, r.location)
+              const reportHighlight = reportSelectMode && exportCaseId === r.id
               return (
                 <TableRow
                   key={r.id}
                   hover
                   onClick={() => openCaseDetail(r)}
-                  selected={exportCaseId === r.id}
+                  selected={reportHighlight}
                   sx={{
                     cursor: 'pointer',
                     position: 'relative',
                     '&:hover': { backgroundColor: 'rgba(255,255,255,0.03)' },
-                    ...(exportCaseId === r.id
+                    ...(reportHighlight
                       ? {
                           backgroundColor: 'rgba(59,130,246,0.08)',
                           boxShadow: 'inset 3px 0 0 #ff5c5c',
@@ -913,33 +1196,38 @@ export default function EhrDatabase() {
                       : {}),
                   }}
                 >
-                  <TableCell
-                    align="center"
-                    onClick={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => e.stopPropagation()}
-                    sx={{ py: 1, width: 72 }}
-                  >
-                    <Radio
-                      checked={exportCaseId === r.id}
-                      onChange={() => setExportCaseId(r.id)}
-                      value={r.id}
-                      name="flare-ehr-export-case"
-                      size="small"
-                      sx={{
-                        p: 0.5,
-                        color: 'rgba(255,255,255,0.45)',
-                        '&.Mui-checked': { color: '#ff5c5c' },
-                      }}
-                      inputProps={{ 'aria-label': `Select case ${r.id} for printable report` }}
-                    />
-                  </TableCell>
+                  {reportSelectMode && (
+                    <TableCell
+                      align="center"
+                      onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => e.stopPropagation()}
+                      sx={{ py: 1, width: 72 }}
+                    >
+                      <Radio
+                        checked={exportCaseId === r.id}
+                        onChange={() => {
+                          setExportCaseId(r.id)
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        value={r.id}
+                        name="flare-ehr-export-case"
+                        size="small"
+                        sx={{
+                          p: 0.5,
+                          color: 'rgba(255,255,255,0.45)',
+                          '&.Mui-checked': { color: '#ff5c5c' },
+                        }}
+                        inputProps={{ 'aria-label': `Select case ${r.id} for printable report` }}
+                      />
+                    </TableCell>
+                  )}
                   <TableCell sx={{ color: '#fff' }}>
-                    <Typography sx={{ fontWeight: 700 }}>
-                      {r.firstName} {r.lastName}
-                    </Typography>
-                    <Typography sx={{ color: 'rgba(255,255,255,0.55)', fontSize: '0.85rem' }}>
-                      DOB: {r.dob} • {r.location}
-                    </Typography>
+                    <Typography sx={{ fontWeight: 700 }}>{r.displayName}</Typography>
+                    {sub ? (
+                      <Typography sx={{ color: 'rgba(255,255,255,0.55)', fontSize: '0.85rem' }}>
+                        {sub}
+                      </Typography>
+                    ) : null}
                   </TableCell>
 
                   <TableCell sx={{ color: '#fff', fontWeight: 700 }}>
@@ -988,7 +1276,10 @@ export default function EhrDatabase() {
 
             {sorted.length === 0 && (
               <TableRow>
-                <TableCell colSpan={9} sx={{ color: 'rgba(255,255,255,0.65)', py: 5, textAlign: 'center' }}>
+                <TableCell
+                  colSpan={reportSelectMode ? 9 : 8}
+                  sx={{ color: 'rgba(255,255,255,0.65)', py: 5, textAlign: 'center' }}
+                >
                   No matching records found.
                 </TableCell>
               </TableRow>
@@ -1015,39 +1306,48 @@ export default function EhrDatabase() {
             <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 1, gap: 1 }}>
               <Box sx={{ minWidth: 0 }}>
                 <Typography sx={{ fontWeight: 900, fontSize: '1.25rem' }}>
-                  {selected.firstName} {selected.lastName}
+                  {selected.displayName}
                 </Typography>
                 <Typography sx={{ color: 'rgba(255,255,255,0.65)' }}>
                   Case ID: {selected.id} • Medical ID: {selected.medicalId}
                 </Typography>
-                {exportCaseId === selected.id ? (
-                  <Chip
-                    size="small"
-                    sx={{
-                      mt: 1.25,
-                      fontWeight: 800,
-                      color: '#fff',
-                      backgroundColor: 'rgba(255,92,92,0.2)',
-                      border: '1px solid rgba(255,92,92,0.4)',
-                    }}
-                    label="Selected for printable report"
-                  />
-                ) : (
-                  <Button
-                    type="button"
-                    size="small"
-                    onClick={() => {
-                      setExportCaseId(selected.id)
-                      setSnackbar({
-                        open: true,
-                        message: 'This case is now selected for export. Click Export report when ready.',
-                        severity: 'info',
-                      })
-                    }}
-                    sx={{ mt: 1.25, textTransform: 'none', color: '#ffb4b4', fontWeight: 700 }}
-                  >
-                    Select for report
-                  </Button>
+                {reportSelectMode && (
+                  <>
+                    {exportCaseId === selected.id ? (
+                      <Chip
+                        size="small"
+                        sx={{
+                          mt: 1.5,
+                          fontWeight: 800,
+                          color: '#fff',
+                          backgroundColor: 'rgba(255,92,92,0.2)',
+                          border: '1px solid rgba(255,92,92,0.4)',
+                          maxWidth: '100%',
+                          height: 'auto',
+                          minHeight: 32,
+                          py: 0.5,
+                          '& .MuiChip-label': { whiteSpace: 'normal', lineHeight: 1.35 },
+                        }}
+                        label={`${reportChipPrefix} ${selected.displayName} · ${selected.medicalId} · ${formatHumanReviewStatus(selected.reviewStatus)}`}
+                      />
+                    ) : (
+                      <Button
+                        type="button"
+                        size="small"
+                        onClick={() => {
+                          setExportCaseId(selected.id)
+                          setSnackbar({
+                            open: true,
+                            message: 'This case is now selected. Click Export selected report when ready (approved or rejected cases only).',
+                            severity: 'info',
+                          })
+                        }}
+                        sx={{ mt: 1.25, textTransform: 'none', color: '#ffb4b4', fontWeight: 700 }}
+                      >
+                        Select for report
+                      </Button>
+                    )}
+                  </>
                 )}
               </Box>
 
@@ -1059,8 +1359,8 @@ export default function EhrDatabase() {
             <Divider sx={{ borderColor: 'rgba(255,255,255,0.08)', my: 2 }} />
 
             <Section title="Patient Information">
-              <InfoRow label="Date of Birth" value={selected.dob} />
-              <InfoRow label="Location" value={selected.location} />
+              {selected.dob?.trim() ? <InfoRow label="Date of Birth" value={selected.dob} /> : null}
+              <InfoRow label="Location" value={selected.location || '—'} />
             </Section>
 
             <Divider sx={{ borderColor: 'rgba(255,255,255,0.08)', my: 2 }} />
@@ -1226,7 +1526,8 @@ export default function EhrDatabase() {
         <Alert
           onClose={() => setSnackbar((s) => ({ ...s, open: false }))}
           severity={snackbar.severity}
-          sx={{ width: '100%', color: '#fff', alignItems: 'center' }}
+          variant="filled"
+          sx={snackbarAlertSx(snackbar.severity)}
         >
           {snackbar.message}
         </Alert>

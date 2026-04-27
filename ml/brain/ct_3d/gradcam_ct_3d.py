@@ -4,9 +4,16 @@ Design: enable_grad required so we can backward on target class for gradients.
 """
 
 from typing import Optional, Tuple
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from ml.brain.ct.gradcam_ct import refine_ct_gradcam_heatmap_2d
 
 
 class GradCAM:
@@ -65,9 +72,7 @@ class GradCAM:
             weights = g.mean(dim=(2, 3), keepdim=True)  # (1, C, 1, 1)
             cam = (weights * a).sum(dim=1)          # (1, H, W)
             cam = F.relu(cam).squeeze(0)            # (H, W)
-            cam -= cam.min()
-            if cam.max() > 0:
-                cam /= cam.max()
+            cam = refine_ct_gradcam_heatmap_2d(cam)
 
             heatmap = F.interpolate(
                 cam.unsqueeze(0).unsqueeze(0),

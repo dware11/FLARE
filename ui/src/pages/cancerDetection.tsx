@@ -54,6 +54,41 @@ const HOSPITALS = [
 
 const isValidMedicalId = (id: string) => /^P\d{4}$/.test(id);
 
+const ERR_DOB_FUTURE = "Date of birth cannot be in the future.";
+const ERR_DOB_MINOR =
+  "FLARE prototype currently supports adult patients only. Patient must be at least 18 years old.";
+
+function toYmdLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** Latest date of birth (inclusive) for age >= 18: current local date minus 18 years. */
+function getAdultDobMaxYmd(d = new Date()): string {
+  const t = new Date(d.getTime());
+  t.setFullYear(t.getFullYear() - 18);
+  return toYmdLocal(t);
+}
+
+function getTodayYmdLocal(d = new Date()): string {
+  return toYmdLocal(d);
+}
+
+type DobValidation = { valid: true } | { valid: false; message: string };
+
+function validateAdultDob(dob: string): DobValidation {
+  const t = dob.trim();
+  if (!t) return { valid: false, message: "" };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return { valid: false, message: ERR_DOB_FUTURE };
+  const todayY = getTodayYmdLocal();
+  if (t > todayY) return { valid: false, message: ERR_DOB_FUTURE };
+  const maxAdult = getAdultDobMaxYmd();
+  if (t > maxAdult) return { valid: false, message: ERR_DOB_MINOR };
+  return { valid: true };
+}
+
 function hospitalName(id: string): string {
   return HOSPITALS.find((h) => h.id === id)?.name ?? id;
 }
@@ -365,6 +400,8 @@ export default function CancerDetection() {
 
   const folderAnalysis = useMemo(() => analyzePatientFolder(folderFiles), [folderFiles]);
 
+  const dobValidation = useMemo(() => validateAdultDob(dob), [dob]);
+
   const canUpload = useMemo(() => {
     return (
       Boolean(cancerType) &&
@@ -373,9 +410,10 @@ export default function CancerDetection() {
       medicalId &&
       isValidMedicalId(medicalId) &&
       dob &&
+      dobValidation.valid &&
       hospitalId
     );
-  }, [cancerType, firstName, lastName, medicalId, dob, hospitalId]);
+  }, [cancerType, firstName, lastName, medicalId, dob, dobValidation.valid, hospitalId]);
 
   const canSubmit = useMemo(() => {
     if (!canUpload) return false;
@@ -523,6 +561,14 @@ export default function CancerDetection() {
     setFusionScanResult(null);
     setCompletedSeconds(null);
     if (!cancerType) return setError("Please select a cancer type.");
+    const dcheck = validateAdultDob(dob);
+    if (!dcheck.valid) {
+      return setError(
+        dcheck.message && dcheck.message.length > 0
+          ? dcheck.message
+          : "Please enter a valid date of birth."
+      );
+    }
 
     if (cancerType === "brain" && brainPipeline === "fusion") {
       if (!fusionCtFile || !fusionMriFile) {
@@ -958,7 +1004,14 @@ export default function CancerDetection() {
               value={dob}
               onChange={(e) => setDob(e.target.value)}
               InputLabelProps={{ shrink: true }}
-              inputProps={{ max: new Date().toISOString().split("T")[0] }}
+              error={Boolean(dob) && !dobValidation.valid}
+              helperText={
+                dob && !dobValidation.valid && dobValidation.valid === false
+                  ? dobValidation.message || "\u00a0"
+                  : "\u00a0"
+              }
+              FormHelperTextProps={{ sx: { minHeight: 22 } }}
+              inputProps={{ max: getAdultDobMaxYmd() }}
               sx={dobFieldSx}
             />
           </Box>

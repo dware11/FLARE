@@ -28,10 +28,10 @@ from ml.brain.ct.model_ct import is_ct_middle_slice_resnet18, is_sequence_ct_mod
 
 def _default_target_layer(model: nn.Module) -> str:
     if is_sequence_ct_model(model):
-        return "backbone.features.denseblock4"
+        return "backbone.features.denseblock3"
     if is_ct_middle_slice_resnet18(model):
         return "layer4"
-    return "features.denseblock4"
+    return "features.denseblock3"
 
 
 def _raw_slice_for_overlay(npz_path: Path, t: int) -> torch.Tensor:
