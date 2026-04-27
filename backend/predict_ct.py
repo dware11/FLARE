@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import traceback
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -147,26 +148,43 @@ def predict_ct(
     from ml.brain.ct.infer import run_ct_from_image, run_ct_from_npz
 
     ct_checkpoint = checkpoint or _default_ct_checkpoint()
-    if input_format == "image":
-        result = run_ct_from_image(
+
+    def _call_infer(with_cam: str | None):
+        if input_format == "image":
+            return run_ct_from_image(
+                inference_path,
+                checkpoint=ct_checkpoint,
+                cam_dir=with_cam,
+                threshold=threshold,
+            )
+        return run_ct_from_npz(
             inference_path,
             checkpoint=ct_checkpoint,
-            cam_dir=cam_dir,
-            threshold=threshold,
-        )
-    else:
-        result = run_ct_from_npz(
-            inference_path,
-            checkpoint=ct_checkpoint,
-            cam_dir=cam_dir,
+            cam_dir=with_cam,
             threshold=threshold,
         )
 
+    first_exc: BaseException | None = None
+    try:
+        result = _call_infer(cam_dir)
+    except Exception as e:
+        first_exc = e
+        traceback.print_exc()
+        if cam_dir is not None:
+            result = _call_infer(None)
+        else:
+            raise
     if result is None:
         return {}
 
     out = dict(result)
     out["input_format"] = input_format
     out["inference_path"] = inference_path
+    if first_exc is not None:
+        note = str(first_exc)
+        if out.get("cam_error"):
+            out["cam_error"] = f"{out['cam_error']}; {note}"
+        else:
+            out["cam_error"] = note
     return out
 

@@ -4,6 +4,7 @@ not a tumor mask or automatic segmentation.
 """
 
 import os
+import traceback
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -131,6 +132,28 @@ def _top5_mean_activation_score(cam_hw: torch.Tensor) -> float:
     k = min(k, n)
     topk_vals, _ = torch.topk(v, k)
     return float(topk_vals.mean().item())
+
+
+def _overlay_gray_from_img_hw_chw(img: np.ndarray) -> np.ndarray:
+    """
+    img: (H, W) or (C, H, W) CHW or (H, W, C) HWC, float/uint, for JET underlay.
+    """
+    if img.ndim == 2:
+        g = img.astype(np.float32)
+    elif img.ndim == 3:
+        a, b, c = int(img.shape[0]), int(img.shape[1]), int(img.shape[2])
+        if a in (1, 3, 4) and a < min(b, c):
+            if a == 1:
+                g = img[0].astype(np.float32)
+            else:
+                g = np.mean(img[: min(a, 3), :, :], axis=0).astype(np.float32)
+        elif c in (1, 3, 4) and a > 4 and b > 4:
+            g = np.mean(img[:, :, : min(c, 3)], axis=-1).astype(np.float32)
+        else:
+            g = np.asarray(img[0], dtype=np.float32)
+    else:
+        raise ValueError(f"overlay underlay: expected 2D or 3D array, got {img.shape}")
+    return g
 
 
 def refine_ct_gradcam_heatmap_2d(cam: torch.Tensor) -> torch.Tensor:
@@ -288,6 +311,7 @@ class GradCAM:
             return heatmap, overlay
         except Exception as e:
             print(f"[CT CAM WARNING] Grad-CAM failed: {e}", flush=True)
+            traceback.print_exc()
             return (
                 torch.zeros((h, w), device=x.device, dtype=x.dtype),
                 None,
@@ -305,26 +329,36 @@ class GradCAM:
         """
         Heatmap on CT for visualization only; not a pathologic segmentation.
         x: (1, 3, H, W) NCHW, or (1, H, W, 3) channels-last (coerced to NCHW here).
+        On any failure, returns a placeholder RGB uint8 (does not re-raise).
         """
-        heat = heatmap.cpu().numpy()
-        t = x
-        if t.dim() == 5:
-            t = t[:, 0]
-        if t.dim() == 4 and t.shape[-1] in (1, 3, 4) and t.shape[1] > 4:
-            t = t.permute(0, 3, 1, 2).contiguous()
-        img = t.squeeze(0).cpu().numpy()
-        gray = img[0].astype(np.float32)
-        if gray.max() > 1.5:
-            gray = np.clip(gray / 255.0, 0.0, 1.0)
-        else:
-            gray = np.clip(gray, 0.0, 1.0)
-        p_lo, p_hi = float(np.percentile(gray, 2.0)), float(np.percentile(gray, 98.0))
-        if p_hi - p_lo > 1e-6:
-            gray = np.clip((gray - p_lo) / (p_hi - p_lo + 1e-6), 0.0, 1.0)
-        gray_u8 = (gray * 255.0).astype(np.uint8)
-
+        h_fb, w_fb = 224, 224
         try:
-            import cv2
+            heat = np.asarray(heatmap.detach().cpu().float().numpy(), dtype=np.float32)
+            heat = np.squeeze(heat)
+            if heat.ndim != 2:
+                raise ValueError(f"expected 2D heatmap, got {heat.shape}")
+
+            t = x
+            if t.dim() == 5:
+                t = t[:, 0]
+            if t.dim() == 4 and t.shape[-1] in (1, 3, 4) and t.shape[1] > 4:
+                t = t.permute(0, 3, 1, 2).contiguous()
+            img = t.squeeze(0).detach().cpu().numpy()
+            gray = _overlay_gray_from_img_hw_chw(img)
+            if gray.max() > 1.5:
+                gray = np.clip(gray / 255.0, 0.0, 1.0)
+            else:
+                gray = np.clip(gray, 0.0, 1.0)
+            p_lo, p_hi = float(np.percentile(gray, 2.0)), float(np.percentile(gray, 98.0))
+            if p_hi - p_lo > 1e-6:
+                gray = np.clip((gray - p_lo) / (p_hi - p_lo + 1e-6), 0.0, 1.0)
+            gray_u8 = (gray * 255.0).astype(np.uint8)
+
+            try:
+                import cv2
+            except ImportError:
+                return np.stack([gray_u8, gray_u8, gray_u8], axis=-1).astype(np.uint8)
+
             if heat.shape != gray.shape:
                 heat = np.asarray(heat, dtype=np.float32)
                 heat = cv2.resize(heat, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_LINEAR)
@@ -333,5 +367,7 @@ class GradCAM:
             heat_rgb = cv2.cvtColor(heat_colored, cv2.COLOR_BGR2RGB)
             overlay = (0.5 * gray_u8[:, :, np.newaxis] + 0.5 * heat_rgb).astype(np.uint8)
             return overlay
-        except ImportError:
-            return np.stack([gray_u8, gray_u8, gray_u8], axis=-1).astype(np.uint8)
+        except Exception as e:
+            print(f"[CT CAM WARNING] overlay blend failed: {e}", flush=True)
+            traceback.print_exc()
+            return np.zeros((h_fb, w_fb, 3), dtype=np.uint8)

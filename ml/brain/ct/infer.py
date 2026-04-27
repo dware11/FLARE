@@ -9,6 +9,7 @@ import csv
 import json
 import os
 import sys
+import traceback
 from pathlib import Path 
 from typing import Any, Optional, List, Dict, Tuple, Union 
 
@@ -160,6 +161,13 @@ def _load_patient_arr(path: Path, expected_k: Optional[int] = None) -> np.ndarra
     if arr.ndim == 3:
         arr = arr[np.newaxis, ...]
     arr = arr.astype(np.float32)
+    # (k, H, W, C) NHWC vs (k, 3, H, W) NCHW: NHWC breaks ImageNet norm (256 vs 3) and Grad-CAM.
+    if arr.ndim == 4:
+        a1, a2, a3 = int(arr.shape[1]), int(arr.shape[2]), int(arr.shape[3])
+        is_channel_first = a1 in (1, 3, 4) and a1 < min(a2, a3) and a2 == a3
+        is_channel_last = a3 in (1, 3, 4) and a1 > 4 and a1 == a2
+        if not is_channel_first and is_channel_last:
+            arr = np.ascontiguousarray(np.transpose(arr, (0, 3, 1, 2)))
     if expected_k is not None and arr.shape[0] != expected_k:
         key = str(path.resolve())
         if key not in _K_WARNED_PATHS:
@@ -472,6 +480,7 @@ def _gradcam_save_files(
         x_raw_viz = normalize_ct_raw_volume_for_viz(x_raw_volume, like=x_batch)
     except Exception as e:
         print(f"[CT CAM WARNING] Grad-CAM failed: {e}", flush=True)
+        traceback.print_exc()
         return {
             "cam_path": None,
             "cam_display_slice_index": None,
@@ -527,6 +536,7 @@ def _gradcam_save_files(
             overlay_save = apply_ct_cam_display_orientation(np.asarray(overlay), cam_orn)
         except Exception as e:
             print(f"[CT CAM WARNING] Grad-CAM failed: {e}", flush=True)
+            traceback.print_exc()
             out["cam_error"] = str(e)
             out["cam_display_orientation"] = cam_orn
             return out
@@ -569,6 +579,7 @@ def _gradcam_save_files(
         return out
     except Exception as e:
         print(f"[CT CAM WARNING] Grad-CAM failed: {e}", flush=True)
+        traceback.print_exc()
         return {
             "cam_path": None,
             "cam_display_slice_index": None,
