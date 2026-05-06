@@ -1,15 +1,14 @@
 """
-FLARE - MRI Brain Tumor Classification Training Script
+FLARE - MRI Brain Tumor Classification Training Script (5-Class)
 Model: EfficientNetB0 (Transfer Learning)
-Dataset: BRISC 2025
-Classes: glioma, meningioma, pituitary, no_tumor
+Dataset: BRISC (4 classes) + IXI (1 class = NORMAL)
+Classes: glioma, meningioma, pituitary, no_tumor, normal
 
-Research basis:
-- EfficientNetB0 achieves 99.2% weighted F1 on BRISC (Fateh et al., 2026)
-- 2.5D strategy: grayscale copied to 3 channels for ImageNet transfer learning
-- 5-fold cross-validation used in BRISC benchmark
-- Cosine annealing LR scheduler for stable convergence
-- ReduceLROnPlateau as fallback per medical imaging best practices
+METRICS:
+- Accuracy, F1-Score, Confusion Matrix (standard ML)
+- Sensitivity, Specificity, PPV, NPV (clinical )
+- ROC-AUC curves (discrimination ability)
+- Per-class performance breakdown
 """
 
 import os
@@ -20,7 +19,10 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
 from pathlib import Path
-from sklearn.metrics import classification_report, confusion_matrix, f1_score
+from sklearn.metrics import (
+    classification_report, confusion_matrix, f1_score, 
+    roc_auc_score, roc_curve, accuracy_score
+)
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -30,46 +32,42 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
-# ==============================================================================
 # CONFIGURATION
 # ==============================================================================
+
 class Config:
     # --- Paths ---
-    PROCESSED_DIR = '/scratch/bckk/flare/mri_brain/classification/processed'
-    OUTPUT_DIR    = '/scratch/bckk/flare/mri_brain/classification/outputs/training'
+    BRISC_DIR = '/scratch/bckk/flare/mri_brain/data/brisc_processed'
+    IXI_DIR = '/scratch/bckk/flare/mri_brain/data/ixi_processed'
+    OUTPUT_DIR = '/scratch/bckk/flare/mri_brain/classification/outputs/training_5class'
 
     # --- Model ---
-    NUM_CLASSES   = 4          # glioma, meningioma, pituitary, no_tumor
-    INPUT_SIZE    = 224        # EfficientNetB0 expects 224x224
-    # Note: preprocessed at 512x512, we crop to 224 at load time (tumor-aware)
+    NUM_CLASSES = 5
+    INPUT_SIZE = 224
+    
+    # --- Training ---
+    BATCH_SIZE = 32
+    NUM_EPOCHS = 50
+    LEARNING_RATE = 1e-4
+    WEIGHT_DECAY = 1e-4
+    DROPOUT_RATE = 0.3
+    PATIENCE = 10
+    FREEZE_EPOCHS = 5
+    LR_MIN = 1e-6
 
-    # --- Training hyperparameters (based on BRISC benchmark) ---
-    BATCH_SIZE    = 32
-    NUM_EPOCHS    = 50         # early stopping will kick in before this
-    LEARNING_RATE = 1e-4       # initial LR for fine-tuning
-    WEIGHT_DECAY  = 1e-4       # L2 regularization
-    DROPOUT_RATE  = 0.3        # dropout before final classifier
-    PATIENCE      = 10         # early stopping patience
-
-    # --- Phase 1: Freeze backbone, train head only ---
-    FREEZE_EPOCHS = 5          # train only classifier head first
-
-    # --- LR Scheduler ---
-    # Cosine annealing: smoothly decays LR, proven best for EfficientNet
-    LR_MIN        = 1e-6       # minimum LR floor
-
-    # --- Data ---
-    RANDOM_SEED   = 42
-    NUM_WORKERS   = 4
+    # --- Data Splitting ---
+    RANDOM_SEED = 42
+    NUM_WORKERS = 4
+    TRAIN_RATIO = 0.7    # 70% training
+    VAL_RATIO = 0.15     # 15% validation
+    TEST_RATIO = 0.15    # 15% testing
 
     # --- Class labels ---
-    CLASS_NAMES   = ['glioma', 'meningioma', 'no_tumor', 'pituitary']
-    LABEL_MAP     = {'glioma': 0, 'meningioma': 1, 'no_tumor': 2, 'pituitary': 3}
+    CLASS_NAMES = ['glioma', 'meningioma', 'pituitary', 'no_tumor', 'normal']
 
-
-# ==============================================================================
 # LOGGING SETUP
 # ==============================================================================
+
 def setup_logging(output_dir):
     os.makedirs(output_dir, exist_ok=True)
     logging.basicConfig(
@@ -82,81 +80,50 @@ def setup_logging(output_dir):
     )
     return logging.getLogger(__name__)
 
-
-# ==============================================================================
 # DATASET
 # ==============================================================================
-class BRISCClassificationDataset(Dataset):
-    """
-    Loads preprocessed .npz files for classification.
-    
-    Each .npz file contains:
-        - 'image': grayscale image array (H, W) at 512x512
-        - 'label': integer class label
-        - 'tumor_label': string label name
-    
-    2.5D strategy: grayscale channel is copied to 3 channels (R=G=B)
-    so we can use ImageNet-pretrained EfficientNetB0 weights.
-    Crop from 512 -> 224 is done here at load time (center crop).
-    """
 
-    def __init__(self, processed_dir, split='train', transform=None, config=None):
+class BRISCIXIDataset(Dataset):
+    """Load NPZ files from BRISC and IXI directories"""
+
+    def __init__(self, npz_files, transform=None, config=None):
         self.config = config or Config()
         self.transform = transform
-        self.samples = []
-
-        processed_path = Path(processed_dir)
-
-        # Load all classification files for this split
-        pattern = f'classification_{split}_*.npz'
-        files = sorted(processed_path.glob(pattern))
-
-        if len(files) == 0:
-            raise FileNotFoundError(
-                f"No files found matching {processed_path / pattern}\n"
-                f"Make sure preprocessing completed successfully."
-            )
-
-        for f in files:
-            data = np.load(f, allow_pickle=True)
-            label = int(data['label'])
-            self.samples.append((str(f), label))
-
-        logging.info(f"Loaded {len(self.samples)} {split} samples")
-
-        # Log class distribution
+        self.npz_files = npz_files
+        
+        logging.info(f"Loaded {len(self.npz_files)} NPZ files")
+        
         from collections import Counter
-        label_counts = Counter([s[1] for s in self.samples])
-        for label_idx, count in sorted(label_counts.items()):
+        labels = []
+        for f in self.npz_files:
+            data = np.load(f, allow_pickle=True)
+            labels.append(int(data['label']))
+        
+        label_counts = Counter(labels)
+        for label_idx in range(self.config.NUM_CLASSES):
             name = self.config.CLASS_NAMES[label_idx]
+            count = label_counts.get(label_idx, 0)
             logging.info(f"  {name}: {count} samples")
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.npz_files)
 
     def __getitem__(self, idx):
-        filepath, label = self.samples[idx]
+        filepath = self.npz_files[idx]
         data = np.load(filepath, allow_pickle=True)
+        
         image = data['image'].astype(np.float32)
+        label = int(data['label'])
 
-        # Normalize to [0, 255] range for EfficientNetB0
-        # (EfficientNet handles its own internal normalization)
+        # Normalize to [0, 255]
         if image.max() <= 1.0:
             image = image * 255.0
 
-        # Convert grayscale to 3-channel (2.5D strategy)
-        # Copy same values to R, G, B — matches ImageNet pretrained format
+        # Convert grayscale to 3-channel
         if image.ndim == 2:
-            image = np.stack([image, image, image], axis=0)  # (3, H, W)
+            image = np.stack([image, image, image], axis=0)
         elif image.ndim == 3 and image.shape[0] == 1:
             image = np.concatenate([image, image, image], axis=0)
-        elif image.ndim == 3 and image.shape[2] in [1, 3]:
-            # HWC format -> CHW
-            if image.shape[2] == 1:
-                image = image[:, :, 0]
-                image = np.stack([image, image, image], axis=0)
-            else:
-                image = image.transpose(2, 0, 1)
 
         image = torch.tensor(image, dtype=torch.float32)
 
@@ -165,21 +132,11 @@ class BRISCClassificationDataset(Dataset):
 
         return image, label
 
-
-# ==============================================================================
 # DATA TRANSFORMS
 # ==============================================================================
+
 def get_transforms(config, split='train'):
-    """
-    Training: augmentation to improve generalization
-    Val/Test: only resize + normalize (no augmentation)
-    
-    Augmentations are conservative for medical imaging:
-    - No color jitter (grayscale data)
-    - Mild rotation (MRI orientation matters)
-    - Horizontal flip only (not vertical — anatomically incorrect)
-    """
-    input_size = config.INPUT_SIZE  # 224
+    input_size = config.INPUT_SIZE
 
     if split == 'train':
         return transforms.Compose([
@@ -188,8 +145,8 @@ def get_transforms(config, split='train'):
             transforms.RandomRotation(degrees=15),
             transforms.RandomAffine(degrees=0, translate=(0.05, 0.05)),
             transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],   # ImageNet mean
-                std=[0.229, 0.224, 0.225]      # ImageNet std
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
             )
         ])
     else:
@@ -201,23 +158,12 @@ def get_transforms(config, split='train'):
             )
         ])
 
-
-# ==============================================================================
 # MODEL
 # ==============================================================================
+
 def build_model(config, freeze_backbone=True):
-    """
-    EfficientNetB0 with ImageNet pretrained weights.
-    
-    Two-phase training:
-    Phase 1 (freeze_backbone=True):  Only train the classifier head
-    Phase 2 (freeze_backbone=False): Unfreeze all layers, fine-tune end-to-end
-    
-    This prevents destroying pretrained features early in training.
-    """
     model = models.efficientnet_b0(weights='IMAGENET1K_V1')
 
-    # Freeze all backbone layers in phase 1
     if freeze_backbone:
         for param in model.features.parameters():
             param.requires_grad = False
@@ -227,10 +173,7 @@ def build_model(config, freeze_backbone=True):
             param.requires_grad = True
         logging.info("Phase 2: Full model UNFROZEN — fine-tuning end-to-end")
 
-    # Replace classifier head
-    # Original: Linear(1280, 1000) for ImageNet
-    # Ours: Linear(1280, 4) for our 4 tumor classes
-    in_features = model.classifier[1].in_features  # 1280
+    in_features = model.classifier[1].in_features
     model.classifier = nn.Sequential(
         nn.Dropout(p=config.DROPOUT_RATE),
         nn.Linear(in_features, 256),
@@ -245,20 +188,15 @@ def build_model(config, freeze_backbone=True):
 
     return model
 
-
 def unfreeze_model(model, config):
-    """Unfreeze all layers for phase 2 fine-tuning."""
     for param in model.parameters():
         param.requires_grad = True
     logging.info("Phase 2: All layers unfrozen for fine-tuning")
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logging.info(f"Trainable params now: {trainable_params:,}")
     return model
 
-
-# ==============================================================================
 # TRAINING LOOP
 # ==============================================================================
+
 def train_one_epoch(model, loader, optimizer, criterion, device, epoch):
     model.train()
     total_loss = 0.0
@@ -286,12 +224,12 @@ def train_one_epoch(model, loader, optimizer, criterion, device, epoch):
     accuracy = correct / total
     return avg_loss, accuracy
 
-
 def validate(model, loader, criterion, device, epoch, split='Val'):
     model.eval()
     total_loss = 0.0
     all_preds = []
     all_labels = []
+    all_probs = []
 
     with torch.no_grad():
         pbar = tqdm(loader, desc=f"Epoch {epoch} [{split}]", leave=False)
@@ -300,7 +238,11 @@ def validate(model, loader, criterion, device, epoch, split='Val'):
             outputs = model(images)
             loss = criterion(outputs, labels)
             total_loss += loss.item() * images.size(0)
+            
+            probs = torch.softmax(outputs, dim=1).cpu().numpy()
             preds = outputs.argmax(dim=1)
+            
+            all_probs.extend(probs)
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
@@ -308,158 +250,319 @@ def validate(model, loader, criterion, device, epoch, split='Val'):
     accuracy = np.mean(np.array(all_preds) == np.array(all_labels))
     f1 = f1_score(all_labels, all_preds, average='weighted')
 
-    return avg_loss, accuracy, f1, all_preds, all_labels
+    all_probs = np.array(all_probs)
+    all_labels = np.array(all_labels)
+    all_preds = np.array(all_preds)
 
+    return avg_loss, accuracy, f1, all_preds, all_labels, all_probs
 
+# METRICS COMPUTATION
 # ==============================================================================
+
+def compute_metrics(all_labels, all_preds, all_probs, class_names, output_dir, split='test'):
+    """
+    Compute comprehensive metrics: standard ML + clinical
+    """
+    logging.info(f"\n{'='*80}")
+    logging.info(f"TEST SET EVALUATION METRICS")
+    logging.info(f"{'='*80}")
+    
+    # STANDARD ML METRICS
+    # ==================================================================
+    accuracy = np.mean(all_preds == all_labels)
+    f1_weighted = f1_score(all_labels, all_preds, average='weighted')
+    f1_macro = f1_score(all_labels, all_preds, average='macro')
+    
+    logging.info(f"\n[STANDARD ML METRICS]")
+    logging.info(f"  Accuracy:        {accuracy:.4f} ({accuracy*100:.2f}%)")
+    logging.info(f"  Weighted F1:     {f1_weighted:.4f}")
+    logging.info(f"  Macro F1:        {f1_macro:.4f}")
+    
+    # PER-CLASS BREAKDOWN
+    # ==================================================================
+    logging.info(f"\n[PER-CLASS BREAKDOWN]")
+    logging.info(classification_report(all_labels, all_preds, 
+                                       target_names=class_names, digits=4))
+    
+    # CONFUSION MATRIX
+    # ==================================================================
+    cm = confusion_matrix(all_labels, all_preds)
+    logging.info(f"\n[CONFUSION MATRIX]")
+    logging.info(f"\nRows=True Label, Cols=Predicted Label:")
+    logging.info(f"{cm}")
+    
+    # Normalized confusion matrix
+    cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+    logging.info(f"\n[CONFUSION MATRIX - Normalized (%):]")
+    logging.info((cm_norm * 100).astype(int))
+    
+    # CLINICAL METRICS: SENSITIVITY, SPECIFICITY, PPV, NPV
+    # ==================================================================
+    logging.info(f"\n[CLINICAL METRICS - Per Class]")
+    logging.info(f"(Sensitivity=Recall, Specificity, PPV, NPV)")
+    
+    sensitivity_per_class = {}
+    specificity_per_class = {}
+    ppv_per_class = {}
+    npv_per_class = {}
+    
+    for i, cls in enumerate(class_names):
+        tp = cm[i, i]
+        fn = cm[i, :].sum() - tp
+        fp = cm[:, i].sum() - tp
+        tn = cm.sum() - tp - fp - fn
+        
+        sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+        ppv = tp / (tp + fp) if (tp + fp) > 0 else 0
+        npv = tn / (tn + fn) if (tn + fn) > 0 else 0
+        
+        sensitivity_per_class[cls] = round(float(sensitivity), 4)
+        specificity_per_class[cls] = round(float(specificity), 4)
+        ppv_per_class[cls] = round(float(ppv), 4)
+        npv_per_class[cls] = round(float(npv), 4)
+        
+        logging.info(f"\n  {cls.upper()}:")
+        logging.info(f"    Sensitivity (catches true cases):  {sensitivity:.4f}")
+        logging.info(f"    Specificity (correct negatives):   {specificity:.4f}")
+        logging.info(f"    PPV (confidence when YES):         {ppv:.4f}")
+        logging.info(f"    NPV (confidence when NO):          {npv:.4f}")
+    
+    # ROC-AUC CURVES
+    # ==================================================================
+    logging.info(f"\n[ROC-AUC SCORES]")
+    auc_scores = {}
+    try:
+        for i, cls in enumerate(class_names):
+            binary_labels = (all_labels == i).astype(int)
+            class_probs = all_probs[:, i]
+            auc = roc_auc_score(binary_labels, class_probs)
+            auc_scores[cls] = round(float(auc), 4)
+            logging.info(f"  {cls:15s}: AUC = {auc:.4f}")
+        
+        macro_auc = roc_auc_score(all_labels, all_probs, multi_class="ovr", average="macro")
+        logging.info(f"  Macro Average:       {macro_auc:.4f}")
+    except Exception as e:
+        logging.warning(f"Could not compute ROC-AUC: {e}")
+        macro_auc = None
+    
+    # CONFIDENCE ANALYSIS
+    # ==================================================================
+    logging.info(f"\n[CONFIDENCE ANALYSIS]")
+    correct_mask = all_preds == all_labels
+    incorrect_mask = all_preds != all_labels
+    
+    correct_confidences = np.max(all_probs[correct_mask], axis=1) if correct_mask.sum() > 0 else np.array([])
+    incorrect_confidences = np.max(all_probs[incorrect_mask], axis=1) if incorrect_mask.sum() > 0 else np.array([])
+    
+    if len(correct_confidences) > 0:
+        logging.info(f"  Avg confidence when CORRECT: {correct_confidences.mean():.4f}")
+    if len(incorrect_confidences) > 0:
+        logging.info(f"  Avg confidence when WRONG:   {incorrect_confidences.mean():.4f}")
+    
+    # ERROR ANALYSIS
+    # ==================================================================
+    logging.info(f"\n[TOP ERRORS - Most Confused Pairs]")
+    errors = []
+    for i, true_cls in enumerate(class_names):
+        for j, pred_cls in enumerate(class_names):
+            if i != j and cm[i, j] > 0:
+                errors.append((cm[i, j], true_cls, pred_cls))
+    
+    errors.sort(reverse=True)
+    for count, true_cls, pred_cls in errors[:5]:
+        logging.info(f"  {count:3d} cases: {true_cls:12s} → {pred_cls}")
+    
+    # CLASS DISTRIBUTION
+    # ==================================================================
+    logging.info(f"\n[CLASS DISTRIBUTION IN TEST SET]")
+    unique, counts = np.unique(all_labels, return_counts=True)
+    for idx, count in zip(unique, counts):
+        logging.info(f"  {class_names[idx]:15s}: {count:4d} samples ({count/len(all_labels)*100:.1f}%)")
+    
+    # Save all results
+    results = {
+        'accuracy': round(float(accuracy), 4),
+        'f1_weighted': round(float(f1_weighted), 4),
+        'f1_macro': round(float(f1_macro), 4),
+        'sensitivity_per_class': sensitivity_per_class,
+        'specificity_per_class': specificity_per_class,
+        'ppv_per_class': ppv_per_class,
+        'npv_per_class': npv_per_class,
+        'per_class_auc': auc_scores,
+        'macro_auc': round(float(macro_auc), 4) if macro_auc else None,
+        'n_samples': len(all_labels),
+    }
+    
+    with open(os.path.join(output_dir, f'{split}_metrics.json'), 'w') as f:
+        json.dump(results, f, indent=2)
+    
+    logging.info(f"\nMetrics saved to: {os.path.join(output_dir, f'{split}_metrics.json')}")
+    logging.info(f"{'='*80}\n")
+    
+    return results
+
 # PLOTTING
 # ==============================================================================
-def plot_training_curves(history, output_dir):
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
-    epochs = range(1, len(history['train_loss']) + 1)
-
-    axes[0].plot(epochs, history['train_loss'], 'b-', label='Train')
-    axes[0].plot(epochs, history['val_loss'], 'r-', label='Val')
-    axes[0].set_title('Loss')
-    axes[0].set_xlabel('Epoch')
-    axes[0].legend()
-    axes[0].grid(True)
-
-    axes[1].plot(epochs, history['train_acc'], 'b-', label='Train')
-    axes[1].plot(epochs, history['val_acc'], 'r-', label='Val')
-    axes[1].set_title('Accuracy')
-    axes[1].set_xlabel('Epoch')
-    axes[1].legend()
-    axes[1].grid(True)
-
-    axes[2].plot(epochs, history['val_f1'], 'g-', label='Val F1')
-    axes[2].set_title('Weighted F1 Score')
-    axes[2].set_xlabel('Epoch')
-    axes[2].legend()
-    axes[2].grid(True)
-
+def plot_roc_curves(all_labels, all_probs, class_names, output_dir):
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    for i, cls in enumerate(class_names):
+        binary_labels = (all_labels == i).astype(int)
+        class_probs = all_probs[:, i]
+        
+        try:
+            fpr, tpr, _ = roc_curve(binary_labels, class_probs)
+            auc = roc_auc_score(binary_labels, class_probs)
+            ax.plot(fpr, tpr, label=f'{cls} (AUC = {auc:.4f})', linewidth=2)
+        except:
+            pass
+    
+    ax.plot([0, 1], [0, 1], 'k--', linewidth=1, label='Random')
+    ax.set_xlabel('False Positive Rate', fontsize=12)
+    ax.set_ylabel('True Positive Rate', fontsize=12)
+    ax.set_title('ROC Curves - 5-Class Classification', fontsize=13)
+    ax.legend(loc='lower right', fontsize=10)
+    ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'training_curves.png'), dpi=150)
+    plt.savefig(os.path.join(output_dir, 'roc_curves_test.png'), dpi=150)
     plt.close()
-    logging.info("Saved training_curves.png")
+    logging.info("Saved: roc_curves_test.png")
 
-
-def plot_confusion_matrix(labels, preds, class_names, output_dir, title='confusion_matrix'):
+def plot_confusion_matrix(labels, preds, class_names, output_dir, title='test_confusion_matrix'):
     cm = confusion_matrix(labels, preds)
     cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
 
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=class_names, yticklabels=class_names, ax=axes[0])
-    axes[0].set_title('Confusion Matrix (counts)')
+                xticklabels=class_names, yticklabels=class_names, ax=axes[0],
+                cbar_kws={'label': 'Count'})
+    axes[0].set_title('Confusion Matrix (Raw Counts)')
     axes[0].set_ylabel('True Label')
     axes[0].set_xlabel('Predicted Label')
 
     sns.heatmap(cm_norm, annot=True, fmt='.2f', cmap='Blues',
-                xticklabels=class_names, yticklabels=class_names, ax=axes[1])
-    axes[1].set_title('Confusion Matrix (normalized)')
+                xticklabels=class_names, yticklabels=class_names, ax=axes[1],
+                cbar_kws={'label': 'Proportion'})
+    axes[1].set_title('Confusion Matrix (Normalized)')
     axes[1].set_ylabel('True Label')
     axes[1].set_xlabel('Predicted Label')
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, f'{title}.png'), dpi=150)
     plt.close()
-    logging.info(f"Saved {title}.png")
+    logging.info(f"Saved: {title}.png")
 
+# MAIN TRAINING
+# ==============================================================================
 
-# ==============================================================================
-# MAIN TRAINING FUNCTION
-# ==============================================================================
-def train(config):
+def main():
+    config = Config()
     logger = setup_logging(config.OUTPUT_DIR)
     torch.manual_seed(config.RANDOM_SEED)
     np.random.seed(config.RANDOM_SEED)
 
-    # --- Device ---
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
     if device.type == 'cuda':
         logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
-        logger.info(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
-    # --- Datasets ---
-    logger.info("Loading datasets...")
+    # DATA LOADING & SPLITTING (70/15/15)
+    # ==================================================================
+    logger.info("\n" + "="*80)
+    logger.info("DATA LOADING & SPLITTING")
+    logger.info("="*80)
+    
+    brisc_files = sorted(Path(config.BRISC_DIR).glob("classification_*.npz"))
+    ixi_files = sorted(Path(config.IXI_DIR).glob("classification_*.npz"))
+    
+    logger.info(f"BRISC files: {len(brisc_files)}")
+    logger.info(f"IXI files: {len(ixi_files)}")
+    
+    all_files = list(brisc_files) + list(ixi_files)
+    logger.info(f"Total files: {len(all_files)}")
 
-    full_train = BRISCClassificationDataset(
-        config.PROCESSED_DIR, split='train',
-        transform=get_transforms(config, 'train'), config=config
+    # SPLIT: 70% train / 15% val / 15% test
+    logger.info(f"\nData Split Strategy:")
+    logger.info(f"  Train: {config.TRAIN_RATIO*100:.0f}% = {int(len(all_files)*config.TRAIN_RATIO)}")
+    logger.info(f"  Val:   {config.VAL_RATIO*100:.0f}% = {int(len(all_files)*config.VAL_RATIO)}")
+    logger.info(f"  Test:  {config.TEST_RATIO*100:.0f}% = {int(len(all_files)*config.TEST_RATIO)}")
+    
+    indices = np.arange(len(all_files))
+    train_idx, test_idx = train_test_split(
+        indices, test_size=config.TEST_RATIO, random_state=config.RANDOM_SEED
     )
-    # Split train 80/20 into train and val
-    train_indices, val_indices = train_test_split(
-        range(len(full_train)),
-        test_size=0.2,
+    train_idx, val_idx = train_test_split(
+        train_idx, 
+        test_size=config.VAL_RATIO / (config.TRAIN_RATIO + config.VAL_RATIO),
         random_state=config.RANDOM_SEED
     )
-    train_dataset = torch.utils.data.Subset(full_train, train_indices)
+    
+    train_files = [all_files[i] for i in train_idx]
+    val_files = [all_files[i] for i in val_idx]
+    test_files = [all_files[i] for i in test_idx]
+    
+    logger.info(f"\nSplit results:")
+    logger.info(f"  Train: {len(train_files)} files")
+    logger.info(f"  Val:   {len(val_files)} files")
+    logger.info(f"  Test:  {len(test_files)} files")
 
-    val_full = BRISCClassificationDataset(
-        config.PROCESSED_DIR, split='train',
-        transform=get_transforms(config, 'val'), config=config
+    logger.info("\nCreating datasets...")
+    train_dataset = BRISCIXIDataset(
+        train_files,
+        transform=get_transforms(config, 'train'),
+        config=config
     )
-    val_dataset = torch.utils.data.Subset(val_full, val_indices)
-
-    test_dataset = BRISCClassificationDataset(
-        config.PROCESSED_DIR, split='test',
-        transform=get_transforms(config, 'test'), config=config
+    val_dataset = BRISCIXIDataset(
+        val_files,
+        transform=get_transforms(config, 'val'),
+        config=config
+    )
+    test_dataset = BRISCIXIDataset(
+        test_files,
+        transform=get_transforms(config, 'test'),
+        config=config
     )
 
     train_loader = DataLoader(train_dataset, batch_size=config.BATCH_SIZE,
                             shuffle=True, num_workers=config.NUM_WORKERS,
                             pin_memory=True)
-    val_loader   = DataLoader(val_dataset, batch_size=config.BATCH_SIZE,
-                            shuffle=False, num_workers=config.NUM_WORKERS,
-                            pin_memory=True)
-    test_loader  = DataLoader(test_dataset, batch_size=config.BATCH_SIZE,
-                            shuffle=False, num_workers=config.NUM_WORKERS,
-                            pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=config.BATCH_SIZE,
+                          shuffle=False, num_workers=config.NUM_WORKERS,
+                          pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=config.BATCH_SIZE,
+                           shuffle=False, num_workers=config.NUM_WORKERS,
+                           pin_memory=True)
 
-    logger.info(f"Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}")
-    # --- Model ---
+    # MODEL & TRAINING SETUP
+    # ==================================================================
     model = build_model(config, freeze_backbone=True)
     model = model.to(device)
 
-    # --- Loss & Optimizer ---
     criterion = nn.CrossEntropyLoss()
-
-    # Phase 1 optimizer: only classifier params
     optimizer = optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=config.LEARNING_RATE,
         weight_decay=config.WEIGHT_DECAY
     )
-
-    # Cosine annealing scheduler (best for EfficientNet per literature)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=config.NUM_EPOCHS, eta_min=config.LR_MIN
     )
 
-    # --- Training state ---
     best_val_f1 = 0.0
-    best_epoch  = 0
+    best_epoch = 0
     patience_counter = 0
-    history = {
-        'train_loss': [], 'train_acc': [],
-        'val_loss': [], 'val_acc': [], 'val_f1': [],
-        'lr': []
-    }
 
-    logger.info("=" * 60)
+    logger.info("\n" + "="*80)
     logger.info("STARTING TRAINING")
-    logger.info("=" * 60)
+    logger.info("="*80)
 
     for epoch in range(1, config.NUM_EPOCHS + 1):
 
-        # Phase 2: unfreeze backbone after FREEZE_EPOCHS
         if epoch == config.FREEZE_EPOCHS + 1:
             model = unfreeze_model(model, config)
-            # Reset optimizer with lower LR for fine-tuning
             optimizer = optim.AdamW(
                 model.parameters(),
                 lr=config.LEARNING_RATE * 0.1,
@@ -470,28 +573,17 @@ def train(config):
                 T_max=config.NUM_EPOCHS - config.FREEZE_EPOCHS,
                 eta_min=config.LR_MIN
             )
-            logger.info(f"Switched to Phase 2 fine-tuning at epoch {epoch}")
 
-        # Train
         train_loss, train_acc = train_one_epoch(
             model, train_loader, optimizer, criterion, device, epoch
         )
 
-        # Validate
-        val_loss, val_acc, val_f1, val_preds, val_labels = validate(
+        val_loss, val_acc, val_f1, val_preds, val_labels, val_probs = validate(
             model, val_loader, criterion, device, epoch, split='Val'
         )
 
         scheduler.step()
         current_lr = optimizer.param_groups[0]['lr']
-
-        # Log
-        history['train_loss'].append(train_loss)
-        history['train_acc'].append(train_acc)
-        history['val_loss'].append(val_loss)
-        history['val_acc'].append(val_acc)
-        history['val_f1'].append(val_f1)
-        history['lr'].append(current_lr)
 
         logger.info(
             f"Epoch {epoch:3d}/{config.NUM_EPOCHS} | "
@@ -500,7 +592,6 @@ def train(config):
             f"LR: {current_lr:.6f}"
         )
 
-        # Save best model
         if val_f1 > best_val_f1:
             best_val_f1 = val_f1
             best_epoch = epoch
@@ -511,72 +602,50 @@ def train(config):
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_f1': val_f1,
                 'val_acc': val_acc,
-                'config': config.__dict__
             }, os.path.join(config.OUTPUT_DIR, 'best_model.pth'))
             logger.info(f"  ✓ New best model saved (F1: {best_val_f1:.4f})")
         else:
             patience_counter += 1
             if patience_counter >= config.PATIENCE:
-                logger.info(f"Early stopping at epoch {epoch} (no improvement for {config.PATIENCE} epochs)")
+                logger.info(f"Early stopping at epoch {epoch}")
                 break
 
-    # --- Final Evaluation on Test Set ---
-    logger.info("=" * 60)
+    # TEST EVALUATION WITH ALL METRICS
+    # ==================================================================
+    logger.info("\n" + "="*80)
     logger.info("LOADING BEST MODEL FOR TEST EVALUATION")
-    logger.info("=" * 60)
+    logger.info("="*80)
 
     checkpoint = torch.load(os.path.join(config.OUTPUT_DIR, 'best_model.pth'), weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     logger.info(f"Best model from epoch {best_epoch} (Val F1: {best_val_f1:.4f})")
 
-    test_loss, test_acc, test_f1, test_preds, test_labels = validate(
+    test_loss, test_acc, test_f1, test_preds, test_labels, test_probs = validate(
         model, test_loader, criterion, device, epoch=0, split='Test'
     )
 
-    logger.info(f"\nTEST RESULTS:")
-    logger.info(f"  Accuracy:    {test_acc:.4f} ({test_acc*100:.2f}%)")
-    logger.info(f"  Weighted F1: {test_f1:.4f}")
-    logger.info(f"\nPer-class report:")
-    report = classification_report(
-        test_labels, test_preds,
-        target_names=config.CLASS_NAMES,
-        digits=4
+    # Compute metrics (standard + clinical)
+    test_results = compute_metrics(
+        test_labels, test_preds, test_probs,
+        config.CLASS_NAMES, config.OUTPUT_DIR, split='test'
     )
-    logger.info(f"\n{report}")
 
-    # --- Save results ---
-    results = {
-        'best_epoch': best_epoch,
-        'best_val_f1': best_val_f1,
-        'test_accuracy': test_acc,
-        'test_f1': test_f1,
-        'test_loss': test_loss,
-    }
-    with open(os.path.join(config.OUTPUT_DIR, 'results.json'), 'w') as f:
-        json.dump(results, f, indent=2)
-
-    # --- Plots ---
-    plot_training_curves(history, config.OUTPUT_DIR)
+    # Generate plots
     plot_confusion_matrix(test_labels, test_preds, config.CLASS_NAMES,
                           config.OUTPUT_DIR, title='test_confusion_matrix')
-    plot_confusion_matrix(val_labels, val_preds, config.CLASS_NAMES,
-                          config.OUTPUT_DIR, title='val_confusion_matrix')
+    plot_roc_curves(test_labels, test_probs, config.CLASS_NAMES, config.OUTPUT_DIR)
 
-    logger.info("=" * 60)
+    logger.info("="*80)
     logger.info("TRAINING COMPLETE")
-    logger.info(f"Best Val F1:  {best_val_f1:.4f}")
-    logger.info(f"Test Accuracy: {test_acc*100:.2f}%")
-    logger.info(f"Test F1:       {test_f1:.4f}")
+    logger.info(f"Best Val F1:      {best_val_f1:.4f}")
+    logger.info(f"Test Accuracy:    {test_acc*100:.2f}%")
+    logger.info(f"Test Weighted F1: {test_f1:.4f}")
     logger.info(f"Outputs saved to: {config.OUTPUT_DIR}")
-    logger.info("=" * 60)
+    logger.info("="*80)
 
-    return model, results
+    return model, test_results
 
-
-# ==============================================================================
-# ENTRY POINT
-# ==============================================================================
 if __name__ == '__main__':
     config = Config()
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-    model, results = train(config)
+    model, results = main()
