@@ -16,10 +16,10 @@ import gc
 
 
 
-DATA_DIR = r"/Users/huda/Desktop/Flare_brain_mri/classification_data_2020/brats2020_processed"
-SAVE_DIR = r"/Users/huda/Desktop/Flare_brain_mri/classification_data_2020/checkpoints"  
+DATA_DIR = r"/Users/huda/Desktop/Flare_brain_mri/data/processed"
+SAVE_DIR = r"/Users/huda/Desktop/Flare_brain_mri/checkpoints"  
 
-# TRAINING CONFIGURATION
+#                           TRAINING CONFIGURATION
 
 BATCH_SIZE = 1          
 NUM_EPOCHS = 30         
@@ -28,7 +28,7 @@ CHECKPOINT_EVERY = 5
 NUM_WORKERS =4         
 STEPS_PER_EPOCH = 100
 
-# SETUP
+#                              SETUP
 
 class Augmenter:
     """Simple augmentations for training."""
@@ -114,7 +114,7 @@ def main():
         print("\n  Device: CPU")
         print("  WARNING: No GPU found! Training will be slow.")
         
-    # DATASET
+    #                              DATASET
     
     print("\n" + "="*70)
     print("LOADING DATASET")
@@ -151,7 +151,7 @@ def main():
     print(f"  Image shape: {img.shape}")
     print(f"  Seg shape: {seg.shape}")
     
-    # MODEL
+    #                              MODEL
     
     print("\n" + "="*70)
     print("BUILDING MODEL")
@@ -219,7 +219,7 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  Parameters: {n_params:,}")
     
-    # LOSS & METRICS
+    #                           LOSS & METRICS
     
     class DiceLoss(nn.Module):
         def __init__(self, smooth=1e-5):
@@ -262,7 +262,7 @@ def main():
     
     criterion = CombinedLoss()
     
-    # OPTIMIZER + RESUME
+    #                         OPTIMIZER + RESUME
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
@@ -298,7 +298,7 @@ def main():
     else:
         print("  Starting fresh")
 
-    # TRAINING LOOP
+    #                           TRAINING LOOP
     
     print("\n" + "="*70)
     print("TRAINING")
@@ -307,7 +307,7 @@ def main():
     for epoch in range(start_epoch, NUM_EPOCHS + 1):
         t0 = time.time()
         
-        # TRAIN
+        # ─────────────── TRAIN ───────────────
         model.train()
         train_loss = 0
         
@@ -340,7 +340,7 @@ def main():
         
         train_loss /= len(train_loader)
         
-        # VALIDATE 
+        # ─────────────── VALIDATE ───────────────
         model.eval()
         val_loss = 0
         val_dice = {'WT': [], 'TC': [], 'ET': []}
@@ -408,7 +408,7 @@ def main():
     print(f"TRAINING COMPLETE! Best WT Dice: {best_dice:.4f}")
     print("="*70)
     
-    # SAVE TRAINING CURVES
+    #                         SAVE TRAINING CURVES
     
     print("\nSaving training curves...")
     
@@ -437,7 +437,7 @@ def main():
     plt.savefig(curves_path, dpi=150)
     print(f"  Saved: {curves_path}")
     
-    # VISUALIZE PREDICTIONS
+    #                         VISUALIZE PREDICTIONS
     
     print("\nGenerating sample prediction...")
     
@@ -486,7 +486,7 @@ def main():
     plt.savefig(pred_path, dpi=150)
     print(f"  Saved: {pred_path}")
     
-    # SUMMARY
+    #                              SUMMARY
     
     print("\n" + "="*70)
     print("SUMMARY")
