@@ -1,6 +1,7 @@
 """
 FLARE - MRI Prediction Pipeline
 File: backend/predict_mri.py
+Updated: 5-Class Model (BRISC 4-class + IXI NORMAL)
 
 Usage in app.py:
     from predict_mri import predict_mri
@@ -142,8 +143,11 @@ def _resolve_checkpoint(
 _MRI_R = _mri_root()
 print(f"[predict_mri] MRI_ROOT: {_MRI_R.resolve()}", flush=True)
 
-_CLS_PREF = _MRI_R / "classification" / "outputs" / "training" / "best_model.pth"
-_CLS_SEARCH = _MRI_R / "classification" / "outputs" / "training"
+# === UPDATED FOR 5-CLASS MODEL ===
+_CLS_PREF = _MRI_R / "classification" / "outputs" / "training_5class" / "best_model.pth"
+_CLS_SEARCH = _MRI_R / "classification" / "outputs" / "training_5class"
+# === END UPDATE ===
+
 _SEG_PREF = _MRI_R / "segmentation" / "outputs" / "swin_unet" / "best_model_swin.pth"
 _SEG_SEARCH = _MRI_R / "segmentation" / "outputs" / "swin_unet"
 _BRATS_DIR = _REPO_ROOT / "ml" / "brain" / "mri" / "checkpoints"
@@ -153,7 +157,7 @@ CLS_CHECKPOINT = _resolve_checkpoint(
     env_var="FLARE_MRI_CLS_CHECKPOINT",
     preferred=_CLS_PREF,
     search_dir=_CLS_SEARCH,
-    task_name="classification",
+    task_name="classification (5-class)",
 )
 SEG_CHECKPOINT = _resolve_checkpoint(
     env_var="FLARE_MRI_SEG_CHECKPOINT",
@@ -229,15 +233,18 @@ PIXEL_SPACING_MM  = 0.5
 VOXEL_MM3         = 1.0
 
 
-# LABEL MAPS
+# LABEL MAPS - UPDATED FOR 5-CLASS MODEL
 # ==============================================================================
-CLASS_NAMES = ["glioma", "meningioma", "no_tumor", "pituitary"]
+# Classes: glioma, meningioma, pituitary, no_tumor, normal
+# normal = healthy brain from IXI dataset
+CLASS_NAMES = ["glioma", "meningioma", "pituitary", "no_tumor", "normal"]
 
 LABEL_TO_RESULT_CLASS = {
     "glioma":     "Malignant",
     "meningioma": "Benign",
     "pituitary":  "Benign",
     "no_tumor":   "Normal",
+    "normal":     "Normal",  # IXI healthy brain
 }
 
 # Tumor overlay colors (BGR for OpenCV)
@@ -276,7 +283,7 @@ def _get_device():
     return _device
 
 
-# MODEL LOADING
+# MODEL LOADING - UPDATED FOR 5-CLASS
 # ==============================================================================
 def _load_cls_model():
     global _cls_model
@@ -289,13 +296,15 @@ def _load_cls_model():
     device = _get_device()
     model = models.efficientnet_b0(weights=None)
     in_f  = model.classifier[1].in_features
+    # === UPDATED: 5 output classes instead of 4 ===
     model.classifier = nn.Sequential(
         nn.Dropout(p=0.3),
         nn.Linear(in_f, 256),
         nn.ReLU(),
         nn.Dropout(p=0.15),
-        nn.Linear(256, 4),
+        nn.Linear(256, 5),  # 5 classes: glioma, meningioma, pituitary, no_tumor, normal
     )
+    # === END UPDATE ===
     ckpt  = torch.load(CLS_CHECKPOINT, map_location=device, weights_only=False)
     model.load_state_dict(ckpt.get("model_state_dict", ckpt), strict=True)
     model.eval().to(device)
@@ -397,7 +406,7 @@ def _load_brats_model():
 # PREPROCESSING — must match training exactly
 # ==============================================================================
 def _preprocess_for_classification(image_path: str):
-    """PNG/JPG → tensor for EfficientNetB0. Matches BRISC training exactly."""
+    """PNG/JPG → tensor for EfficientNetB0. Matches 5-class training exactly."""
     import torch
     from torchvision import transforms
 
@@ -591,10 +600,11 @@ def _predict_brisc(image_path: str, patient_id: str) -> dict:
         "gradcam_ready":   False,
     }
 
-    # Branch
-    if pred_label == "no_tumor":
+    # Branch: skip segmentation for healthy (normal) scans
+    # === UPDATED: added "normal" class ===
+    if pred_label == "no_tumor" or pred_label == "normal":
         result["segmentation"] = {
-            "status":         "No tumor detected — clean scan",
+            "status":         "No tumor detected — clean scan" if pred_label == "no_tumor" else "Healthy brain — no tumor",
             "original_url":   input_url,
             "mask_url":       None,
             "overlay_url":    None,
@@ -603,6 +613,7 @@ def _predict_brisc(image_path: str, patient_id: str) -> dict:
             "tumor_area_mm2": 0.0,
             "model":          "MiT-B3 UNet",
         }
+    # === END UPDATE ===
     else:
         try:
             seg_tensor = _preprocess_for_segmentation(image_path).to(device)
@@ -693,6 +704,12 @@ def predict_mri(file_path: str,
 
     - brain_mri: optional .nii / .nii.gz → auto slice PNG, then existing BRISC path.
     - brain_brats: NPZ only (NIfTI rejected in app.py before save).
+    
+    === UPDATED FOR 5-CLASS MODEL ===
+    - Classification now supports: glioma, meningioma, pituitary, no_tumor, normal
+    - normal = healthy brain from IXI dataset (skips segmentation)
+    - no_tumor = no pathology detected in BRISC (skips segmentation)
+    === END UPDATE ===
     """
     if not os.path.exists(file_path):
         return {"error": f"File not found: {file_path}"}
@@ -700,8 +717,11 @@ def predict_mri(file_path: str,
         if modality == "brain_brats":
             return _predict_brats(file_path, patient_id)
 
-        # brain_mri: NIfTI → single-slice PNG, then same _predict_brisc as always
+        # brain_mri: route by file extension
         fname_lower = file_path.lower()
+        if fname_lower.endswith(".npz"):
+            print("[predict_mri] NPZ detected in brain_mri — routing to BraTS pipeline")
+            return _predict_brats(file_path, patient_id)
         if fname_lower.endswith(".nii.gz") or fname_lower.endswith(".nii"):
             print("[predict_mri] NIfTI detected — extracting best axial slice")
             file_path = _extract_best_slice_from_nifti(file_path, patient_id)

@@ -18,10 +18,9 @@ export PYTHONNOUSERSITE=1
 export PYTHONPATH=/scratch/bckk/flare/projects/FLARE
 
 # ── Checkpoint paths ──────────────────────────────────────
-export FLARE_MRI_CLS_CHECKPOINT="/scratch/bckk/flare/mri_brain/classification/outputs/output/best_model.pth"
+export FLARE_MRI_CLS_CHECKPOINT="/scratch/bckk/flare/mri_brain/classification/outputs/training_5class/best_model.pth"
 export FLARE_MRI_SEG_CHECKPOINT="/scratch/bckk/flare/mri_brain/segmentation_brisc/outputs/swin_unet/best_model_swin.pth"
 export FLARE_MRI_BRATS_CHECKPOINT="/scratch/bckk/flare/projects/FLARE/ml/brain/mri/checkpoints/best_seg_model.pth"
-
 # ── Print hostname so you know what to tunnel to ──────────
 echo ""
 echo "  Node hostname: $(hostname)"

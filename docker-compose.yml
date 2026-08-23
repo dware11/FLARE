@@ -1,0 +1,51 @@
+services:
+  flare-backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "5000:5000"
+    env_file:
+      - backend/.env.docker
+    environment:
+      PYTHONPATH: /app:/app/backend
+      FLASK_ENV: production
+      XDG_CACHE_HOME: /tmp/.cache
+      TORCH_HOME: /tmp/.cache/torch
+      MPLCONFIGDIR: /tmp/.cache/matplotlib
+    volumes:
+      - flare_uploads:/app/backend/static/uploads
+      - flare_masks:/app/backend/static/masks
+      - flare_cam:/app/backend/static/cam
+      - ./models:/models:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:5000/api/health', timeout=5); sys.exit(0)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    # GPU variant (uncomment on GPU host):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - capabilities: [gpu]
+
+volumes:
+  flare_uploads:
+  flare_masks:
+  flare_cam:

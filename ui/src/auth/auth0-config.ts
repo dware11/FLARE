@@ -1,6 +1,6 @@
 export const auth0Config = {
-  domain: 'dev-5lycfk2rcmzrt10t.us.auth0.com',
-  clientId: 'xZOj1GNGzd2TCqQHyS9G7dk2wMXJLzqB',
+  domain: 'dev-glolw0oje2uny1nq.us.auth0.com',
+  clientId: 'HPP8MQMcbMpSUVLvCJmjRNJNSw7lp8YU',
   audience: 'https://flare-api',
   redirectUri: window.location.origin
 }

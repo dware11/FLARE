@@ -5,9 +5,12 @@ export interface OutbreakData {
   cases: number
 }
 
+const API_BASE =
+  import.meta.env.VITE_API_BASE_URL ?? 'https://reassign-guiding-grass.ngrok-free.dev'
+
 export function fetchOutbreaks(token: string) {
   return apiFetch<OutbreakData[]>(
-    'http://localhost:3000/api/outbreaks',
+    `${API_BASE}/api/outbreak/status`,
     token
   )
 }

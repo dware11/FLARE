@@ -1,0 +1,48 @@
+{
+  "ct_results": {
+    "ID_1b44dc3cc": {
+      "p_abnormal": 0.9528458118438721,
+      "prediction": "Abnormal",
+      "cam_path": "results/fusion_demo/gradcam_ID_1b44dc3cc.png"
+    },
+    "ID_22c82f7a0": {
+      "p_abnormal": 0.05162845551967621,
+      "prediction": "Normal",
+      "cam_path": "results/fusion_demo/gradcam_ID_22c82f7a0.png"
+    }
+  },
+  "mri_results": {
+    "MRI_ABN_001": {
+      "pred_label": "edema",
+      "result_class": "Malignant",
+      "confidence": 0.9311,
+      "mri_prob": 0.9311
+    },
+    "MRI_NRM_001": {
+      "pred_label": "edema",
+      "result_class": "Malignant",
+      "confidence": 0.838,
+      "mri_prob": 0.838
+    }
+  },
+  "fusion_results": [
+    {
+      "case": "FUSION_ABN",
+      "ct_prob": 0.9528,
+      "mri_prob": 0.9311,
+      "fusion_score": 0.9398,
+      "prediction": "Abnormal",
+      "true_label": "Abnormal",
+      "correct": true
+    },
+    {
+      "case": "FUSION_NRM",
+      "ct_prob": 0.0516,
+      "mri_prob": 0.838,
+      "fusion_score": 0.5235,
+      "prediction": "Abnormal",
+      "true_label": "Normal",
+      "correct": false
+    }
+  ]
+}

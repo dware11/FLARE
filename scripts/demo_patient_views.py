@@ -23,11 +23,9 @@ sys.path.insert(0, str(ROOT))
 from src.config import RAW_CT, META, OUTPUTS  # noqa: E402
 from ml.brain.ct.ct_transforms import dicom_to_hu, ct_to_tensor  # noqa: E402
 from scripts.preprocess_ct import get_middle_dicom_path  # noqa: E402
-from ml.brain.ct.gradcam_ct import GradCAM  # noqa: E402
-from ml.brain.ct.model_ct import is_sequence_ct_model  # noqa: E402
 from ml.brain.ct.threshold_util import resolve_abnormal_threshold  # noqa: E402
 from ml.brain.ct.infer import (  # noqa: E402
-    _gradcam_layer_name,
+    _gradcam_save_files,
     _imagenet_normalize_volume,
     _load_manifest,
     _load_model,
@@ -184,22 +182,23 @@ def run_gradcam_and_scores(
     pred = 1 if float(probs[1]) >= eval_threshold else 0
     conf = float(probs[pred])
 
-    k = x_raw.shape[0]
-    center_raw = x_raw[k // 2 : k // 2 + 1]
-    if is_sequence_ct_model(model):
-        x_cam = x_all[k // 2 : k // 2 + 1].unsqueeze(0)
-    else:
-        x_cam = x_all[k // 2 : k // 2 + 1]
-    gradcam = GradCAM(model, _gradcam_layer_name(model))
-    _, overlay = gradcam(x_cam, target_class=pred, input_for_overlay=center_raw)
-
+    ge = _gradcam_save_files(
+        model,
+        x_batch,
+        x_raw,
+        x_all,
+        thick,
+        pred,
+        out_dir,
+        f"{patient_id}_gradcam_overlay",
+    )
     cam_path: Optional[Path] = None
-    if overlay is not None:
-        cam_path = out_dir / f"{patient_id}_gradcam_overlay.png"
-        _save_rgb_image(overlay, cam_path)
+    cp = ge.get("cam_path")
+    if cp:
+        cam_path = Path(cp)
         print(f"[GRAD-CAM] Saved overlay to {cam_path}")
     else:
-        print("[GRAD-CAM] Overlay was None (no gradients/activations captured).")
+        print("[GRAD-CAM] Install opencv-python or matplotlib; overlay not saved.")
 
     print(f"[SCORES] Prediction class index={pred} confidence={conf:.4f}")
     print(f"[SCORES] Probabilities: {probs}")

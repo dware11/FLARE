@@ -1,13 +1,13 @@
 import ReactECharts from "echarts-for-react";
-import { Box, Chip, Typography, Divider } from "@mui/material";
-import LocationOnOutlinedIcon from "@mui/icons-material/LocationOnOutlined";
-import { useMemo, useState } from "react";
+import { Box, Typography } from "@mui/material";
+import { useMemo } from "react";
+import type { OutbreakStatus } from "../api/flareAPI";
 
-type DemoLens = "pattern" | "activity" | "trend";
+type Props = {
+  outbreak: OutbreakStatus | null;
+};
 
-export default function OutbreakAnalyticsSection() {
-  const [lens, setLens] = useState<DemoLens>("pattern");
-
+export default function OutbreakAnalyticsSection({ outbreak }: Props) {
   const months = useMemo(
     () => ["Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
     []
@@ -27,14 +27,14 @@ export default function OutbreakAnalyticsSection() {
         textStyle: { color: "#fff" },
       },
       legend: {
-        top: 16,
-        left: 16,
+        top: 12,
+        left: 12,
         itemWidth: 14,
         itemHeight: 8,
         textStyle: { color: "rgba(255,255,255,0.75)" },
         data: ["Trend signal (A)", "Trend signal (B)"],
       },
-      grid: { top: 72, left: 48, right: 28, bottom: 44 },
+      grid: { top: 64, left: 48, right: 24, bottom: 40 },
       xAxis: {
         type: "category",
         boundaryGap: false,
@@ -77,10 +77,12 @@ export default function OutbreakAnalyticsSection() {
     [months, series1, series2]
   );
 
-  const gaugeValue = 54;
-  const casesInArea = 407;
-  /** Illustrative only — not a clinical or outbreak classification. */
-  const activityLevelLabel = "Moderate (illustrative)";
+  const gaugePct = outbreak
+    ? Math.min(100, Math.max(0, outbreak.percent_of_baseline))
+    : 0;
+  const gaugeColor = outbreak?.outbreak_color ?? "#ff5c5c";
+  const levelLabel = outbreak?.outbreak_level ?? "—";
+  const caseCount = outbreak?.total_approved_abnormal ?? 0;
 
   const gaugeOption = useMemo(
     () => ({
@@ -99,7 +101,7 @@ export default function OutbreakAnalyticsSection() {
             lineStyle: {
               width: 18,
               color: [
-                [gaugeValue / 100, "#ff5c5c"],
+                [Math.min(1, Math.max(0.001, gaugePct / 100)), gaugeColor],
                 [1, "rgba(255,255,255,0.10)"],
               ],
             },
@@ -111,172 +113,55 @@ export default function OutbreakAnalyticsSection() {
           detail: {
             show: true,
             offsetCenter: [0, 10],
-            formatter: "{value}%",
-            color: "#ff5c5c",
-            fontSize: 34,
+            formatter: (v: number) => `${Number(v).toFixed(2)}%`,
+            color: gaugeColor,
+            fontSize: 28,
             fontWeight: 700,
           },
           title: { show: false },
-          data: [{ value: gaugeValue }],
+          data: [{ value: gaugePct }],
         },
       ],
     }),
-    [gaugeValue]
+    [gaugeColor, gaugePct]
   );
 
   return (
-    <Box sx={{ mt: 6 }}>
-      <Typography sx={{ fontWeight: 800, fontSize: "1.35rem", mb: 1, color: "#fff" }}>
-        Outbreak Analytics (Prototype)
-      </Typography>
-      <Typography sx={{ color: "rgba(255,255,255,0.65)", mb: 1.5, lineHeight: 1.5 }}>
-        Exploratory views of volume and time-based signals using placeholder data. This is not outbreak detection or
-        etiology classification.
-      </Typography>
-      <Typography sx={{ color: "rgba(255,255,255,0.5)", mb: 3, fontSize: "0.9rem", lineHeight: 1.55 }}>
-        This section is designed for future epidemiological expansion across cancer types and modalities.
-      </Typography>
-
-      <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 2 }}>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1, color: "rgba(255,255,255,0.85)" }}>
-          <Typography sx={{ fontSize: "1.1rem", fontWeight: 600 }}>Houston, TX</Typography>
-          <LocationOnOutlinedIcon />
-        </Box>
+    <Box
+      sx={{
+        display: "grid",
+        gridTemplateColumns: { xs: "1fr", md: "1fr minmax(240px, 320px)" },
+        gap: 3,
+        alignItems: "stretch",
+        mx: 0,
+      }}
+    >
+      <Box sx={{ minHeight: 320, width: "100%" }}>
+        <ReactECharts option={chartOption} style={{ height: 360, width: "100%" }} />
       </Box>
-
-      <Divider sx={{ borderColor: "rgba(255,92,92,0.55)", mb: 4 }} />
 
       <Box
         sx={{
-          display: "grid",
-          gridTemplateColumns: { xs: "1fr", lg: "1.2fr 0.8fr" },
-          gap: 4,
-          alignItems: "start",
+          borderRadius: 2,
+          border: "1px solid rgba(255,255,255,0.10)",
+          backgroundColor: "rgba(0,0,0,0.25)",
+          p: 2,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
         }}
       >
-        <Box
-          sx={{
-            borderRadius: "14px",
-            border: "1px solid rgba(255,255,255,0.10)",
-            backgroundColor: "rgba(0,0,0,0.35)",
-            overflow: "hidden",
-            boxShadow: "0 16px 40px rgba(0,0,0,0.45)",
-          }}
-        >
-          <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", p: 2.5 }}>
-            <Box>
-              <Typography sx={{ fontWeight: 700, fontSize: "1.05rem" }}>Trend chart (prototype)</Typography>
-              <Typography sx={{ color: "rgba(255,255,255,0.70)", fontSize: "0.95rem" }}>
-                Illustrative time series — not a confirmed outbreak curve
-              </Typography>
-            </Box>
-            <Chip
-              label="Example chart"
-              size="small"
-              sx={{
-                backgroundColor: "rgba(255,255,255,0.08)",
-                color: "rgba(255,255,255,0.75)",
-              }}
-            />
-          </Box>
-          <Box sx={{ height: 420, px: 1.5, pb: 2 }}>
-            <ReactECharts option={chartOption} style={{ height: "100%", width: "100%" }} />
-          </Box>
-        </Box>
-
-        <Box
-          sx={{
-            borderRadius: "18px",
-            border: "2px dashed rgba(255,255,255,0.25)",
-            p: 3,
-            backgroundColor: "rgba(0,0,0,0.25)",
-          }}
-        >
-          <Typography sx={{ color: "#ff5c5c", fontSize: "2rem", fontWeight: 800, lineHeight: 1 }}>
-            {activityLevelLabel}
-          </Typography>
-          <Typography sx={{ color: "rgba(255,255,255,0.85)", mb: 0.5, fontWeight: 600 }}>Activity level</Typography>
-          <Typography sx={{ color: "rgba(255,255,255,0.5)", mb: 2, fontSize: "0.82rem", lineHeight: 1.4 }}>
-            Demo gauge only — does not represent a validated regional risk score
-          </Typography>
-          <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2, alignItems: "center" }}>
-            <Box>
-              <ReactECharts option={gaugeOption} style={{ height: 200, width: "100%" }} />
-              <Typography sx={{ color: "rgba(255,255,255,0.75)", textAlign: "center", mt: -1, fontSize: "0.85rem" }}>
-                vs. illustrative baseline
-              </Typography>
-            </Box>
-            <Box sx={{ textAlign: "center" }}>
-              <Typography sx={{ color: "#ff5c5c", fontSize: "2.5rem", fontWeight: 800 }}>{casesInArea}</Typography>
-              <Typography sx={{ color: "rgba(255,255,255,0.75)", fontSize: "0.9rem" }}>
-                illustrative case count
-                <br />
-                (not live registry data)
-              </Typography>
-            </Box>
-          </Box>
-          <Box
-            sx={{
-              mt: 3,
-              borderRadius: 2,
-              overflow: "hidden",
-              border: "1px solid rgba(255,255,255,0.10)",
-              backgroundColor: "rgba(255,255,255,0.04)",
-            }}
-          >
-            <Box
-              component="img"
-              src="https://upload.wikimedia.org/wikipedia/commons/thumb/5/59/OpenStreetMap_Logo.svg/512px-OpenStreetMap_Logo.svg.png"
-              alt="Decorative map placeholder"
-              sx={{ width: "100%", height: 180, objectFit: "cover", opacity: 0.75 }}
-            />
-          </Box>
-          <Typography sx={{ color: "rgba(255,255,255,0.75)", textAlign: "center", mt: 1.5, fontSize: "0.9rem" }}>
-            Map placeholder — hospital map and counts are shown above
-          </Typography>
-        </Box>
-      </Box>
-
-      <Box sx={{ mt: 4, textAlign: "center" }}>
-        <Typography sx={{ color: "#ff5c5c", fontWeight: 800, fontSize: "1.35rem", mb: 0.5 }}>
-          Neutral grouping (demo)
+        <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: "0.85rem", fontWeight: 600, mb: 0.5 }}>
+          Disease spread level
         </Typography>
-        <Typography sx={{ color: "rgba(255,255,255,0.5)", fontSize: "0.85rem", mb: 1.5, maxWidth: 520, mx: "auto" }}>
-          Choose a lens label for future filters — pattern indicator, activity level, or trend signal (UI only; same
-          placeholder data today).
+        <Typography sx={{ color: gaugeColor, fontSize: "1.5rem", fontWeight: 800, mb: 1, textAlign: "center" }}>
+          {levelLabel}
         </Typography>
-        <Box sx={{ display: "inline-flex", flexWrap: "wrap", gap: 1, justifyContent: "center", alignItems: "center" }}>
-          <Chip
-            label="Pattern indicator"
-            onClick={() => setLens("pattern")}
-            variant={lens === "pattern" ? "filled" : "outlined"}
-            sx={{
-              color: "#fff",
-              borderColor: "rgba(255,255,255,0.25)",
-              backgroundColor: lens === "pattern" ? "rgba(255,92,92,0.18)" : "transparent",
-            }}
-          />
-          <Chip
-            label="Activity level"
-            onClick={() => setLens("activity")}
-            variant={lens === "activity" ? "filled" : "outlined"}
-            sx={{
-              color: "#fff",
-              borderColor: "rgba(255,255,255,0.25)",
-              backgroundColor: lens === "activity" ? "rgba(255,92,92,0.18)" : "transparent",
-            }}
-          />
-          <Chip
-            label="Trend signal"
-            onClick={() => setLens("trend")}
-            variant={lens === "trend" ? "filled" : "outlined"}
-            sx={{
-              color: "#fff",
-              borderColor: "rgba(255,255,255,0.25)",
-              backgroundColor: lens === "trend" ? "rgba(255,92,92,0.18)" : "transparent",
-            }}
-          />
-        </Box>
+        <ReactECharts option={gaugeOption} style={{ height: 200, width: "100%" }} />
+        <Typography sx={{ color: "rgba(255,255,255,0.55)", fontSize: "0.8rem", textAlign: "center", mt: -1 }}>
+          % of expected metro baseline ({caseCount.toLocaleString()} approved abnormal)
+        </Typography>
       </Box>
     </Box>
   );

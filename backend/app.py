@@ -8,10 +8,10 @@ FLARE MOCK BACKEND (EDITABLE)
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, g
 from flask_cors import CORS
 import json
 import random
@@ -19,6 +19,15 @@ import os
 import uuid as _uuid
 from pathlib import Path
 from predict_mri import predict_mri
+from predict_ct import predict_ct
+from fusion_brain import (
+    CT_WEIGHT,
+    FUSION_THRESHOLD,
+    MRI_WEIGHT,
+    mri_abnormal_probability,
+)
+# audit_log.py tracks every API call and prediction for compliance
+from audit_log import audit_request, log_prediction
 
 # ============================================================================
 # App + CORS
@@ -43,29 +52,86 @@ def _preload_models_once():
     if getattr(_preload_models_once, "_done", False):
         return
     _preload_models_once._done = True
+
+    # CT model
     try:
         from ml.brain.ct.infer import _load_model
 
+        # NOTE: switched to multimodal_finetune_ct after fine-tune on tumor/normal dataset
+        # Test AUC: 0.9975, Sensitivity: 99.4%, Specificity: 99.1%
+        # Demo patient baselines differ from old checkpoint — re-verify before demo.
+        # OLD default: /scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt
         CT_CKPT = os.environ.get(
             "FLARE_CT_CHECKPOINT",
-            "/scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt",
+            "/scratch/bckk/flare/ct_brain/outputs/multimodal_finetune_ct/best_ct_finetune.pt",
         )
         ckpt_path = Path(CT_CKPT)
         if ckpt_path.exists():
-            _load_model(ckpt_path)
+            ct_model = _load_model(ckpt_path)
             app.logger.info("CT model preloaded")
+            try:
+                import torch
+                device = next(ct_model.parameters()).device
+                ct_model(torch.zeros(1, 1, 64, 64, 64, device=device))
+                app.logger.info("CT model warmup complete")
+            except Exception as wex:
+                app.logger.warning("CT warmup skipped: %s", wex)
+        else:
+            app.logger.warning("CT checkpoint not found at %s", CT_CKPT)
     except Exception as ex:
         app.logger.warning("CT preload failed: %s", ex)
+
+    # MRI classification model (UPDATED: 5-class)
     try:
         from predict_mri import _load_cls_model
 
-        _load_cls_model()
-        app.logger.info("MRI classifier preloaded")
+        cls_model = _load_cls_model()
+        app.logger.info("MRI classification model preloaded (5-class: glioma, meningioma, pituitary, no_tumor, normal)")
+        try:
+            import torch
+            device = next(cls_model.parameters()).device
+            cls_model(torch.zeros(1, 3, 224, 224, device=device))
+            app.logger.info("MRI classification warmup complete")
+        except Exception as wex:
+            app.logger.warning("MRI classification warmup skipped: %s", wex)
     except Exception as ex:
-        app.logger.warning("MRI preload failed: %s", ex)
+        app.logger.warning("MRI classification preload failed: %s", ex)
+
+    # MRI segmentation model
+    try:
+        from predict_mri import _load_seg_model
+
+        seg_model = _load_seg_model()
+        app.logger.info("MRI segmentation model preloaded")
+        try:
+            import torch
+            device = next(seg_model.parameters()).device
+            seg_model(torch.zeros(1, 3, 256, 256, device=device))
+            app.logger.info("MRI segmentation warmup complete")
+        except Exception as wex:
+            app.logger.warning("MRI segmentation warmup skipped: %s", wex)
+    except Exception as ex:
+        app.logger.warning("MRI segmentation preload failed: %s", ex)
+
+    # BraTS 3D U-Net model
+    try:
+        from predict_mri import _load_brats_model
+
+        brats_model = _load_brats_model()
+        app.logger.info("BraTS model preloaded")
+        try:
+            import torch
+            device = next(brats_model.parameters()).device
+            brats_model(torch.zeros(1, 4, 128, 128, 128, device=device))
+            app.logger.info("BraTS model warmup complete")
+        except Exception as wex:
+            app.logger.warning("BraTS warmup skipped: %s", wex)
+    except Exception as ex:
+        app.logger.warning("BraTS preload failed: %s", ex)
 
 
 _DEV_ORIGINS = [
+    "https://flare-woad.vercel.app",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:5173",
@@ -76,7 +142,33 @@ _DEV_ORIGINS = [
     "http://127.0.0.1:8000",
 ]
 
-CORS(app, origins=_DEV_ORIGINS, supports_credentials=True)
+CORS(
+    app,
+    origins=_DEV_ORIGINS,
+    supports_credentials=True,
+    methods=["GET", "POST", "OPTIONS"],
+    allow_headers=[
+        "Content-Type",
+        "Authorization",
+        "ngrok-skip-browser-warning",
+    ],
+)
+
+
+@app.after_request
+def add_security_headers(response):
+    # No-store: browser must not cache scan results (HIPAA requirement)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    # Prevents MIME-type sniffing attacks
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # Prevents clickjacking — page can't be loaded in an iframe
+    response.headers["X-Frame-Options"] = "DENY"
+    # Forces HTTPS for 1 year
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # Attach request ID to response so frontend can reference it
+    response.headers["X-Request-ID"] = getattr(g, "request_id", "unknown")
+    return response
+
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "static", "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -90,32 +182,32 @@ HOSPITAL_REGISTRY: dict[str, dict] = {
     "H001": {
         "id": "H001",
         "name": "Houston Methodist Hospital",
-        "latitude": 29.7099,
-        "longitude": -95.4022,
+        "latitude": 29.7095,
+        "longitude": -95.3986,
     },
     "H002": {
         "id": "H002",
         "name": "Memorial Hermann - Texas Medical Center",
-        "latitude": 29.7079,
+        "latitude": 29.7080,
         "longitude": -95.4022,
     },
     "H003": {
         "id": "H003",
         "name": "Baylor St. Luke's Medical Center",
-        "latitude": 29.7079,
-        "longitude": -95.3899,
+        "latitude": 29.7105,
+        "longitude": -95.3965,
     },
     "H004": {
         "id": "H004",
         "name": "Ben Taub Hospital",
-        "latitude": 29.7028,
-        "longitude": -95.4022,
+        "latitude": 29.7040,
+        "longitude": -95.4013,
     },
     "H005": {
         "id": "H005",
         "name": "Texas Children's Hospital",
-        "latitude": 29.7062,
-        "longitude": -95.3975,
+        "latitude": 29.7060,
+        "longitude": -95.4013,
     },
 }
 
@@ -142,14 +234,155 @@ _flare_saved_cases: list[dict] = []
 _api_cases_store: list[dict] = []
 
 
+def _seed_demo_data() -> None:
+    # Tuples: patient_id, hospital, modality, confidence (0–1), AI result, cancer type (brain)
+    # AI: 8 Malignant, 4 Benign, 4 Normal (labels per row). DEMO_016 is extra H001 (Houston Methodist); DEMO_011 is H003 (Baylor St. Luke's).
+    # Four cases are seeded pending (demoCase ids in _PENDING_DEMO_SEED_CASE_IDS) for EHR review demo.
+    demo_cases = [
+        ("DEMO_001", "H001", "brain_ct", 0.8900, "Malignant", "Glioma"),
+        ("DEMO_002", "H002", "brain_mri", 0.9200, "Malignant", "Meningioma"),
+        ("DEMO_003", "H003", "brain_fusion", 0.7800, "Malignant", "Glioma"),
+        ("DEMO_004", "H004", "brain_ct", 0.9600, "Malignant", "Glioma"),
+        ("DEMO_005", "H005", "brain_mri", 0.8400, "Malignant", "Meningioma"),
+        ("DEMO_006", "H001", "brain_fusion", 0.9100, "Malignant", "Pituitary"),
+        ("DEMO_007", "H002", "brain_ct", 0.8500, "Malignant", "Meningioma"),
+        ("DEMO_008", "H003", "brain_mri", 0.7200, "Benign", "Meningioma"),
+        ("DEMO_009", "H004", "brain_fusion", 0.6100, "Benign", "Pituitary"),
+        ("DEMO_010", "H005", "brain_ct", 0.7400, "Benign", "Pituitary"),
+        ("DEMO_011", "H003", "brain_mri", 0.6900, "Benign", "Meningioma"),
+        ("DEMO_012", "H002", "brain_fusion", 0.9000, "Normal", "Normal"),
+        ("DEMO_013", "H003", "brain_ct", 0.8800, "Normal", "Normal"),
+        ("DEMO_014", "H004", "brain_mri", 0.9500, "Normal", "Normal"),
+        ("DEMO_015", "H005", "brain_fusion", 0.9300, "Normal", "Normal"),
+        ("DEMO_016", "H001", "brain_fusion", 0.9100, "Malignant", "Glioma"),
+    ]
+
+    _PENDING_DEMO_SEED_CASE_IDS = frozenset(
+        {"demo_case_003", "demo_case_007", "demo_case_010", "demo_case_013"}
+    )
+
+    hospital_names = {
+        "H001": "Houston Methodist Hospital",
+        "H002": "Memorial Hermann - Texas Medical Center",
+        "H003": "Baylor St. Luke's Medical Center",
+        "H004": "Ben Taub Hospital",
+        "H005": "Texas Children's Hospital",
+    }
+
+    base_time = datetime.now(timezone.utc) - timedelta(hours=48)
+
+    for i, (pid, hid, modality, conf, result_class, cancer_type) in enumerate(demo_cases):
+        case_id = f"demo_case_{i + 1:03d}"
+        if pid == "DEMO_016":
+            created = "2026-04-24T12:00:00Z"
+        else:
+            created = (base_time + timedelta(hours=i * 3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        is_abn = result_class in ("Malignant", "Benign")
+        pred = "Abnormal" if is_abn else "Normal"
+        is_pending = case_id in _PENDING_DEMO_SEED_CASE_IDS
+
+        if is_pending:
+            _review_cases[case_id] = {
+                "caseId": case_id,
+                "patient_id": pid,
+                "hospitalId": hid,
+                "hospitalName": hospital_names[hid],
+                "modality": modality,
+                "is_abnormal": is_abn,
+                "prediction": pred,
+                "confidence": conf,
+                "review_status": "pending",
+                "createdAt": created,
+                "approvedAt": None,
+                "rejectedAt": None,
+                "reviewerId": None,
+                "reject_reason": None,
+                "result_class": result_class,
+            }
+            _ehr_records[case_id] = {
+                "caseId": case_id,
+                "patient_id": pid,
+                "firstName": "Demo",
+                "lastName": f"Patient {i + 1}",
+                "dob": "1975-06-15",
+                "hospitalId": hid,
+                "hospitalName": hospital_names[hid],
+                "modality": modality,
+                "prediction": pred,
+                "confidence": conf,
+                "is_abnormal": is_abn,
+                "result_class": result_class,
+                "cancer_type": cancer_type,
+                "review_status": "pending",
+                "createdAt": created,
+                "approvedAt": None,
+                "rejectedAt": None,
+                "reviewerId": None,
+                "reject_reason": None,
+                "signature": None,
+            }
+        else:
+            _review_cases[case_id] = {
+                "caseId": case_id,
+                "patient_id": pid,
+                "hospitalId": hid,
+                "hospitalName": hospital_names[hid],
+                "modality": modality,
+                "is_abnormal": is_abn,
+                "prediction": pred,
+                "confidence": conf,
+                "review_status": "approved",
+                "createdAt": created,
+                "approvedAt": created,
+                "rejectedAt": None,
+                "reviewerId": "demo_reviewer",
+                "reject_reason": None,
+                "result_class": result_class,
+            }
+
+            _ehr_records[case_id] = {
+                "caseId": case_id,
+                "patient_id": pid,
+                "firstName": "Demo",
+                "lastName": f"Patient {i + 1}",
+                "dob": "1975-06-15",
+                "hospitalId": hid,
+                "hospitalName": hospital_names[hid],
+                "modality": modality,
+                "prediction": pred,
+                "confidence": conf,
+                "is_abnormal": is_abn,
+                "result_class": result_class,
+                "cancer_type": cancer_type,
+                "review_status": "approved",
+                "createdAt": created,
+                "approvedAt": created,
+                "rejectedAt": None,
+                "reviewerId": "demo_reviewer",
+                "reject_reason": None,
+                "signature": "Demo Reviewer MD",
+            }
+
+
+def _reset_demo_data() -> None:
+    _review_cases.clear()
+    _ehr_records.clear()
+    _flare_saved_cases.clear()
+    _api_cases_store.clear()
+    _seed_demo_data()
+
+
+_seed_demo_data()
+
+
 SUPPORTED_MODALITIES = ["brain_ct", "brain_mri", "brain_brats"]
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 # SECURITY: File upload validation — blocks malicious or oversized uploads (HIPAA consideration)
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50MB
-ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".npz", ".nii", ".gz", ".dcm"}
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200MB (DICOM zips can be large)
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".npz", ".nii", ".gz", ".dcm", ".zip"}
 
 
 def _validate_upload(file) -> tuple[bool, str]:
@@ -159,7 +392,7 @@ def _validate_upload(file) -> tuple[bool, str]:
     size = file.tell()
     file.seek(0)
     if size > MAX_UPLOAD_BYTES:
-        return False, f"File too large (max 50MB, got {size // 1024 // 1024}MB)"
+        return False, f"File too large (max 200MB, got {size // 1024 // 1024}MB)"
     filename = file.filename or ""
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if filename.endswith(".nii.gz"):
@@ -239,6 +472,7 @@ def _run_mri_full_pipeline(
     """
     Shared brain MRI/BraTS path for /api/mri/predict and POST /predict (one pipeline, two entrypoints).
     Returns (response_dict, http_status).
+    UPDATED: Handles 5-class model (glioma, meningioma, pituitary, no_tumor, normal)
     """
     ext = Path(file_storage.filename or "").suffix.lower()
     fname_lower = (file_storage.filename or "").lower()
@@ -481,10 +715,12 @@ def api_predict():
     return jsonify(out), 200
 
 @app.route("/api/mri/predict", methods=["POST"])
+@audit_request("mri_predict")
 @limiter.limit("20 per minute")
 def api_mri_predict():
     """
     Brain MRI / BraTS prediction (real pipeline).
+    UPDATED: 5-class model support
     Multipart/form-data:
         file        → JPG/PNG for brain_mri | NPZ for brain_brats
         patient_id  → string
@@ -563,6 +799,11 @@ def api_mri_predict():
     if not ok:
         return jsonify({"error": msg, "code": "INVALID_FILE"}), 400
 
+    mri_file_ext = Path(upload.filename or "").suffix.lower() or None
+    upload.seek(0, os.SEEK_END)
+    mri_file_size = upload.tell()
+    upload.seek(0)
+
     out, status = _run_mri_full_pipeline(
         file_storage=upload,
         patient_id=patient_id,
@@ -572,6 +813,12 @@ def api_mri_predict():
         last_name=last_name,
         dob=dob,
     )
+    if status < 400:
+        log_prediction(
+            "mri",
+            out,
+            file_info={"file_size_bytes": mri_file_size, "file_ext": mri_file_ext},
+        )
     return jsonify(out), status
 
 
@@ -582,10 +829,34 @@ def _ct_cam_static_dir() -> str:
     return d
 
 
+def _ct_gradcam_public_url(ct_result: dict) -> str | None:
+    """
+    Expose the CT Grad-CAM image URL when the PNG exists on disk.
+    Prefer infer's returned cam_path (authoritative). Fall back to
+    {inference_stem}.png under the cam dir (legacy check) to avoid
+    dropping cam_url when path normalization or stem heuristics disagree.
+    """
+    cam_in = ct_result.get("cam_path")
+    cam_dir = _ct_cam_static_dir()
+    if cam_in:
+        p = os.path.normpath(str(cam_in))
+        if os.path.isfile(p):
+            # Relative path so the browser uses VITE_API_BASE_URL (same as MRI static URLs).
+            return f"/static/cam/{os.path.basename(p)}"
+    ct_inf = ct_result.get("inference_path")
+    if ct_inf:
+        stem = Path(ct_inf).stem
+        alt = os.path.join(cam_dir, f"{stem}.png")
+        if os.path.isfile(alt):
+            return f"/static/cam/{stem}.png"
+    return None
+
+
 @app.route("/api/ct/predict", methods=["POST"])
+@audit_request("ct_predict")
 @limiter.limit("20 per minute")
 def api_ct_predict():
-    """CT prediction from uploaded NPZ file."""
+    """CT prediction from uploaded NPZ, JPEG/PNG, or zipped DICOM study."""
     patient_id = request.form.get("patient_id")
     hospital_id = request.form.get("hospitalId") or "H001"
     first_name = request.form.get("first_name")
@@ -605,56 +876,104 @@ def api_ct_predict():
     if not ok:
         return jsonify({"error": msg, "code": "INVALID_FILE"}), 400
 
-    fname = (ct_file.filename or "").lower()
-    if not fname.endswith(".npz"):
-        return jsonify({"error": "CT inference requires a .npz volume file"}), 400
-
     try:
-        ct_path = _save_upload(ct_file, patient_id, prefix="ct")
-        from ml.brain.ct.infer import run_ct_from_npz
-
-        CT_CKPT = os.environ.get(
-            "FLARE_CT_CHECKPOINT",
-            "/scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt",
-        )
+        saved_path = _save_upload(ct_file, patient_id, prefix="ct")
+        ct_file_ext = Path(ct_file.filename or "").suffix.lower() or None
+        ct_file_size = os.path.getsize(saved_path)
         cam_dir = _ct_cam_static_dir()
-        ct_result = run_ct_from_npz(
-            ct_path,
-            checkpoint=CT_CKPT,
-            cam_dir=cam_dir,
-            threshold=0.488,
-        )
+        try:
+            ct_result = predict_ct(
+                saved_path,
+                patient_id=patient_id,
+                allow_image=True,
+                checkpoint=None,
+                threshold=0.488,
+                cam_dir=cam_dir,
+            )
+        except ValueError as ve:
+            return jsonify({"error": str(ve)}), 400
         if not ct_result:
-            return jsonify({"error": "CT inference failed — check NPZ file"}), 500
+            return jsonify({"error": "CT inference failed — check uploaded file"}), 500
+        log_prediction(
+            "ct",
+            ct_result,
+            file_info={"file_size_bytes": ct_file_size, "file_ext": ct_file_ext},
+        )
 
         is_abnormal = ct_result["label"] == "abnormal"
         site = HOSPITAL_REGISTRY[hospital_id]
+        case_id = None
+        review_required = False
 
-        stem = Path(ct_path).stem
-        cam_disk = os.path.join(cam_dir, f"{stem}.png")
-        cam_url = (
-            _absolute_url_for_path(f"/static/cam/{stem}.png")
-            if ct_result.get("cam_path") and os.path.isfile(cam_disk)
-            else None
-        )
+        if is_abnormal:
+            case_id = str(uuid4())
+            review_required = True
+            conf = float(ct_result["confidence"])
+            created_at = _utc_iso()
+            _review_cases[case_id] = {
+                "caseId": case_id,
+                "hospitalId": hospital_id,
+                "hospitalName": site["name"],
+                "patient_id": patient_id,
+                "modality": "brain_ct",
+                "pred_label": "Abnormal",
+                "result_class": "Abnormal",
+                "confidence": conf,
+                "probabilities": {
+                    "normal": float(ct_result["p_normal"]),
+                    "abnormal": float(ct_result["p_abnormal"]),
+                },
+                "is_abnormal": True,
+                "severity": mock_severity(conf),
+                "review_status": "pending",
+                "createdAt": created_at,
+                "approvedAt": None,
+                "rejectedAt": None,
+                "reviewerId": None,
+                "reject_reason": None,
+                "signature": None,
+                "gradcam_url": None,
+                "input_image_url": None,
+                "segmentation": None,
+            }
+            _ehr_records[case_id] = {
+                **_review_cases[case_id],
+                "firstName": first_name,
+                "lastName": last_name,
+                "dob": dob,
+            }
 
-        return (
-            jsonify(
-                {
-                    "patient_id": patient_id,
-                    "modality": "brain_ct",
-                    "pred_label": ct_result["label"],
-                    "result_class": "Abnormal" if is_abnormal else "Normal",
-                    "confidence": ct_result["confidence"],
-                    "p_normal": ct_result["p_normal"],
-                    "p_abnormal": ct_result["p_abnormal"],
-                    "cam_url": cam_url,
-                    "hospitalId": hospital_id,
-                    "hospitalName": site["name"],
-                }
-            ),
-            200,
-        )
+        input_format = ct_result.get("input_format")
+        if input_format not in {"dicom_zip", "npz", "image"}:
+            input_format = "npz"
+        cam_url = _ct_gradcam_public_url(ct_result)
+
+        body = {
+            "patient_id": patient_id,
+            "modality": "brain_ct",
+            "pred_label": ct_result["label"],
+            "result_class": "Abnormal" if is_abnormal else "Normal",
+            "confidence": ct_result["confidence"],
+            "p_normal": ct_result["p_normal"],
+            "p_abnormal": ct_result["p_abnormal"],
+            "cam_url": cam_url,
+            "hospitalId": hospital_id,
+            "hospitalName": site["name"],
+            "caseId": case_id,
+            "review_required": review_required,
+            "input_format": input_format,
+        }
+        if ct_result.get("cam_display_slice_index") is not None:
+            body["cam_display_slice_index"] = int(ct_result["cam_display_slice_index"])
+        if ct_result.get("cam_center_slice_index") is not None:
+            body["cam_center_slice_index"] = int(ct_result["cam_center_slice_index"])
+        if ct_result.get("cam_selection_method"):
+            body["cam_selection_method"] = str(ct_result["cam_selection_method"])
+        if ct_result.get("cam_display_orientation") is not None:
+            body["cam_display_orientation"] = str(ct_result["cam_display_orientation"])
+        if ct_result.get("cam_error"):
+            body["cam_error"] = str(ct_result["cam_error"])
+        return jsonify(body), 200
     except Exception as ex:
         return jsonify({"error": f"CT inference failed: {ex}"}), 500
 
@@ -803,6 +1122,7 @@ def reviews_pending():
 
 
 @app.route("/api/reviews/<case_id>/approve", methods=["POST"])
+@audit_request("review_approve")
 def reviews_approve(case_id: str):
     """Idempotent: approving again does not double-count."""
     case = _review_cases.get(case_id)
@@ -850,6 +1170,7 @@ def reviews_approve(case_id: str):
 
 
 @app.route("/api/reviews/<case_id>/reject", methods=["POST"])
+@audit_request("review_reject")
 def reviews_reject(case_id: str):
     case = _review_cases.get(case_id)
     if not case:
@@ -884,6 +1205,23 @@ def reviews_reject(case_id: str):
         if signature is not None:
             ehr["signature"] = signature
     return jsonify({"ok": True, "caseId": case_id, "status": "rejected"}), 200
+
+
+@app.route("/api/admin/reset", methods=["POST"])
+def admin_reset_demo_data():
+    # DEMO ONLY — remove before production deployment
+    _reset_demo_data()
+    return (
+        jsonify(
+            {
+                "status": "reset",
+                "message": "Demo data reset to 16 seeded cases",
+                "total_cases": 16,
+            }
+        ),
+        200,
+    )
+
 
 @app.route("/api/ehr", methods=["GET"]) 
 def ehr_list(): 
@@ -933,6 +1271,70 @@ def geotracker_hospital_cases(hospital_id: str):
     cases.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
 
     return jsonify({"cases": cases[:5]}), 200
+
+
+@app.route("/api/outbreak/status", methods=["GET"])
+def outbreak_status():
+    total_approved = sum(
+        1
+        for c in _ehr_records.values()
+        if c.get("is_abnormal") and c.get("review_status") == "approved"
+    )
+
+    hospital_counts: dict[str, int] = {}
+    for hid in HOSPITAL_REGISTRY:
+        count = sum(
+            1
+            for c in _ehr_records.values()
+            if c.get("hospitalId") == hid
+            and c.get("is_abnormal")
+            and c.get("review_status") == "approved"
+        )
+        hospital_counts[hid] = count
+
+    population = 2_300_000
+    expected_rate = 0.005
+    expected_cases = population * expected_rate
+
+    outbreak_level = "Normal"
+    outbreak_color = "#94a3b8"
+    triggered = False
+
+    if total_approved >= 10:
+        outbreak_level = "Critical"
+        outbreak_color = "#e11d48"
+        triggered = True
+    elif total_approved >= 5:
+        outbreak_level = "Elevated"
+        outbreak_color = "#f97316"
+        triggered = True
+    elif total_approved >= 3:
+        outbreak_level = "Moderate"
+        outbreak_color = "#eab308"
+        triggered = False
+
+    hotspot_hospitals = [hid for hid, count in hospital_counts.items() if count >= 3]
+
+    return (
+        jsonify(
+            {
+                "outbreak_level": outbreak_level,
+                "outbreak_color": outbreak_color,
+                "triggered": triggered,
+                "total_approved_abnormal": total_approved,
+                "expected_baseline": expected_cases,
+                "percent_of_baseline": round((total_approved / expected_cases) * 100, 4)
+                if expected_cases
+                else 0.0,
+                "hospital_counts": hospital_counts,
+                "hotspot_hospitals": hotspot_hospitals,
+                "population": population,
+                "threshold_elevated": 5,
+                "threshold_critical": 10,
+            }
+        ),
+        200,
+    )
 
 
 @app.route("/api/geotracker/summary", methods=["GET"])
@@ -994,37 +1396,6 @@ def geotracker_summary():
     )
 
 
-# ---------------------------------------------------------------------------
-# CT brain demo + fusion — not wired yet. I need to hook ml/brain/ct/infer here when we're ready.
-# UI hook (patient folder, *-ct.nii.gz): ui/src/pages/cancerDetection.tsx + flareAPI predictCtPatientFolder stub.
-# The CT demo client in the repo expects roughly:
-#   GET  /api/patients   (stub above — I return { "patients": [] } for now)
-#   POST /api/predict    # can't use this URL for CT JSON — it clashes with our geotracker /api/predict;
-#                        we have to expose something like /api/ct/predict instead.
-#   GET  /api/cam/<name>
-# ---------------------------------------------------------------------------
-# @app.route("/api/ct/predict", methods=["POST"])
-# def api_ct_predict():
-#     """CT volume inference + fusion — implement when I wire the CT stack."""
-#     return jsonify({"error": "CT inference not configured"}), 501
-#
-# @app.route("/api/cam/<path:name>")
-# def api_ct_cam(name: str):
-#     """Grad-CAM / overlay PNG — add when CT demo needs it."""
-#     return jsonify({"error": "CT CAM not configured"}), 404
-
-# SECURITY: HTTP security headers — prevents caching of PHI on client devices (HIPAA consideration)
-@app.after_request
-def add_security_headers(response):
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    if request.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
-        response.headers["Pragma"] = "no-cache"
-    return response
-
-
 def _save_upload(file_storage, patient_id: str, prefix: str = "file") -> str:
     import os
     from werkzeug.utils import secure_filename
@@ -1039,9 +1410,10 @@ def _save_upload(file_storage, patient_id: str, prefix: str = "file") -> str:
 
 
 @app.route("/api/fusion/predict", methods=["POST"])
+@audit_request("fusion_predict")
 @limiter.limit("20 per minute")
 def api_fusion_predict():
-    """Late fusion: CT + MRI weighted average (CT=0.6, MRI=0.4)."""
+    """Late fusion: CT p_abnormal + 5-class MRI tumor mass (0.4·CT + 0.6·MRI), threshold 0.5."""
     patient_id  = request.form.get("patient_id")
     hospital_id = request.form.get("hospitalId") or "H001"
     first_name  = request.form.get("first_name")
@@ -1072,41 +1444,49 @@ def api_fusion_predict():
 
     if ct_file is not None:
         try:
-            ct_path = _save_upload(ct_file, patient_id, prefix="ct")
-            from ml.brain.ct.infer import run_ct_from_npz
-
-            CT_CKPT = os.environ.get(
-                "FLARE_CT_CHECKPOINT",
-                "/scratch/bckk/flare/ct_brain/outputs/rsna_windowed_exp2/best.pt",
-            )
+            ct_saved = _save_upload(ct_file, patient_id, prefix="ct")
             cam_dir_fusion = _ct_cam_static_dir()
-            ct_result = run_ct_from_npz(
-                ct_path,
-                checkpoint=CT_CKPT,
-                cam_dir=cam_dir_fusion,
+            ct_result = predict_ct(
+                ct_saved,
+                patient_id=patient_id,
+                allow_image=True,
+                checkpoint=None,
                 threshold=0.488,
+                cam_dir=cam_dir_fusion,
             )
             if ct_result:
                 ct_prob = float(ct_result["p_abnormal"])
+            else:
+                app.logger.warning("Fusion: CT inference returned empty result")
+        except ValueError as ve:
+            msg = str(ve)
+            if "CT inference requires" in msg:
+                msg = "Fusion CT file must be .npz volume, .zip DICOM study, or .jpg/.jpeg/.png image"
+            return jsonify({"error": msg}), 400
         except Exception as ex:
+            app.logger.exception("Fusion: predict_ct raised unexpectedly")
             return jsonify({"error": f"CT inference failed: {ex}"}), 500
 
     if mri_file is not None:
         try:
             mri_path = _save_upload(mri_file, patient_id, prefix="mri")
-            from predict_mri import predict_mri
             mri_result = predict_mri(mri_path, "brain_mri", patient_id)
-            if mri_result:
-                mri_conf = float(mri_result.get("confidence", 0.5))
-                mri_is_abnormal = mri_result.get("result_class", "").lower() in (
-                    "malignant", "abnormal", "tumor"
+            if mri_result and not mri_result.get("error"):
+                mri_prob = mri_abnormal_probability(mri_result)
+                if mri_prob is None:
+                    app.logger.warning(
+                        "Fusion: could not derive MRI tumor probability (need 5-class probabilities "
+                        "or BraTS tumor_voxels_total). mri_result=%s",
+                        mri_result,
+                    )
+            else:
+                app.logger.warning(
+                    "Fusion: MRI inference returned error or empty — falling back to CT-only. "
+                    "mri_result=%s",
+                    mri_result,
                 )
-                mri_prob = mri_conf if mri_is_abnormal else (1.0 - mri_conf)
         except Exception as ex:
             return jsonify({"error": f"MRI inference failed: {ex}"}), 500
-
-    CT_WEIGHT  = 0.4
-    MRI_WEIGHT = 0.6
 
     if ct_prob is not None and mri_prob is not None:
         fusion_score = (ct_prob * CT_WEIGHT) + (mri_prob * MRI_WEIGHT)
@@ -1120,27 +1500,104 @@ def api_fusion_predict():
     else:
         return jsonify({"error": "Both models returned no result"}), 500
 
-    FUSION_THRESHOLD = 0.5
     is_abnormal  = fusion_score >= FUSION_THRESHOLD
     pred_label   = "Abnormal" if is_abnormal else "Normal"
-    result_class = "Malignant" if is_abnormal else "Benign"
+    # EHR and review queues must use the fusion decision, not MRI/CT class labels.
+    # UI maps result_class: Malignant / Benign / Normal — "Abnormal" string was misread as Normal.
+    fusion_ehr_class = "Malignant" if is_abnormal else "Normal"
+    log_prediction(
+        "fusion",
+        {"prediction": pred_label, "confidence": float(fusion_score)},
+    )
 
-    return jsonify({
-        "patient_id":   patient_id,
-        "fusion_mode":  fusion_mode,
-        "fusion_score": round(fusion_score, 4),
-        "pred_label":   pred_label,
-        "result_class": result_class,
-        "confidence":   round(fusion_score, 4),
-        "is_abnormal":  is_abnormal,
-        "ct_prob":      round(ct_prob, 4) if ct_prob is not None else None,
-        "mri_prob":     round(mri_prob, 4) if mri_prob is not None else None,
-        "ct_weight":    CT_WEIGHT,
-        "mri_weight":   MRI_WEIGHT,
-        "threshold":    FUSION_THRESHOLD,
-        "ct_details":   ct_result,
-        "mri_details":  mri_result,
-    }), 200
+    ct_cam_url = None
+    mri_input_url = None
+    mri_overlay_url = None
+    if ct_result:
+        ct_cam_url = _ct_gradcam_public_url(ct_result)
+    if mri_result and isinstance(mri_result, dict):
+        mri_input_url = mri_result.get("input_image_url")
+        seg = mri_result.get("segmentation")
+        if isinstance(seg, dict):
+            mri_overlay_url = seg.get("overlay_url")
+
+    # Persist every fusion run to EHR/review (abnormal and normal) — clinician review still required.
+    case_id = str(uuid4())
+    review_required = True
+    site = HOSPITAL_REGISTRY[hospital_id]
+    created_at = _utc_iso()
+    _review_cases[case_id] = {
+        "caseId": case_id,
+        "hospitalId": hospital_id,
+        "hospitalName": site["name"],
+        "patient_id": patient_id,
+        "modality": "brain_fusion",
+        "pred_label": pred_label,
+        "prediction": pred_label,
+        "result_class": fusion_ehr_class,
+        "confidence": float(fusion_score),
+        "probabilities": {
+            "normal": round(1.0 - float(fusion_score), 4),
+            "abnormal": round(float(fusion_score), 4),
+        },
+        "is_abnormal": is_abnormal,
+        "severity": mock_severity(float(fusion_score)),
+        "review_status": "pending",
+        "createdAt": created_at,
+        "approvedAt": None,
+        "rejectedAt": None,
+        "reviewerId": None,
+        "reject_reason": None,
+        "signature": None,
+        "gradcam_url": ct_cam_url,
+        "input_image_url": mri_input_url,
+        "segmentation": {"overlay_url": mri_overlay_url} if mri_overlay_url else None,
+    }
+    _ehr_records[case_id] = {
+        **_review_cases[case_id],
+        "firstName": first_name,
+        "lastName": last_name,
+        "dob": dob,
+    }
+
+    fusion_payload: dict = {
+        "patient_id":       patient_id,
+        "fusion_mode":      fusion_mode,
+        "fusion_score":     round(fusion_score, 4),
+        "pred_label":       pred_label,
+        "result_class":     fusion_ehr_class,
+        "confidence":       round(fusion_score, 4),
+        "is_abnormal":      is_abnormal,
+        "ct_prob":          round(ct_prob, 4) if ct_prob is not None else None,
+        "mri_prob":         round(mri_prob, 4) if mri_prob is not None else None,
+        "ct_weight":        CT_WEIGHT,
+        "mri_weight":       MRI_WEIGHT,
+        "threshold":        FUSION_THRESHOLD,
+        "ct_cam_url":       ct_cam_url,
+        "mri_input_url":    mri_input_url,
+        "mri_overlay_url":  mri_overlay_url,
+        "caseId":           case_id,
+        "review_required":  review_required,
+        "ct_details":       ct_result,
+        "mri_details":      mri_result,
+    }
+    if ct_result and ct_result.get("cam_display_orientation") is not None:
+        fusion_payload["cam_display_orientation"] = str(ct_result["cam_display_orientation"])
+    if ct_result and ct_result.get("cam_error"):
+        fusion_payload["cam_error"] = str(ct_result["cam_error"])
+    return jsonify(fusion_payload), 200
+
+
+# SECURITY: HTTP security headers — prevents caching of PHI on client devices (HIPAA consideration)
+@app.after_request
+def add_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 
 if __name__ == "__main__":

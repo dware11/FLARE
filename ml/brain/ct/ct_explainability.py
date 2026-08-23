@@ -28,10 +28,10 @@ from ml.brain.ct.model_ct import is_ct_middle_slice_resnet18, is_sequence_ct_mod
 
 def _default_target_layer(model: nn.Module) -> str:
     if is_sequence_ct_model(model):
-        return "backbone.features.denseblock4"
+        return "backbone.features.denseblock3"
     if is_ct_middle_slice_resnet18(model):
         return "layer4"
-    return "features.denseblock4"
+    return "features.denseblock3"
 
 
 def _raw_slice_for_overlay(npz_path: Path, t: int) -> torch.Tensor:
@@ -311,11 +311,12 @@ def explain_prediction(
     layer_name = _default_target_layer(model)
     overlay_raw = _raw_slice_for_overlay(npz_path, t_vis)
     gradcam = GradCAM(model, layer_name)
-    heatmap, overlay_np = gradcam(
+    _gout = gradcam(
         x_sub,
         target_class=target_class,
         input_for_overlay=overlay_raw,
     )
+    heatmap, overlay_np = _gout[0], _gout[1]
     if overlay_np is None:
         heatmap_b64 = _cam_to_overlay_base64(heatmap.cpu(), overlay_raw.cpu().clamp(0, 1))
     else:
@@ -387,11 +388,12 @@ def run_explain_offline(
         x_sub = _slice_subvolume(x, t)
         if method_l == "gradcam":
             gradcam = GradCAM(model, layer_name)
-            heatmap, overlay = gradcam(
+            _go = gradcam(
                 x_sub,
                 target_class=target_class,
                 input_for_overlay=x[0, t : t + 1].detach().cpu().clamp(0, 1),
             )
+            heatmap, overlay = _go[0], _go[1]
             cam2d = heatmap
         elif method_l == "gradcam++":
             cam2d = _gradcam_plus_plus(model, layer_mod, x_sub, target_class)

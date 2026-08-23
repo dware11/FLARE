@@ -1,19 +1,20 @@
 
-import { Box, Button } from '@mui/material'
+import { Box, Button, Link, Typography } from '@mui/material'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import FlareLogo from '../assets/FLARElogo.png'
 
 export default function Login() {
-  const { loginWithRedirect, isAuthenticated } = useAuth0()
+  const { loginWithRedirect, isAuthenticated, isLoading } = useAuth0()
   const navigate = useNavigate()
 
   useEffect(() => {
+    if (isLoading) return
     if (isAuthenticated) {
-      navigate('/home')
+      navigate('/home', { replace: true })
     }
-  }, [isAuthenticated])
+  }, [isAuthenticated, isLoading, navigate])
 
   return (
     <Box
@@ -48,7 +49,9 @@ export default function Login() {
 
         
     <Button 
-    onClick={() => loginWithRedirect()}
+    onClick={() => {
+      loginWithRedirect({ appState: { returnTo: '/home' } })
+    }}
     sx={{
             backgroundColor: '#ff5c5c',
             color: '#ffffff',
@@ -64,6 +67,31 @@ export default function Login() {
           }}>
       Log In
     </Button>
+    <Typography
+      sx={{
+        mt: 2.5,
+        color: 'rgba(255,255,255,0.72)',
+        fontSize: '0.85rem',
+      }}
+    >
+      By signing in you agree to our{' '}
+      <Link
+        component="button"
+        type="button"
+        onClick={() => navigate('/privacy')}
+        sx={{
+          color: '#ff5c5c',
+          fontSize: '0.85rem',
+          textDecorationColor: 'rgba(255,92,92,0.75)',
+          '&:hover': {
+            color: '#ff8080',
+            textDecorationColor: '#ff8080',
+          },
+        }}
+      >
+        Privacy Policy
+      </Link>
+    </Typography>
     </Box>
     </Box>
   )

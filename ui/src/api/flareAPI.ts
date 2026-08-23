@@ -1,4 +1,6 @@
-export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:5000";
+export const API_BASE =
+  import.meta.env.VITE_API_BASE_URL ?? "https://reassign-guiding-grass.ngrok-free.dev";
+export const NGROK_HEADERS = { "ngrok-skip-browser-warning": "true" } as const;
 
 export type CancerType = "brain" | "breast";
 export type ResultClass = "Normal" | "Benign" | "Malignant";
@@ -12,6 +14,8 @@ export type PredictResponse = {
   localization_url?: string | null;
   probabilities?: ClassProbability[] | null;
   gradcam_ready?: boolean;
+  caseId?: string | null;
+  review_required?: boolean;
 };
 
 /** Shape returned by /api/mri/predict when the BRISC/BraTS-style API is enabled (folder + future single). */
@@ -32,6 +36,10 @@ export type MriFolderPredictView = {
   kind: "mri_api_v2";
   classification: MriPredictClassification;
   segmentation: MriPredictSegmentation;
+  /** Raw input slice URL from API when distinct from segmentation.original_url */
+  input_image_url?: string | null;
+  caseId?: string | null;
+  review_required?: boolean;
 };
 
 export type LegacyPredictView = {
@@ -71,7 +79,7 @@ export async function predictScan(params: {
   form.append("patient_id", params.medicalId);
   const res = await fetch(
     `${API_BASE}/predict?cancer_type=${encodeURIComponent(params.cancerType)}`,
-    { method: "POST", body: form }
+    { method: "POST", headers: NGROK_HEADERS, body: form }
   );
   if (!res.ok) {
     const msg = await res.text();
@@ -80,12 +88,81 @@ export async function predictScan(params: {
   return res.json();
 }
 
-/** Turn relative /static/... paths into absolute URLs for <img src>. */
+/**
+ * Turn relative /static/... into absolute URLs for fetch/img.
+ * Server JSON may incorrectly use Flask request.host_url (e.g. http://127.0.0.1:port
+ * on Delta/SSH) — the browser would hit the wrong host. Relative paths are preferred;
+ * for absolute URLs we remap localhost, loopback, or /static/... on a different origin
+ * to VITE API_BASE.
+ */
 function absolutizeAssetUrl(path: string | null | undefined): string | null | undefined {
   if (path == null || path === "") return path;
-  if (path.startsWith("http://") || path.startsWith("https://")) return path;
-  const base = API_BASE.replace(/\/$/, "");
-  return path.startsWith("/") ? `${base}${path}` : `${base}/${path}`;
+  const baseStr = API_BASE.replace(/\/$/, "");
+  if (path.startsWith("http://") || path.startsWith("https://")) {
+    try {
+      const u = new URL(path);
+      const b = new URL(baseStr);
+      const staticWrongOrigin = u.pathname.startsWith("/static/") && u.origin !== b.origin;
+      const loopback = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+      if (loopback || staticWrongOrigin) {
+        return `${b.origin}${u.pathname}${u.search}`;
+      }
+    } catch {
+      return path;
+    }
+    return path;
+  }
+  return path.startsWith("/") ? `${baseStr}${path}` : `${baseStr}/${path}`;
+}
+
+/** Same resolution as absolutizeAssetUrl; `null` if empty. For fetch() + ngrok. */
+export function absolutizeApiAssetUrl(path: string | null | undefined): string | null {
+  if (path == null || path === "") return null;
+  const a = absolutizeAssetUrl(path);
+  return a == null || a === "" ? null : a;
+}
+
+/**
+ * Full URL of an image with ngrok header; returns a blob: URL for <img> (caller must revoke).
+ * Use for API/static image URLs that cannot be loaded via raw <img src> through ngrok.
+ */
+export async function fetchImage(url: string): Promise<string> {
+  const res = await fetch(url, { headers: NGROK_HEADERS });
+  if (!res.ok) {
+    throw new Error(`Image fetch failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
+/** Resolve relative/absolute path, then fetchImage; returns null on empty path or failed fetch. */
+export async function fetchImageObjectUrl(path: string | null | undefined): Promise<string | null> {
+  const u = absolutizeApiAssetUrl(path);
+  if (!u) return null;
+  try {
+    return await fetchImage(u);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Open an absolute image URL in a new tab (ngrok header). Revokes object URL after delay.
+ */
+export async function openImage(url: string): Promise<void> {
+  const res = await fetch(url, { headers: NGROK_HEADERS });
+  if (!res.ok) return;
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  window.open(objectUrl, "_blank", "noopener,noreferrer");
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 120_000);
+}
+
+/** Open a relative or absolute path from API responses (EHR, predict JSON). */
+export async function openApiImageInNewTab(path: string | null | undefined): Promise<void> {
+  const u = absolutizeApiAssetUrl(path);
+  if (!u) return;
+  await openImage(u);
 }
 
 /** Maps Flask /api/mri/predict JSON to the slim shape the cancer demo uses. */
@@ -103,6 +180,8 @@ export function mapMriApiJsonToPredictResponse(cancerType: CancerType, body: Rec
     confidence: Number(body.confidence ?? 0),
     localization_url: absolutizeAssetUrl(loc) ?? null,
     gradcam_ready: Boolean(body.gradcam_ready),
+    caseId: (body.caseId as string) ?? null,
+    review_required: Boolean(body.review_required),
   };
   if (body.probabilities != null) out.probabilities = body.probabilities as PredictResponse["probabilities"];
   return out;
@@ -127,6 +206,9 @@ export function parseMriPredictBody(body: Record<string, unknown>): CancerScanRe
     const originalUrl = fromSegOriginal ?? fromRootInput ?? null;
     return {
       kind: "mri_api_v2",
+      input_image_url: fromRootInput,
+      caseId: (body.caseId as string) ?? null,
+      review_required: Boolean(body.review_required),
       classification: {
         label: String(c.label ?? "Normal"),
         confidence: Math.min(1, Math.max(0, Number(c.confidence ?? 0))),
@@ -171,7 +253,11 @@ export async function predictMriBraTSFolder(params: {
   form.append("t2w", t2w);
   form.append("t2f", t2f);
 
-  const res = await fetch(`${API_BASE}/api/mri/predict`, { method: "POST", body: form });
+  const res = await fetch(`${API_BASE}/api/mri/predict`, {
+    method: "POST",
+    headers: NGROK_HEADERS,
+    body: form,
+  });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
     const err = (body.error as string) || `Predict failed (${res.status})`;
@@ -195,7 +281,11 @@ export async function predictCtFile(
   if (firstName) form.append("first_name", firstName);
   if (lastName) form.append("last_name", lastName);
   if (dob) form.append("dob", dob);
-  const res = await fetch(`${API_BASE}/api/ct/predict`, { method: "POST", body: form });
+  const res = await fetch(`${API_BASE}/api/ct/predict`, {
+    method: "POST",
+    headers: NGROK_HEADERS,
+    body: form,
+  });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`CT predict failed (${res.status}): ${text}`);
@@ -214,7 +304,11 @@ export async function predictFusion(
   if (mriFile) form.append("mri_file", mriFile);
   form.append("patient_id", patientId);
   form.append("hospitalId", hospitalId);
-  const res = await fetch(`${API_BASE}/api/fusion/predict`, { method: "POST", body: form });
+  const res = await fetch(`${API_BASE}/api/fusion/predict`, {
+    method: "POST",
+    headers: NGROK_HEADERS,
+    body: form,
+  });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`Fusion predict failed (${res.status}): ${text}`);
@@ -225,7 +319,7 @@ export async function predictFusion(
 export async function saveCase(payload: CreateCaseRequest) {
   const res = await fetch(`${API_BASE}/cases`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...NGROK_HEADERS, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`Save case failed (${res.status})`);
@@ -233,7 +327,7 @@ export async function saveCase(payload: CreateCaseRequest) {
 }
 
 export async function fetchCases() {
-  const res = await fetch(`${API_BASE}/cases`);
+  const res = await fetch(`${API_BASE}/cases`, { headers: NGROK_HEADERS });
   if (!res.ok) throw new Error(`Fetch cases failed: ${res.status}`);
   return res.json();
 }
@@ -257,8 +351,28 @@ export type GeoSummary = {
 };
 
 export async function fetchGeoSummary(): Promise<GeoSummary> {
-  const res = await fetch(`${API_BASE}/api/geotracker/summary`);
+  const res = await fetch(`${API_BASE}/api/geotracker/summary`, { headers: NGROK_HEADERS });
   if (!res.ok) throw new Error(`Geo summary failed: ${res.status}`);
+  return res.json();
+}
+
+export type OutbreakStatus = {
+  outbreak_level: string;
+  outbreak_color: string;
+  triggered: boolean;
+  total_approved_abnormal: number;
+  expected_baseline: number;
+  percent_of_baseline: number;
+  hospital_counts: Record<string, number>;
+  hotspot_hospitals: string[];
+  population: number;
+  threshold_elevated: number;
+  threshold_critical: number;
+};
+
+export async function fetchOutbreakStatus(): Promise<OutbreakStatus> {
+  const res = await fetch(`${API_BASE}/api/outbreak/status`, { headers: NGROK_HEADERS });
+  if (!res.ok) throw new Error("Failed to fetch outbreak status");
   return res.json();
 }
 
@@ -276,7 +390,7 @@ export type ReviewCase = {
 };
 
 export async function fetchPendingReviews(): Promise<{ cases: ReviewCase[] }> {
-  const res = await fetch(`${API_BASE}/api/reviews/pending`);
+  const res = await fetch(`${API_BASE}/api/reviews/pending`, { headers: NGROK_HEADERS });
   if (!res.ok) throw new Error(`Fetch reviews failed: ${res.status}`);
   return res.json();
 }
@@ -289,7 +403,7 @@ export async function approveReview(
   const signature = opts.signature.trim();
   const res = await fetch(`${API_BASE}/api/reviews/${caseId}/approve`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...NGROK_HEADERS, "Content-Type": "application/json" },
     body: JSON.stringify({
       reviewerName,
       signature,
@@ -299,11 +413,22 @@ export async function approveReview(
   if (!res.ok) throw new Error(`Approve failed: ${res.status}`);
 }
 
-export async function rejectReview(caseId: string): Promise<void> {
+export async function rejectReview(
+  caseId: string,
+  opts: { reviewerName: string; reason: string; signature: string }
+): Promise<void> {
+  const reviewerName = opts.reviewerName.trim();
+  const reason = opts.reason.trim();
+  const signature = opts.signature.trim();
   const res = await fetch(`${API_BASE}/api/reviews/${caseId}/reject`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ reviewerId: "demo-reviewer", reason: "rejected by reviewer" }),
+    headers: { ...NGROK_HEADERS, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      reviewerName,
+      signature,
+      reviewerId: reviewerName,
+      reason: reason || undefined,
+    }),
   });
   if (!res.ok) throw new Error(`Reject failed: ${res.status}`);
 }
@@ -320,9 +445,13 @@ export type EhrRecord = {
   hospitalId: string;
   hospitalName: string;
   modality: string;
+  /** Brain demo: Glioma, Meningioma, Pituitary, Normal, etc. */
+  cancer_type?: string | null;
   result_class: string;
   confidence: number;
   review_status: string;
+  /** Backend review/EHR flag for abnormal screening queue */
+  is_abnormal?: boolean;
   createdAt: string;
   segmentation?: { overlay_url?: string } | null;
   input_image_url?: string | null;
@@ -331,7 +460,7 @@ export type EhrRecord = {
 };
 
 export async function fetchEhrRecords(): Promise<{ records: EhrRecord[] }> {
-  const res = await fetch(`${API_BASE}/api/ehr`);
+  const res = await fetch(`${API_BASE}/api/ehr`, { headers: NGROK_HEADERS });
   if (!res.ok) throw new Error(`Fetch EHR failed: ${res.status}`);
   return res.json();
 }

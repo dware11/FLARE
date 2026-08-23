@@ -6,9 +6,12 @@ export interface PatientRecord {
   result: string
 }
 
+const API_BASE =
+  import.meta.env.VITE_API_BASE_URL ?? 'https://reassign-guiding-grass.ngrok-free.dev'
+
 export function fetchPatientHistory(token: string) {
   return apiFetch<PatientRecord[]>(
-    'http://localhost:3000/api/patients',
+    `${API_BASE}/api/patients`,
     token
   )
 }

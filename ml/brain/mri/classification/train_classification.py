@@ -59,6 +59,10 @@ from sklearn.metrics import (
     classification_report, confusion_matrix, f1_score, 
     roc_auc_score, roc_curve, accuracy_score
 )
+from sklearn.metrics import (
+    classification_report, confusion_matrix, f1_score, 
+    roc_auc_score, roc_curve, accuracy_score
+)
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -73,8 +77,12 @@ warnings.filterwarnings('ignore')
 # CONFIGURATION
 # ==============================================================================
 
+
 class Config:
     # --- Paths ---
+    BRISC_DIR = '/scratch/bckk/flare/mri_brain/data/brisc_processed'
+    IXI_DIR = '/scratch/bckk/flare/mri_brain/data/ixi_processed'
+    OUTPUT_DIR = '/scratch/bckk/flare/mri_brain/classification/outputs/training_5class'
     BRISC_DIR = '/scratch/bckk/flare/mri_brain/data/brisc_processed'
     IXI_DIR = '/scratch/bckk/flare/mri_brain/data/ixi_processed'
     OUTPUT_DIR = '/scratch/bckk/flare/mri_brain/classification/outputs/training_5class'
@@ -106,6 +114,7 @@ class Config:
 
 # LOGGING SETUP
 # ==============================================================================
+
 
 def setup_logging(output_dir):
     """
@@ -170,23 +179,39 @@ class BRISCIXIDataset(Dataset):
         from collections import Counter
         labels = []
         for f in self.npz_files:
+        self.npz_files = npz_files
+        
+        logging.info(f"Loaded {len(self.npz_files)} NPZ files")
+        
+        from collections import Counter
+        labels = []
+        for f in self.npz_files:
             data = np.load(f, allow_pickle=True)
+            labels.append(int(data['label']))
+        
+        label_counts = Counter(labels)
+        for label_idx in range(self.config.NUM_CLASSES):
             labels.append(int(data['label']))
         
         label_counts = Counter(labels)
         for label_idx in range(self.config.NUM_CLASSES):
             name = self.config.CLASS_NAMES[label_idx]
             count = label_counts.get(label_idx, 0)
+            count = label_counts.get(label_idx, 0)
             logging.info(f"  {name}: {count} samples")
 
     def __len__(self):
         return len(self.npz_files)
+        return len(self.npz_files)
 
     def __getitem__(self, idx):
         filepath = self.npz_files[idx]
+        filepath = self.npz_files[idx]
         data = np.load(filepath, allow_pickle=True)
         
+        
         image = data['image'].astype(np.float32)
+        label = int(data['label'])
         label = int(data['label'])
 
         # Safety guard: scale to [0, 255] if already normalized to [0, 1].
@@ -198,6 +223,7 @@ class BRISCIXIDataset(Dataset):
         # EfficientNetB0 expects a 3-channel input.
         # Both BRISC and IXI images are grayscale — replicate across 3 channels.
         if image.ndim == 2:
+            image = np.stack([image, image, image], axis=0)
             image = np.stack([image, image, image], axis=0)
         elif image.ndim == 3 and image.shape[0] == 1:
             image = np.concatenate([image, image, image], axis=0)
@@ -211,6 +237,7 @@ class BRISCIXIDataset(Dataset):
 
 # DATA TRANSFORMS
 # ==============================================================================
+
 
 def get_transforms(config, split='train'):
     """
@@ -237,6 +264,8 @@ def get_transforms(config, split='train'):
             transforms.Normalize(
                 mean=[0.485, 0.456, 0.406],
                 std=[0.229, 0.224, 0.225]
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
             )
         ])
     else:
@@ -250,6 +279,7 @@ def get_transforms(config, split='train'):
 
 # MODEL
 # ==============================================================================
+
 
 def build_model(config, freeze_backbone=True):
     """
@@ -319,6 +349,7 @@ def unfreeze_model(model, config):
 # TRAINING LOOP
 # ==============================================================================
 
+
 def train_one_epoch(model, loader, optimizer, criterion, device, epoch):
     """
     Single training epoch. Returns average loss and accuracy.
@@ -374,6 +405,7 @@ def validate(model, loader, criterion, device, epoch, split='Val'):
     all_preds = []
     all_labels = []
     all_probs = []
+    all_probs = []
 
     with torch.no_grad():
         pbar = tqdm(loader, desc=f"Epoch {epoch} [{split}]", leave=False)
@@ -384,7 +416,11 @@ def validate(model, loader, criterion, device, epoch, split='Val'):
             total_loss += loss.item() * images.size(0)
             
             probs = torch.softmax(outputs, dim=1).cpu().numpy()
+            
+            probs = torch.softmax(outputs, dim=1).cpu().numpy()
             preds = outputs.argmax(dim=1)
+            
+            all_probs.extend(probs)
             
             all_probs.extend(probs)
             all_preds.extend(preds.cpu().numpy())
@@ -397,9 +433,14 @@ def validate(model, loader, criterion, device, epoch, split='Val'):
     all_probs = np.array(all_probs)
     all_labels = np.array(all_labels)
     all_preds = np.array(all_preds)
+    all_probs = np.array(all_probs)
+    all_labels = np.array(all_labels)
+    all_preds = np.array(all_preds)
 
     return avg_loss, accuracy, f1, all_preds, all_labels, all_probs
+    return avg_loss, accuracy, f1, all_preds, all_labels, all_probs
 
+# METRICS COMPUTATION
 # METRICS COMPUTATION
 # ==============================================================================
 
@@ -630,6 +671,7 @@ def plot_roc_curves(all_labels, all_probs, class_names, output_dir):
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'roc_curves_test.png'), dpi=150)
+    plt.savefig(os.path.join(output_dir, 'roc_curves_test.png'), dpi=150)
     plt.close()
     logging.info("Saved: roc_curves_test.png")
 
@@ -643,8 +685,12 @@ def plot_confusion_matrix(labels, preds, class_names, output_dir, title='test_co
     cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True)
 
     fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
 
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=class_names, yticklabels=class_names, ax=axes[0],
+                cbar_kws={'label': 'Count'})
+    axes[0].set_title('Confusion Matrix (Raw Counts)')
                 xticklabels=class_names, yticklabels=class_names, ax=axes[0],
                 cbar_kws={'label': 'Count'})
     axes[0].set_title('Confusion Matrix (Raw Counts)')
@@ -655,6 +701,9 @@ def plot_confusion_matrix(labels, preds, class_names, output_dir, title='test_co
                 xticklabels=class_names, yticklabels=class_names, ax=axes[1],
                 cbar_kws={'label': 'Proportion'})
     axes[1].set_title('Confusion Matrix (Normalized)')
+                xticklabels=class_names, yticklabels=class_names, ax=axes[1],
+                cbar_kws={'label': 'Proportion'})
+    axes[1].set_title('Confusion Matrix (Normalized)')
     axes[1].set_ylabel('True Label')
     axes[1].set_xlabel('Predicted Label')
 
@@ -662,7 +711,9 @@ def plot_confusion_matrix(labels, preds, class_names, output_dir, title='test_co
     plt.savefig(os.path.join(output_dir, f'{title}.png'), dpi=150)
     plt.close()
     logging.info(f"Saved: {title}.png")
+    logging.info(f"Saved: {title}.png")
 
+# MAIN TRAINING
 # MAIN TRAINING
 # ==============================================================================
 
@@ -726,6 +777,35 @@ def main():
     train_idx, val_idx = train_test_split(
         train_idx, 
         test_size=config.VAL_RATIO / (config.TRAIN_RATIO + config.VAL_RATIO),
+
+    # DATA LOADING & SPLITTING (70/15/15)
+    # ==================================================================
+    logger.info("\n" + "="*80)
+    logger.info("DATA LOADING & SPLITTING")
+    logger.info("="*80)
+    
+    brisc_files = sorted(Path(config.BRISC_DIR).glob("classification_*.npz"))
+    ixi_files = sorted(Path(config.IXI_DIR).glob("classification_*.npz"))
+    
+    logger.info(f"BRISC files: {len(brisc_files)}")
+    logger.info(f"IXI files: {len(ixi_files)}")
+    
+    all_files = list(brisc_files) + list(ixi_files)
+    logger.info(f"Total files: {len(all_files)}")
+
+    # SPLIT: 70% train / 15% val / 15% test
+    logger.info(f"\nData Split Strategy:")
+    logger.info(f"  Train: {config.TRAIN_RATIO*100:.0f}% = {int(len(all_files)*config.TRAIN_RATIO)}")
+    logger.info(f"  Val:   {config.VAL_RATIO*100:.0f}% = {int(len(all_files)*config.VAL_RATIO)}")
+    logger.info(f"  Test:  {config.TEST_RATIO*100:.0f}% = {int(len(all_files)*config.TEST_RATIO)}")
+    
+    indices = np.arange(len(all_files))
+    train_idx, test_idx = train_test_split(
+        indices, test_size=config.TEST_RATIO, random_state=config.RANDOM_SEED
+    )
+    train_idx, val_idx = train_test_split(
+        train_idx, 
+        test_size=config.VAL_RATIO / (config.TRAIN_RATIO + config.VAL_RATIO),
         random_state=config.RANDOM_SEED
     )
     
@@ -754,11 +834,26 @@ def main():
         test_files,
         transform=get_transforms(config, 'test'),
         config=config
+    val_dataset = BRISCIXIDataset(
+        val_files,
+        transform=get_transforms(config, 'val'),
+        config=config
+    )
+    test_dataset = BRISCIXIDataset(
+        test_files,
+        transform=get_transforms(config, 'test'),
+        config=config
     )
 
     train_loader = DataLoader(train_dataset, batch_size=config.BATCH_SIZE,
                             shuffle=True, num_workers=config.NUM_WORKERS,
                             pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=config.BATCH_SIZE,
+                          shuffle=False, num_workers=config.NUM_WORKERS,
+                          pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=config.BATCH_SIZE,
+                           shuffle=False, num_workers=config.NUM_WORKERS,
+                           pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=config.BATCH_SIZE,
                           shuffle=False, num_workers=config.NUM_WORKERS,
                           pin_memory=True)
@@ -784,10 +879,13 @@ def main():
 
     best_val_f1 = 0.0
     best_epoch = 0
+    best_epoch = 0
     patience_counter = 0
 
     logger.info("\n" + "="*80)
+    logger.info("\n" + "="*80)
     logger.info("STARTING TRAINING")
+    logger.info("="*80)
     logger.info("="*80)
 
     for epoch in range(1, config.NUM_EPOCHS + 1):
@@ -813,6 +911,7 @@ def main():
             model, train_loader, optimizer, criterion, device, epoch
         )
 
+        val_loss, val_acc, val_f1, val_preds, val_labels, val_probs = validate(
         val_loss, val_acc, val_f1, val_preds, val_labels, val_probs = validate(
             model, val_loader, criterion, device, epoch, split='Val'
         )
@@ -844,6 +943,7 @@ def main():
             patience_counter += 1
             if patience_counter >= config.PATIENCE:
                 logger.info(f"Early stopping at epoch {epoch}")
+                logger.info(f"Early stopping at epoch {epoch}")
                 break
 
 
@@ -852,11 +952,13 @@ def main():
     logger.info("\n" + "="*80)
     logger.info("LOADING BEST MODEL FOR TEST EVALUATION")
     logger.info("="*80)
+    logger.info("="*80)
 
     checkpoint = torch.load(os.path.join(config.OUTPUT_DIR, 'best_model.pth'), weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     logger.info(f"Best model from epoch {best_epoch} (Val F1: {best_val_f1:.4f})")
 
+    test_loss, test_acc, test_f1, test_preds, test_labels, test_probs = validate(
     test_loss, test_acc, test_f1, test_preds, test_labels, test_probs = validate(
         model, test_loader, criterion, device, epoch=0, split='Test'
     )
@@ -866,20 +968,33 @@ def main():
         test_labels, test_preds, test_probs,
         config.CLASS_NAMES, config.OUTPUT_DIR, split='test'
     )
+    # Compute metrics (standard + clinical)
+    test_results = compute_metrics(
+        test_labels, test_preds, test_probs,
+        config.CLASS_NAMES, config.OUTPUT_DIR, split='test'
+    )
 
+    # Generate plots
     # Generate plots
     plot_confusion_matrix(test_labels, test_preds, config.CLASS_NAMES,
                           config.OUTPUT_DIR, title='test_confusion_matrix')
     plot_roc_curves(test_labels, test_probs, config.CLASS_NAMES, config.OUTPUT_DIR)
+    plot_roc_curves(test_labels, test_probs, config.CLASS_NAMES, config.OUTPUT_DIR)
 
+    logger.info("="*80)
     logger.info("="*80)
     logger.info("TRAINING COMPLETE")
     logger.info(f"Best Val F1:      {best_val_f1:.4f}")
     logger.info(f"Test Accuracy:    {test_acc*100:.2f}%")
     logger.info(f"Test Weighted F1: {test_f1:.4f}")
+    logger.info(f"Best Val F1:      {best_val_f1:.4f}")
+    logger.info(f"Test Accuracy:    {test_acc*100:.2f}%")
+    logger.info(f"Test Weighted F1: {test_f1:.4f}")
     logger.info(f"Outputs saved to: {config.OUTPUT_DIR}")
     logger.info("="*80)
+    logger.info("="*80)
 
+    return model, test_results
     return model, test_results
 
 if __name__ == '__main__':
