@@ -1,18 +1,17 @@
 """
 FLARE - MRI Brain Tumor Segmentation Training Script
-Model: Swin-T + UNet Decoder (via segmentation_models_pytorch)
+Model: MiT-B3 + UNet Decoder (SegFormer encoder via segmentation_models_pytorch)
 Dataset: BRISC 2025 Segmentation Task
 Task: Binary segmentation (tumor vs background)
 
 Research basis:
-- Swin Transformer encoder captures long-range dependencies via shifted windows
+- MiT-B3 (SegFormer) encoder captures multi-scale context via hierarchical transformer
 - UNet decoder restores spatial resolution with skip connections
-- This matches the Swin-HAFNet architecture reported in BRISC paper (80.6% mIoU)
-- Pretrained Swin-T weights from ImageNet for transfer learning
+- This matches state-of-the-art semantic segmentation design patterns
+- Pretrained MiT-B3 weights from ImageNet for transfer learning
 - Same Combined Dice + BCE loss with pos_weight as Attention U-Net for fair comparison
 - Separate output folder so Attention U-Net results are preserved
 """
-
 import os
 import numpy as np
 import torch
