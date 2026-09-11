@@ -297,13 +297,19 @@ export async function predictFusion(
   ctFile: File | null,
   mriFile: File | null,
   patientId: string,
-  hospitalId: string
+  hospitalId: string,
+  firstName: string,
+  lastName: string,
+  dob: string
 ): Promise<Record<string, unknown>> {
   const form = new FormData();
   if (ctFile) form.append("ct_file", ctFile);
   if (mriFile) form.append("mri_file", mriFile);
   form.append("patient_id", patientId);
   form.append("hospitalId", hospitalId);
+  form.append("first_name", firstName);
+  form.append("last_name", lastName);
+  form.append("dob", dob);
   const res = await fetch(`${API_BASE}/api/fusion/predict`, {
     method: "POST",
     headers: NGROK_HEADERS,

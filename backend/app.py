@@ -563,6 +563,8 @@ def _mri_to_flare_predict_response(cancer_type: str, body: dict) -> dict:
         "confidence": float(body.get("confidence", 0)),
         "localization_url": _absolute_url_for_path(loc),
         "gradcam_ready": bool(body.get("gradcam_ready", False)),
+        "caseId": body.get("caseId"),
+        "review_required": bool(body.get("review_required", False)),
     }
     if body.get("probabilities") is not None:
         out["probabilities"] = body.get("probabilities")

@@ -53,7 +53,7 @@ import DownloadIcon from '@mui/icons-material/Download'
 import VisibilityIcon from '@mui/icons-material/Visibility'
 
 type BrainCancerLabel = 'Glioma' | 'Meningioma' | 'Pituitary' | 'Normal'
-type ResultClass = 'Normal' | 'Benign' | 'Malignant'
+type ResultClass = 'Normal' | 'Abnormal' | 'Benign' | 'Malignant' | 'Not specified'
 type ScanModality = 'MRI' | 'CT' | 'Fusion' | 'Mammography' | 'Ultrasound'
 
 type PatientRecord = {
@@ -91,9 +91,11 @@ function toModality(modality: string): ScanModality {
 
 function toResultClass(result_class: string): ResultClass {
   const u = (result_class || '').toLowerCase()
+  if (u === 'normal') return 'Normal'
+  if (u === 'abnormal') return 'Abnormal'
   if (u === 'malignant') return 'Malignant'
   if (u === 'benign') return 'Benign'
-  return 'Normal'
+  return 'Not specified'
 }
 
 function mapCancerLabel(raw: string | null | undefined): BrainCancerLabel {
@@ -176,10 +178,14 @@ function resultChipColor(result: ResultClass) {
   switch (result) {
     case 'Normal':
       return { bg: 'rgba(34,197,94,0.16)', border: 'rgba(34,197,94,0.35)', text: '#86efac' }
+    case 'Abnormal':
+      return { bg: 'rgba(239,68,68,0.16)', border: 'rgba(239,68,68,0.35)', text: '#fca5a5' }
     case 'Benign':
       return { bg: 'rgba(59,130,246,0.16)', border: 'rgba(59,130,246,0.35)', text: '#93c5fd' }
     case 'Malignant':
       return { bg: 'rgba(239,68,68,0.16)', border: 'rgba(239,68,68,0.35)', text: '#fca5a5' }
+    case 'Not specified':
+      return { bg: 'rgba(148,163,184,0.14)', border: 'rgba(148,163,184,0.3)', text: '#cbd5e1' }
   }
 }
 
@@ -1118,8 +1124,10 @@ export default function EhrDatabase() {
             >
               <MenuItem value="All">All</MenuItem>
               <MenuItem value="Normal">Normal</MenuItem>
+              <MenuItem value="Abnormal">Abnormal</MenuItem>
               <MenuItem value="Benign">Benign</MenuItem>
               <MenuItem value="Malignant">Malignant</MenuItem>
+              <MenuItem value="Not specified">Not specified</MenuItem>
             </TextField>
           </Box>
         </CardContent>

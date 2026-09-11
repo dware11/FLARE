@@ -640,7 +640,15 @@ export default function CancerDetection() {
       setLoading(true);
       startAnalyzeTimer();
       try {
-        const r = await predictFusion(fusionCtFile, fusionMriFile, medicalId, hospitalId);
+        const r = await predictFusion(
+          fusionCtFile,
+          fusionMriFile,
+          medicalId,
+          hospitalId,
+          firstName,
+          lastName,
+          dob
+        );
         setFusionScanResult(r);
         const elapsed = stopAnalyzeTimer();
         setCompletedSeconds(elapsed);
@@ -1029,7 +1037,7 @@ export default function CancerDetection() {
               sx={fieldSx}
             >
               <MenuItem value="brain">Brain</MenuItem>
-              <MenuItem value="breast">
+              <MenuItem value="breast" disabled>
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                   Breast
                   <Chip
@@ -1212,7 +1220,9 @@ export default function CancerDetection() {
                   }}
                 >
                   <ToggleButton value="single">Single scan</ToggleButton>
-                  <ToggleButton value="folder">Patient folder</ToggleButton>
+                  <ToggleButton value="folder" disabled>
+                    Patient folder — unavailable in this demo
+                  </ToggleButton>
                 </ToggleButtonGroup>
               )}
 
