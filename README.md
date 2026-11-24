@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/images/flare-cover.png" alt="FLARE: full-stack AI medical imaging research prototype" width="720"></p>
+
 # FLARE: Fusion-based Learning for Automated Radiology and Epidemiology
 
 **A Multi-Modal Deep Learning System for Brain CT & MRI Tumor Screening, Grad-CAM Interpretability, and Epidemiological Surveillance**
@@ -11,6 +13,8 @@
 ---
 
 ## Overview
+
+<p align="center"><img src="docs/images/flare-capabilities.png" alt="What FLARE does: CT and MRI classification, tumor segmentation, explainability, late fusion, regional tracker" width="720"></p>
 
 FLARE provides a unified multi-modal AI framework dedicated to **brain medical imaging**. The platform processes head CT and brain MRI scans independently, combines predictions via late fusion when dual modalities exist, visualizes model attention using Grad-CAM, and logs clinician-approved abnormal cases to an Electronic Health Record (EHR) review queue and regional outbreak surveillance map.
 
@@ -28,6 +32,11 @@ FLARE provides a unified multi-modal AI framework dedicated to **brain medical i
 ---
 
 ## System Architecture
+
+<p align="center"><img src="docs/images/flare-architecture.png" alt="FLARE architecture: React frontend, Flask API, NCSA Delta HPC compute, results" width="720"></p>
+
+<details>
+<summary><b>Detailed model pipeline diagram</b></summary>
 
 ```text
        +-------------------------------+       +-------------------------------+
@@ -74,6 +83,11 @@ FLARE provides a unified multi-modal AI framework dedicated to **brain medical i
                 |  • Houston Outbreak Map   |
                 +---------------------------+
 ```
+
+</details>
+
+---
+
 ## Validated Results & Benchmark Summary
 
 **Brain CT Abnormality Screening (DenseNet121 + BiGRU)**
